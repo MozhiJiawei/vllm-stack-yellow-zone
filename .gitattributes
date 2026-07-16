@@ -1,1 +1,7 @@
-*.sh text eol=lf
+# This repository is developed on Windows but built and run on Linux.
+# Normalize every file Git classifies as text to LF; binary files are untouched.
+* text=auto eol=lf
+
+# Keep native Windows scripts compatible if they are added later.
+*.bat text eol=crlf
+*.cmd text eol=crlf
