@@ -1,0 +1,24 @@
+container_image:
+  image: quay.io/ascend/vllm-ascend:v0.19.1rc1
+
+vcann-rt:
+  source: ssh://git@codehub-dg-y.huawei.com:2222/n00533121/ubs-virt.git
+  branch: master-rebase
+  commit: fa7917ed233d3100756606bfcfe2d121ff361ab4
+  note: includes six local patch artifacts
+
+vllm:
+  source: https://github.com/vllm-project/vllm.git
+  tag: v0.19.1
+  commit: b1388b1fbf5aaef47937fabe98931211684666a6
+
+vllm-ascend:
+  source: https://github.com/vllm-project/vllm-ascend.git
+  tag: v0.19.1rc1
+  commit: da421afad7192dac64e39ae1d32305d57344f3cf
+  dockerfile_vllm_tag: v0.19.1
+
+catlass:
+  source: https://gitcode.com/cann/catlass.git
+  commit: b50cad688e03281c9281e421edd01369b6dd2144
+

@@ -1,0 +1,5 @@
+add_subdirectory(cli)
+add_subdirectory(log)
+add_subdirectory(util)
+add_subdirectory(vasctl)
+add_subdirectory(vasd)

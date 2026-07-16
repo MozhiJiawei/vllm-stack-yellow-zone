@@ -1,0 +1,12 @@
+# Default ignored files
+**/cmake-build-*
+.idea
+.vscode
+.cache
+*.swp
+*.swa
+install
+comp.cmake
+coverage.info
+test.info
+output

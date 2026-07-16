@@ -1,0 +1,478 @@
+diff --git a/src/ascend/device.c b/src/ascend/device.c
+index c992534..131b36d 100644
+--- a/src/ascend/device.c
++++ b/src/ascend/device.c
+@@ -64,7 +64,7 @@ static int validate_and_set_device_context(int devId, int *device_index)
+                 if (info.logic_id == devId) {
+                     set_active_device_id(i);
+                     *device_index = i;
+-                    LOG_DEBUG("Found and set active device index %d (logic ID %d) for requested devId %d", 
++                    LOG_INFO("Found and set active device index %d (logic ID %d) for requested devId %d", 
+                              i, devId, devId);
+                     return ACL_RT_SUCCESS;
+                 }
+@@ -82,8 +82,8 @@ static int validate_and_set_device_context(int devId, int *device_index)
+ RUNTIME_HOOK_DEFINE(rtSetDevice, int32_t devId)
+ {
+     enpu_global_init();
+-    CHECK_COND_RETURN_(!check_init_success(), ACL_ERROR_UNINITIALIZE,
+-        "Failed to initialize vcann-rt, please check the config file in %s.", NPU_CONFIG_PATH);
++   // CHECK_COND_RETURN_(!check_init_success(), ACL_ERROR_UNINITIALIZE,
++   //     "Failed to initialize vcann-rt, please check the config file in %s.", NPU_CONFIG_PATH);
+     
+     int device_index = INVALID_VALUE;
+     int rc = validate_and_set_device_context(devId, &device_index);
+@@ -91,7 +91,7 @@ RUNTIME_HOOK_DEFINE(rtSetDevice, int32_t devId)
+     
+     // Get the actual device ID for the runtime API call
+     int runtime_device_id = (device_index >= 0 && device_index < MAX_NPU_DEVICES) ? 
+-                            g_npu_info_array[device_index].device_id : get_device_id();
++                             g_npu_info_array[device_index].logic_id : get_device_id();
+     
+     LOG_DEBUG("Hook init rtSetDevice devId:%d -> device_index:%d, runtime_device_id:%" PRIi32 ".", 
+               devId, device_index, runtime_device_id);
+@@ -108,8 +108,8 @@ RUNTIME_HOOK_DEFINE(rtSetDevice, int32_t devId)
+ RUNTIME_HOOK_DEFINE(rtSetDeviceEx, int32_t devId)
+ {
+     enpu_global_init();
+-    CHECK_COND_RETURN_(!check_init_success(), ACL_ERROR_UNINITIALIZE,
+-        "Failed to initialize vcann-rt, please check the config file in %s.", NPU_CONFIG_PATH);
++    //CHECK_COND_RETURN_(!check_init_success(), ACL_ERROR_UNINITIALIZE,
++    //    "Failed to initialize vcann-rt, please check the config file in %s.", NPU_CONFIG_PATH);
+     
+     int device_index = INVALID_VALUE;
+     int rc = validate_and_set_device_context(devId, &device_index);
+@@ -117,7 +117,7 @@ RUNTIME_HOOK_DEFINE(rtSetDeviceEx, int32_t devId)
+     
+     // Get the actual device ID for the runtime API call
+     int runtime_device_id = (device_index >= 0 && device_index < MAX_NPU_DEVICES) ? 
+-                            g_npu_info_array[device_index].device_id : get_device_id();
++                            g_npu_info_array[device_index].logic_id : get_device_id();
+     
+     LOG_DEBUG("Hook init rtSetDeviceEx devId:%d -> device_index:%d, runtime_device_id:%" PRIi32 ".", 
+               devId, device_index, runtime_device_id);
+@@ -134,8 +134,8 @@ RUNTIME_HOOK_DEFINE(rtSetDeviceEx, int32_t devId)
+ RUNTIME_HOOK_DEFINE(rtSetDeviceWithFlags, int32_t devId, uint64_t flags)
+ {
+     enpu_global_init();
+-    CHECK_COND_RETURN_(!check_init_success(), ACL_ERROR_UNINITIALIZE,
+-        "Failed to initialize vcann-rt, please check the config file in %s.", NPU_CONFIG_PATH);
++    //CHECK_COND_RETURN_(!check_init_success(), ACL_ERROR_UNINITIALIZE,
++    //    "Failed to initialize vcann-rt, please check the config file in %s.", NPU_CONFIG_PATH);
+     
+     int device_index = INVALID_VALUE;
+     int rc = validate_and_set_device_context(devId, &device_index);
+@@ -143,7 +143,7 @@ RUNTIME_HOOK_DEFINE(rtSetDeviceWithFlags, int32_t devId, uint64_t flags)
+     
+     // Get the actual device ID for the runtime API call
+     int runtime_device_id = (device_index >= 0 && device_index < MAX_NPU_DEVICES) ? 
+-                            g_npu_info_array[device_index].device_id : get_device_id();
++                            g_npu_info_array[device_index].logic_id : get_device_id();
+     
+     LOG_DEBUG("Hook init rtSetDeviceWithFlags devId:%d -> device_index:%d, runtime_device_id:%" PRIi32 ".", 
+               devId, device_index, runtime_device_id);
+@@ -160,8 +160,8 @@ RUNTIME_HOOK_DEFINE(rtSetDeviceWithFlags, int32_t devId, uint64_t flags)
+ RUNTIME_HOOK_DEFINE(rtSetDeviceWithoutTsd, int32_t devId)
+ {
+     enpu_global_init();
+-    CHECK_COND_RETURN_(!check_init_success(), ACL_ERROR_UNINITIALIZE,
+-        "Failed to initialize vcann-rt, please check the config file in %s.", NPU_CONFIG_PATH);
++    // CHECK_COND_RETURN_(!check_init_success(), ACL_ERROR_UNINITIALIZE,
++    //    "Failed to initialize vcann-rt, please check the config file in %s.", NPU_CONFIG_PATH);
+     
+     int device_index = INVALID_VALUE;
+     int rc = validate_and_set_device_context(devId, &device_index);
+@@ -169,7 +169,7 @@ RUNTIME_HOOK_DEFINE(rtSetDeviceWithoutTsd, int32_t devId)
+     
+     // Get the actual device ID for the runtime API call
+     int runtime_device_id = (device_index >= 0 && device_index < MAX_NPU_DEVICES) ? 
+-                            g_npu_info_array[device_index].device_id : get_device_id();
++                            g_npu_info_array[device_index].logic_id : get_device_id();
+     
+     LOG_DEBUG("Hook init rtSetDeviceWithoutTsd devId:%d -> device_index:%d, runtime_device_id:%" PRIi32 ".", 
+               devId, device_index, runtime_device_id);
+diff --git a/src/include/npu_manager.h b/src/include/npu_manager.h
+index 7789409..96c8b06 100644
+--- a/src/include/npu_manager.h
++++ b/src/include/npu_manager.h
+@@ -115,6 +115,11 @@ extern bool check_init_success(void);
+ extern uint8_t get_soc_version(void);
+ extern int get_logic_id(void);
+ 
++// Array to store all NPU device information
++extern struct npu_info g_npu_info_array[MAX_NPU_DEVICES];
++
++int get_mem_used(size_t *used);
++
+ // Multi-device initialization functions
+ extern int enpu_load_config(void);
+ extern int enpu_load_multi_config(void);
+@@ -127,4 +132,4 @@ extern int enpu_soc_init(void);
+ }
+ #endif
+ 
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/src/log.c b/src/log.c
+index e6424b4..cc9544b 100644
+--- a/src/log.c
++++ b/src/log.c
+@@ -31,7 +31,7 @@ LogConfig g_log_config = {
+     .log_path = "vCann.log",
+     .max_file_size = LOG_MAX_FILE_SIZE,
+     .max_backup_count = LOG_MAX_BACKUP_COUNT,
+-    .min_log_level = ENPU_LOG_INFO,
++    .min_log_level = ENPU_LOG_DEBUG,
+     .flush_counter = 0,
+     .compress_check_counter = 0,
+     .compress_disabled = false,
+diff --git a/src/mem_limiter.c b/src/mem_limiter.c
+index 64934c9..c3b5edf 100644
+--- a/src/mem_limiter.c
++++ b/src/mem_limiter.c
+@@ -73,4 +73,4 @@ int create_file_lock_base_dir()
+ int memory_limiter_init()
+ {
+     return create_file_lock_base_dir();
+-}
+\ No newline at end of file
++}
+diff --git a/src/npu_manager.c b/src/npu_manager.c
+index b642a13..4b78bb3 100644
+--- a/src/npu_manager.c
++++ b/src/npu_manager.c
+@@ -26,7 +26,8 @@
+ static THREAD_LOCAL int active_device_index = INVALID_VALUE;
+ 
+ // Array to store all NPU device information
+-static struct npu_info g_npu_info_array[MAX_NPU_DEVICES];
++struct npu_info g_npu_info_array[MAX_NPU_DEVICES];
++
+ static int g_npu_device_count = 0;
+ static pthread_once_t once_init = PTHREAD_ONCE_INIT;
+ static pthread_once_t post_init_flag = PTHREAD_ONCE_INIT;
+@@ -172,10 +173,10 @@ bool check_init_success(void)
+ }
+ 
+ // Multi-device functions
+-int get_device_count(void)
+-{
+-    return get_device_config_count();
+-}
++//int get_device_count(void)
++//{
++//    return get_device_config_count();
++//}
+ 
+ int get_device_config_count(void)
+ {
+@@ -291,6 +292,7 @@ int enpu_config_info(int phy_npu_id)
+     struct ConfigSection *cfg = section_config;
+     
+     // Find empty slot or existing slot for this device
++    LOG_INFO("try to find device for phy npu id %d", phy_npu_id);
+     int device_index = -1;
+     for (int i = 0; i < MAX_NPU_DEVICES; i++) {
+         if (g_npu_info_array[i].pnpu_id == INVALID_VALUE || g_npu_info_array[i].pnpu_id == phy_npu_id) {
+@@ -299,11 +301,13 @@ int enpu_config_info(int phy_npu_id)
+         }
+     }
+     
+-    if (device_index == -1) {
+-        LOG_ERROR("Maximum number of NPU devices (%d) reached", MAX_NPU_DEVICES);
++    if (device_index != -1) {
++        LOG_ERROR("Device already inited %d", device_index);
+         return ENPU_FAIL;
+     }
+     
++    device_index = g_npu_device_count;
++    
+     struct npu_info *npu = &g_npu_info_array[device_index];
+     
+     // Initialize device configuration
+@@ -354,9 +358,14 @@ int enpu_device_init(int phy_npu_id)
+         LOG_ERROR("Failed to initialize device for physical NPU ID: %d", phy_npu_id);
+         return ENPU_FAIL;
+     }
++
+     
+     struct npu_info *npu = &g_npu_info_array[device_index];
+-    
++
++        LOG_INFO("Got device_index %d for phy npu id %d", device_index, phy_npu_id);
++
++   
++       enpu_soc_init();	
+     // Get device information from DCMI
+     int card_id = -1, device_id = -1, logic_id = -1;
+     int rc = enpu_dcmi_get_card_info(npu->pnpu_id, &card_id, &device_id, &logic_id, npu->soc_version);
+@@ -493,4 +502,4 @@ static void __enpu_global_init_post(void)
+ void enpu_global_init_post(void)
+ {
+     pthread_once(&post_init_flag, __enpu_global_init_post);
+-}
+\ No newline at end of file
++}
+diff --git a/src/tools/monitor.c b/src/tools/monitor.c
+index 92a48cc..e6cce24 100644
+--- a/src/tools/monitor.c
++++ b/src/tools/monitor.c
+@@ -59,7 +59,7 @@ static void print_detailed_device_info(int device_index, npu_info *npu)
+     printf("     Shared Memory ID         : %s\n", npu->shm_id);
+ }
+ 
+-static int check_device_health(device_index, npu_info *npu)
++static int check_device_health(int device_index, npu_info *npu)
+ {
+     // This is a placeholder - in reality, you'd implement proper health checks
+     size_t used;
+@@ -99,6 +99,49 @@ static int monitor_single_device(void)
+     return ENPU_SUCCESS;
+ }
+ 
++// Aggregated monitoring for all devices
++static int monitor_devices_aggregated(void)
++{
++  int device_count = get_device_count();
++  size_t total_used = 0;
++  size_t total_quota = 0;
++  uint8_t total_core_quota = 0;
++
++  if (device_count <= 0) {
++    printf("   No NPU devices configured or initialized.\n");
++    return ENPU_SUCCESS;
++  }
++
++  // Aggregate metrics across all devices
++  for (int i = 0; i < device_count; i++) {
++    npu_info npu_info;
++    int ret = get_device_info_by_index(i, &npu_info);
++
++    if (ret == ENPU_SUCCESS) {
++      total_core_quota += npu_info.core_limit_quota;
++      total_quota += npu_info.mem_limit_quota;
++
++      // Get memory usage for the first device as a sample
++      if (i == 0) {
++        ret = get_mem_used(&total_used);
++        if (ret != ENPU_SUCCESS) {
++          total_used = 0;
++        }
++      }
++    }
++   }
++
++   printf("vCANN-RT NPU Monitor - Aggregated (%d devices):\n\n", device_count);
++   printf("   --- Aggregate Metrics ---\n");
++   printf("     Total Core Limit Quota(%)    : %d\n", total_core_quota);
++   printf("     Total Memory Limit Quota(MB) : %lld\n", (long long)total_quota / 1024 / 1024);
++   printf("     Sample Memory Usage(MB)      : %lld\n", (long long)total_used / 1024 / 1024);
++   printf("     Aggregate Memory Utilization : %.1f%%\n", (double)total_used * 100.0 / total_quota);
++   printf("     Device Count                  : %d\n", device_count);
++
++   return ENPU_SUCCESS;
++}
++
+ // Monitor all configured devices with detailed information
+ static int monitor_all_devices_detailed(void)
+ {
+@@ -112,8 +155,8 @@ static int monitor_all_devices_detailed(void)
+     }
+     
+     int healthy_devices = 0;
+-    size_t total_used = 0;
+-    size_t total_quota = 0;
++    //size_t total_used = 0;
++    //size_t total_quota = 0;
+     
+     for (int i = 0; i < device_count; i++) {
+         npu_info npu_info;
+@@ -127,76 +170,36 @@ static int monitor_all_devices_detailed(void)
+                 healthy_devices++;
+             }
+             
+-            if (!i) {  // First device - get its memory usage as active
+-                ret = get_mem_used(&used);
+-                total_used = used;
+-                total_quota = npu_info.mem_limit_quota;
+-            } else {
+-                // For monitoring, we'll use first device's metrics as sample
+-                // In a real implementation, you might want to aggregate
+-            }
++      //      if (!i) {  // First device - get its memory usage as active
++//		size_t used;
++ //               ret = get_mem_used(&used);
++  //              total_used = used;
++ //               total_quota = npu_info.mem_limit_quota;
++  //          } else {
++  //              // For monitoring, we'll use first device's metrics as sample
++  //              // In a real implementation, you might want to aggregate
++  //          }
+             
+             printf("\n");
+         } else {
+             printf("   Device %d: Failed to get device information\n", i);
+         }
+     }
++
++    monitor_devices_aggregated();
+     
+     printf("   Summary:\n");
+-    printf("     Total Device Count   : %d\n", device_count);
++    //printf("     Total Device Count   : %d\n", device_count);
+     printf("     Healthy Devices     : %d\n", healthy_devices);
+-    printf("     Unhealthy Devices   : %d\n", device_count - healthy_devices);
+-    printf("     Total Memory Usage  : %lld MB\n", (long long)total_used / 1024 / 1024);
+-    printf("     Total Memory Quota : %lld MB\n", (long long)total_quota / 1024 / 1024);
+-    printf("     Memory Utilization  : %.1f%%\n", 
+-           (double)total_used * 100.0 / total_quota);
++    //printf("     Unhealthy Devices   : %d\n", device_count - healthy_devices);
++    //printf("     Total Memory Usage  : %lld MB\n", (long long)total_used / 1024 / 1024);
++    //printf("     Total Memory Quota : %lld MB\n", (long long)total_quota / 1024 / 1024);
++    //printf("     Memory Utilization  : %.1f%%\n", 
++    //       (double)total_used * 100.0 / total_quota);
+     
+     return ENPU_SUCCESS;
+ }
+ 
+-// Aggregated monitoring for all devices
+-static int monitor_devices_aggregated(void)
+-{
+-    int device_count = get_device_count();
+-    size_t total_used = 0;
+-    size_t total_quota = 0;
+-    uint8_t total_core_quota = 0;
+-    
+-    if (device_count <= 0) {
+-        printf("   No NPU devices configured or initialized.\n");
+-        return ENPU_SUCCESS;
+-    }
+-    
+-    // Aggregate metrics across all devices
+-    for (int i = 0; i < device_count; i++) {
+-        npu_info npu_info;
+-        int ret = get_device_info_by_index(i, &npu_info);
+-        
+-        if (ret == ENPU_SUCCESS) {
+-            total_core_quota += npu_info.core_limit_quota;
+-            total_quota += npu_info.mem_limit_quota;
+-            
+-            // Get memory usage for the first device as a sample
+-            if (i == 0) {
+-                ret = get_mem_used(&total_used);
+-                if (ret != ENPU_SUCCESS) {
+-                    total_used = 0;
+-                }
+-            }
+-        }
+-    }
+-    
+-    printf("vCANN-RT NPU Monitor - Aggregated (%d devices):\n\n", device_count);
+-    printf("   --- Aggregate Metrics ---\n");
+-    printf("     Total Core Limit Quota(%)    : %d\n", total_core_quota);
+-    printf("     Total Memory Limit Quota(MB) : %lld\n", (long long)total_quota / 1024 / 1024);
+-    printf("     Sample Memory Usage(MB)      : %lld\n", (long long)total_used / 1024 / 1024);
+-    printf("     Aggregate Memory Utilization : %.1f%%\n", 
+-           (double)total_used * 100.0 / total_quota);
+-    printf("     Device Count                  : %d\n", device_count);
+-    
+-    return ENPU_SUCCESS;
+-}
+ 
+ // Main monitoring function that determines mode
+ static int monitor_npu_utilization(void)
+@@ -237,4 +240,4 @@ int main(int argc, char *argv[])
+     CHECK_RETURN_ERROR_CODE(ret, "NPU utilization monitor failed.");
+ 
+     return ENPU_SUCCESS;
+-}
+\ No newline at end of file
++}
+diff --git a/src/utils/config.c b/src/utils/config.c
+index 8bb0ad1..6cb3138 100644
+--- a/src/utils/config.c
++++ b/src/utils/config.c
+@@ -306,10 +306,12 @@ int load_config(const char *file_path)
+                 multi_config.device_count++;
+             }
+         }
+-        return check_multi_config() ? ENPU_SUCCESS : ENPU_FAIL;
++
++        int rc = check_multi_config();
++	return rc;
+     } else {
+         // Single-device config - validate normally
+-        return check_single_config() ? ENPU_SUCCESS : ENPU_FAIL;
++        return check_single_config();
+     }
+ }
+ 
+@@ -354,4 +356,4 @@ int find_device_section(int phy_npu_id)
+         }
+     }
+     return -1;
+-}
+\ No newline at end of file
++}
+diff --git a/src/utils/dcmi_wrapper.c b/src/utils/dcmi_wrapper.c
+index 2468907..ffb4146 100644
+--- a/src/utils/dcmi_wrapper.c
++++ b/src/utils/dcmi_wrapper.c
+@@ -48,6 +48,8 @@ int __attribute__((weak)) dcmi_get_device_resource_info(int card_id, int device_
+ int __attribute__((weak)) dcmi_get_card_id_device_id_from_phyid(int *card_id, int *device_id,
+     unsigned int device_phy_id);
+ 
++int __attribute__((weak)) dcmi_get_device_logic_id(int *device_logic_id, int card_id, int device_id);
++
+ int _dcmiv2_init_callback()
+ {
+     return dcmiv2_init();
+@@ -111,7 +113,8 @@ int register_callback(uint8_t soc_version)
+ int enpu_dcmi_get_card_info(uint32_t phy_id, int *card_id, int *device_id, int *logic_id, uint8_t soc_version)
+ {
+     int ret;
+-    LOG_DEBUG("Enpu_dcmi_get_card_info begin");
++    LOG_INFO("Enpu_dcmi_get_card_info begin");
++
+     if (!card_id || !device_id || !logic_id) {
+         LOG_ERROR("Invalid param");
+         return ENPU_FAIL;
+@@ -119,24 +122,26 @@ int enpu_dcmi_get_card_info(uint32_t phy_id, int *card_id, int *device_id, int *
+ 
+     ret = g_dcmi_ops.init_callback();
+     CHECK_RETURN_ERROR_CODE(ret, "dcmi init failed.");
+-    LOG_DEBUG("dcmi_init success");
++    LOG_INFO("dcmi_init success");
+ 
+     if (soc_version == SOC_VERSION_NOT_ASCEND_950) {
+         ret = dcmi_get_card_id_device_id_from_phyid(card_id, device_id, phy_id);
+         CHECK_RETURN_ERROR_CODE(ret, "get card info failed.");
+-        *logic_id = -1;
++	ret = dcmi_get_device_logic_id(logic_id, *card_id, *device_id);
++	LOG_INFO("get logic id returned %d", ret);
++	CHECK_RETURN_ERROR_CODE(ret, "get logic id failed.");
+     } else {
+         int device_list[MAX_DEVICE_LIST_NUM] = {0};
+         int device_cnt = 0;
+ 
+         ret = dcmiv2_get_device_list(device_list, &device_cnt, sizeof(device_list) / sizeof(device_list[0]));
+         CHECK_RETURN_ERROR_CODE(ret, "get device list failed.");
+-        LOG_DEBUG("device_cnt = %d, device_list[0] = %d", device_cnt, device_list[0]);
++        LOG_INFO("device_cnt = %d, device_list[0] = %d", device_cnt, device_list[0]);
+         *logic_id = device_list[0];
+         *card_id = -1;
+         *device_id = device_list[0]; // The deviceID of the ascend950 chip is exactly the same as the logicID.
+     }
+-    LOG_DEBUG("enpu_dcmi_get_card_info success");
++    LOG_INFO("enpu_dcmi_get_card_info success");
+     return ENPU_SUCCESS;
+ }
+ 
+@@ -221,4 +226,4 @@ int enpu_dcmi_get_device_resource_info(int logic_id, int card_id, int device_id,
+         card_id, device_id);
+ 
+     return ENPU_SUCCESS;
+-}
+\ No newline at end of file
++}

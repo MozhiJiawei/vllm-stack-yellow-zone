@@ -1,0 +1,5 @@
+file(GLOB API_CPP "*.cpp")
+FIND_INCLUDE_DIR(API_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR})
+add_library(api STATIC ${API_CPP})
+target_include_directories(api PUBLIC ${API_INCLUDE})
+target_link_libraries(api PRIVATE util logger cmd_serialize vas_daemon_register cluster_sched)

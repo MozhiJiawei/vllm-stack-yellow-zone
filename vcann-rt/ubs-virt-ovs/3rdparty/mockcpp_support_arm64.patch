@@ -1,0 +1,4182 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 8dfd725..c31ea7f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,21 +1,339 @@
++set(MOCKCPP_PACKAGE_NAME \\\"mockcpp\\\")
++set(MOCKCPP_PACKAGE_STRING \\\"mockcpp\\\")
++set(MOCKCPP_PACKAGE_BUGREPORT \\\"dev.mockcpp@gmail.com\\\")
++set(MOCKCPP_PACKAGE_URL \\\"http://code.google.com/p/mockcpp\\\")
++set(MOCKCPP_PACKAGE \\\"mockcpp\\\")
++set(MOCKCPP_VERSION \\\"2.6\\\")
++set(mockcpp_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
++set(BOOST_INCLUDE_DIRS "${mockcpp_SOURCE_DIR}/3rdparty")
++set(mockcpp_BINARY_DIR ${mockcpp_SOURCE_DIR})
+ 
+-CMAKE_MINIMUM_REQUIRED(VERSION 3.12...3.19)
++# set(mockcpp_xunit "testngpp" CACHE STRING "Set to gtest/cpputest/cppunit to use other testframeworks.")
++set(mockcpp_xunit "testngpp")
+ 
+-PROJECT(mockcpp)
++include(FindPythonInterp)
+ 
+-INCLUDE(ProjectVar.txt)
++if (PYTHONINTERP_FOUND)
++  set(PYTHON ${PYTHON_EXECUTABLE})
++else ()
++  message(FATAL_ERROR "No Python interpreter found")
++endif (PYTHONINTERP_FOUND)
+ 
+-ADD_SUBDIRECTORY(src)
++if (NOT DEFINED MOCKCPP_ALLOW_MI)
++  set(MOCKCPP_ALLOW_MI TRUE)
++endif (NOT DEFINED MOCKCPP_ALLOW_MI)
+ 
+-INSTALL(DIRECTORY include/mockcpp DESTINATION include
+-        PATTERN ".svn" EXCLUDE)
++if (NOT DEFINED mockcpp_xunit)
++  set(mockcpp_xunit STDEXCEPT)
++endif ()
++   
++# Set MOCKCPP_MAX_INHERITANCE
++#
++if (MOCKCPP_ALLOW_MI)
++  set(MOCKCPP_ALLOW_MULTI_INHERITANCE 1)
++  if (NOT DEFINED MOCKCPP_MAX_INHERITANCE)
++    set(MOCKCPP_MAX_INHERITANCE 5)
++  endif (NOT DEFINED MOCKCPP_MAX_INHERITANCE)
++else (MOCKCPP_ALLOW_MI)
++  set(MOCKCPP_ALLOW_MULTI_INHERITANCE 0)
++  set(MOCKCPP_MAX_INHERITANCE 1)
++endif (MOCKCPP_ALLOW_MI)
+ 
+-INSTALL(DIRECTORY 3rdparty/fake_boost DESTINATION include
+-        PATTERN ".svn" EXCLUDE)
++if (MOCKCPP_NO_NAMESPACE)
++  set(MOCKCPP_NO_NAMESPACE 1)
++else (MOCKCPP_NO_NAMESPACE)
++  set(MOCKCPP_NO_NAMESPACE 0)
++endif (MOCKCPP_NO_NAMESPACE)
++#
++# Set MOCKCPP_MAX_VTBL_SIZE
++#
++if (NOT MOCKCPP_MAX_VTBL_SIZE)
++  set(MOCKCPP_MAX_VTBL_SIZE 100)
++endif (NOT MOCKCPP_MAX_VTBL_SIZE)
+ 
+-INSTALL(DIRECTORY 3rdparty/msinttypes DESTINATION include
+-        PATTERN ".svn" EXCLUDE)
++if (NOT MOCKCPP_MAX_PARAMETERS)
++  set(MOCKCPP_MAX_PARAMETERS 12)
++endif (NOT MOCKCPP_MAX_PARAMETERS)
+ 
+-SET(MOCKCPP_XUNIT "testngpp" CACHE STRING "Set to gtest/cpputest/cppunit to use other testframeworks.")
++add_definitions(
++  -DPACKAGE_NAME=${MOCKCPP_PACKAGE_NAME}
++  -DPACKAGE_STRING=${MOCKCPP_PACKAGE_STRING}
++  -DPACKAGE_BUGREPORT=${MOCKCPP_PACKAGE_BUGREPORT}
++  -DPACKAGE_URL=${MOCKCPP_PACKAGE_URL}
++  -DPACKAGE=${MOCKCPP_PACKAGE}
++  -DVERSION=${MOCKCPP_VERSION}
++  -DMOCKCPP_NO_NAMESPACE=${MOCKCPP_NO_NAMESPACE}
++  -DMOCKCPP_ALLOW_MULTI_INHERITANCE=${MOCKCPP_ALLOW_MULTI_INHERITANCE}
++  -DMOCKCPP_MAX_INHERITANCE=${MOCKCPP_MAX_INHERITANCE}
++  -DMOCKCPP_MAX_VTBL_SIZE=${MOCKCPP_MAX_VTBL_SIZE}
++  -DMOCKCPP_MAX_PARAMETERS=${MOCKCPP_MAX_PARAMETERS}
++)
+ 
++if (MSVC)
++  add_definitions(-DMSVC_VMG_ENABLED) #  /Z7)
++  add_definitions(-wd4996 -wd4100 -wd4706 -wd4702 -wd4458 -wd4127)
++  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /vmg")
++  include_directories(BEFORE ${mockcpp_SOURCE_DIR}/3rdparty/msinttypes)
++endif (MSVC)
+ 
++#if (UNIX)
++#message("UNIX")
++#add_definitions(
++#    -g -ggdb
++#)
++#endif (UNIX)
++
++if (UNIX AND NOT CYGWIN)
++  add_definitions(-fPIC)
++endif (UNIX AND NOT CYGWIN)
++
++if (CMAKE_CL_64)
++  add_definitions(-DWIN64)
++endif (CMAKE_CL_64)
++
++set(MOCKCPP_JMPCODE_SRCS
++  src/JmpCodeAARCH32.h
++  src/JmpCodeAARCH64.h
++  src/JmpCodeArch.h
++  src/JmpCodeX64.h
++  src/JmpCodeX86.h
++  src/JmpOnlyApiHook.h
++  src/JmpOnlyApiHook.cpp
++  src/JmpCode.cpp
++)
++
++file(GLOB_RECURSE MOCKCPP_INCS
++  include/mockcpp/*.h
++  include/mockcpp/*.tcc
++  include/mockcpp/*.hpp
++)
++
++source_group(JmpCode FILES ${MOCKCPP_JMPCODE_SRCS})
++
++set(MOCKCPP_SRCS 
++  ${MOCKCPP_INCS}
++  ${MOCKCPP_JMPCODE_SRCS}
++  src/AfterMatcher.cpp
++  src/AnyBase.cpp
++  src/AnyCast.cpp
++  src/Any.cpp
++  src/Asserter.cpp
++  src/AssertionFailedError.cpp
++  src/BeforeMatcher.cpp
++  src/CallerMatcher.cpp
++  src/ChainableMockMethodContainer.cpp
++  src/ChainableMockMethodCore.cpp
++  src/ChainableMockMethodIndexKey.cpp
++  src/ChainableMockMethodNameKey.cpp
++  src/ChainableMockObjectBase.cpp
++  src/ChainableMockObject.cpp
++  src/ChainingMockHelper.cpp
++  src/ConstraintSet.cpp
++  src/DecoratedConstraint.cpp
++  src/DefaultMatcher.cpp
++  src/DefaultStub.cpp
++  src/DelegatedMethodGetter.cpp
++  src/MethodIndiceChecker.cpp
++  src/DieStub.cpp
++  src/Exception.cpp
++  src/ExpectsMatcher.cpp
++  src/Formatter.cpp
++  src/IdentityBuilder.cpp
++  src/IgnoreResultHandler.cpp
++  src/IgnoreResultHandlerFactory.cpp
++  src/IgnoreReturnStub.cpp
++  src/InterfaceInfo.cpp
++  src/Invocation.cpp
++  src/InvocationId.cpp
++  src/InvocationMockBuilderGetter.cpp
++  src/InvocationMocker.cpp
++  src/InvocationMockerSet.cpp
++  src/InvocationTimesMatcher.cpp
++  src/InvokedAtLeast.cpp
++  src/InvokedAtMost.cpp
++  src/InvokedExactly.cpp
++  src/InvokedOnce.cpp
++  src/InvokedTimesMatcher.cpp
++  src/IsAnythingHelper.cpp
++  src/IsStringContains.cpp
++  src/IsStringEndWith.cpp
++  src/IsStringStartWith.cpp
++  src/MismatchResultHandler.cpp
++  src/MismatchResultHandlerFactory.cpp
++  src/MockObjectBase.cpp
++  src/NormalResultHandler.cpp
++  src/NormalResultHandlerFactory.cpp
++  src/OutBoundPointer.cpp
++  src/PendingMatcher.cpp
++  src/ProcStub.cpp
++  src/RefAny.cpp
++  src/RepeatStub.cpp
++  src/Result.cpp
++  src/ReturnObjectList.cpp
++  src/ReturnStub.cpp
++  src/SimpleInvocationRecorder.cpp
++  src/StringConstraint.cpp
++  src/StubContainer.cpp
++  src/StubsMatcher.cpp
++  src/TestFailureMatcher.cpp
++  src/ThenStub.cpp
++  src/TypelessConstraintAdapter.cpp
++  src/TypelessStubAdapter.cpp
++  src/TypeString.cpp
++  src/VirtualTable.cpp
++  src/VirtualTableUtils.cpp
++  src/VoidResultHandler.cpp
++  src/VoidResultHandlerFactory.cpp
++  src/WillStub.cpp
++  src/HookMockObject.cpp
++  src/ApiHookKey.cpp
++  src/GlobalMockObject.cpp
++  src/JmpOnlyApiHook.cpp
++  src/JmpCode.cpp
++  src/ApiHook.cpp
++)
++
++if (${mockcpp_xunit} STREQUAL "GTEST" OR ${mockcpp_xunit} STREQUAL "gtest")
++
++  if (NOT DEFINED MOCKCPP_XUNIT_HOME)
++    message(FATAL_ERROR "Please specify MOCKCPP_XUNIT_HOME as the home path of googletest")
++  endif ()
++  find_file(GTEST_HEADER
++            gtest.h 
++            PATHS ${MOCKCPP_XUNIT_HOME}/include/gtest 
++            NO_DEFAULT_PATH 
++            NO_CMAKE_ENVIRONMENT_PATH 
++            NO_CMAKE_PATH 
++            NO_SYSTEM_ENVIRONMENT_PATH 
++            NO_CMAKE_SYSTEM_PATH)
++  if (NOT GTEST_HEADER)
++    message(FATAL_ERROR "gtest.h not found in ${MOCKCPP_XUNIT_HOME}/include/gtest, please specify MOCKCPP_XUNIT_HOME as the home path of googletest correctly.")
++  endif ()
++  include_directories(BEFORE ${MOCKCPP_XUNIT_HOME}/include)
++  set(MOCKCPP_SRCS ${MOCKCPP_SRCS} src/ports/failure/gtest_report_failure.cpp)
++
++elseif (${mockcpp_xunit} STREQUAL "CppUTest" OR ${mockcpp_xunit} STREQUAL "cpputest")
++
++  if (NOT DEFINED MOCKCPP_XUNIT_HOME)
++    message(FATAL_ERROR "Please specify MOCKCPP_XUNIT_HOME as the home path of googletest")
++  endif ()
++  find_file(CPPUTEST_HEADER
++            TestHarness.h 
++            PATHS ${MOCKCPP_XUNIT_HOME}/include/CppUTest
++            NO_DEFAULT_PATH 
++            NO_CMAKE_ENVIRONMENT_PATH 
++            NO_CMAKE_PATH 
++            NO_SYSTEM_ENVIRONMENT_PATH 
++            NO_CMAKE_SYSTEM_PATH)
++  if (NOT CPPUTEST_HEADER)
++    message(FATAL_ERROR "TestHarness.h not found in ${MOCKCPP_XUNIT_HOME}/include/CppUTest, please specify MOCKCPP_XUNIT_HOME as the home path of CppUTest correctly.")
++  endif ()
++  include_directories(BEFORE ${MOCKCPP_XUNIT_HOME}/include ${MOCKCPP_XUNIT_HOME}/include/Platforms/VisualCpp)
++  set(MOCKCPP_SRCS ${MOCKCPP_SRCS} src/ports/failure/cpputest_report_failure.cpp)   
++   
++elseif (${mockcpp_xunit} STREQUAL "CPPUNIT" OR ${mockcpp_xunit} STREQUAL "cppunit")
++  if (NOT DEFINED MOCKCPP_XUNIT_HOME)
++    message(FATAL_ERROR "Please specify MOCKCPP_XUNIT_HOME as the home path of cppunit")
++  endif ()
++  find_file(CPPUNIT_HEADER Exception.h 
++            PATHS ${MOCKCPP_XUNIT_HOME}/include/cppunit
++            NO_DEFAULT_PATH 
++            NO_CMAKE_ENVIRONMENT_PATH 
++            NO_CMAKE_PATH 
++            NO_SYSTEM_ENVIRONMENT_PATH 
++            NO_CMAKE_SYSTEM_PATH)
++  if (NOT ${GTEST_HEADER})
++    message(FATAL_ERROR "Can't find file Exception.h, please specify MOCKCPP_XUNIT_HOME as the home path of cppunit correctly.")
++  endif ()
++  include_directories(BEFORE ${MOCKCPP_XUNIT_HOME}/include)
++  set(MOCKCPP_SRCS ${MOCKCPP_SRCS} src/ports/failure/cppunit_report_failure.cpp)
++else ()
++  set(MOCKCPP_SRCS ${MOCKCPP_SRCS} src/ports/failure/stdexcept_report_failure.cpp)
++endif ()
++
++if (MSVC)
++  set(MOCKCPP_SRCS 
++    ${MOCKCPP_SRCS} 
++    src/WinCodeModifier.cpp
++  ) 
++else (MSVC)
++  set(MOCKCPP_SRCS 
++    ${MOCKCPP_SRCS} 
++    src/UnixCodeModifier.cpp
++  )
++endif (MSVC)
++######################################################
++set(MOCKCPP_HEADERS_PATH ${mockcpp_SOURCE_DIR}/include/mockcpp)
++
++set(MOCKCPP_VTBL_RELATED_HEADERS 
++    ${MOCKCPP_HEADERS_PATH}/DelegatedMethodGetDef.h 
++    ${MOCKCPP_HEADERS_PATH}/DelegatedMethodGetByVptrDef.h 
++    ${MOCKCPP_HEADERS_PATH}/DestructorAddrGetterDef.h 
++    ${MOCKCPP_HEADERS_PATH}/MethodIndiceCheckerDef.h
++    ${MOCKCPP_HEADERS_PATH}/DefaultMethodAddrGetterDef.h
++)
++
++set(MOCKCPP_ARG_RELATED_HEADER_FILES
++    ${MOCKCPP_HEADERS_PATH}/DelegatedMethodDef.h 
++    ${MOCKCPP_HEADERS_PATH}/ArgumentsListDef.h  
++    ${MOCKCPP_HEADERS_PATH}/MethodTypeTraitsDef.h
++)
++
++if (MOCKCPP_ALLOW_MI)
++  set(ALLOW_MI yes)
++else (MOCKCPP_ALLOW_MI)
++  set(ALLOW_MI no)
++endif (MOCKCPP_ALLOW_MI)
++
++######################################################
++set(VTBL_GENERATOR ${mockcpp_SOURCE_DIR}/src/generate_vtbl_related_files.py)
++set(EXTRA_VTBL_HEADERS_DEFS
++    --allow-mi=${ALLOW_MI}
++    --max-inheritance=${MOCKCPP_MAX_INHERITANCE}
++    --max-vtbl-size=${MOCKCPP_MAX_VTBL_SIZE}
++    --include-path=${MOCKCPP_HEADERS_PATH}
++)
++foreach(HEADER ${MOCKCPP_VTBL_RELATED_HEADERS})
++    get_filename_component(HEADER_NAME ${HEADER} NAME)
++    add_custom_command(
++        OUTPUT ${HEADER}
++        COMMAND ${PYTHON} ${VTBL_GENERATOR} ${EXTRA_VTBL_HEADERS_DEFS} ${HEADER_NAME}
++    )
++endforeach()
++
++######################################################
++set(ARG_GENERATOR ${mockcpp_SOURCE_DIR}/src/generate_arg_related_files.py)
++set(EXTRA_ARG_HEADERS_DEFS
++    --max-parameters=${MOCKCPP_MAX_PARAMETERS}
++    --include-path=${MOCKCPP_HEADERS_PATH}
++)
++foreach(HEADER ${MOCKCPP_ARG_RELATED_HEADER_FILES})
++    get_filename_component(HEADER_NAME ${HEADER} NAME)
++    add_custom_command(
++        OUTPUT ${HEADER}
++        COMMAND ${PYTHON} ${ARG_GENERATOR} ${EXTRA_ARG_HEADERS_DEFS} ${HEADER_NAME}
++    )
++endforeach()
++###########################################################
++
++######################################################
++link_directories(${mockcpp_BINARY_DIR}/src ${mockcpp_BINARY_DIR}/testngpp/src)
++
++add_library(mockcpp STATIC ${MOCKCPP_SRCS})
++include_directories(BEFORE ${mockcpp_SOURCE_DIR} ${mockcpp_SOURCE_DIR}/include ${BOOST_INCLUDE_DIRS})
++
++add_custom_target(vtbl_related_headers DEPENDS ${MOCKCPP_VTBL_RELATED_HEADERS})
++add_custom_target(arg_related_headers DEPENDS ${MOCKCPP_ARG_RELATED_HEADER_FILES})
++
++add_dependencies(mockcpp vtbl_related_headers arg_related_headers)
++
++install(TARGETS mockcpp
++        ARCHIVE DESTINATION lib)
++
++install(DIRECTORY ${mockcpp_SOURCE_DIR}/include/ DESTINATION include)
++install(DIRECTORY ${mockcpp_SOURCE_DIR}/3rdparty/ DESTINATION include)
++# if (MSVC)
++#   install(FILES ${mockcpp_BINARY_DIR}/src/Debug/mockcpp.pdb
++#           DESTINATION lib)
++#   message(${mockcpp_BINARY_DIR})
++# endif (MSVC)
+diff --git a/build_install.sh b/build_install.sh
+index 20f8df2..947c123 100755
+--- a/build_install.sh
++++ b/build_install.sh
+@@ -8,7 +8,19 @@
+ set -e
+ 
+ # Set the install path, should be absolute path
+-INSTALL_PATH=~/test_tools/mockcpp_install
++if [ $# -gt 0 ]; then
++    INSTALL_PATH="$1"
++else
++    INSTALL_PATH=${INSTALL_PATH:-~/test_tools/mockcpp_install}
++fi
++
++INSTALL_PATH=$(eval echo "$INSTALL_PATH")
++
++if [[ ! "$INSTALL_PATH" =~ ^/ ]]; then
++    INSTALL_PATH="$PWD/$INSTALL_PATH"
++fi
++
++echo "Installing to: $INSTALL_PATH"
+ 
+ # Set the xxunit test framework name
+ XUNIT_NAME=testngpp
+diff --git a/include/mockcpp/AfterMatchBuilder.tcc b/include/mockcpp/AfterMatchBuilder.tcc
+index 7ff27df..8c3ae88 100644
+--- a/include/mockcpp/AfterMatchBuilder.tcc
++++ b/include/mockcpp/AfterMatchBuilder.tcc
+@@ -21,9 +21,8 @@ AfterMatchBuilder<Builder>&
+ AfterMatchBuilder<Builder>::after(InvocationMockerNamespace* ns, const std::string& id)
+ {
+     getMocker()->addMatcher(
+-			new PendingMatcher(
+-				new AfterMatcher(),
+-				  ns, id, getMocker())); 
++        new PendingMatcher(
++	    new AfterMatcher(), ns, id, getMocker())); 
+     return *this;
+ }
+ 
+diff --git a/include/mockcpp/ApiHook.h b/include/mockcpp/ApiHook.h
+index e138b26..f6672cb 100644
+--- a/include/mockcpp/ApiHook.h
++++ b/include/mockcpp/ApiHook.h
+@@ -1,40 +1,40 @@
+-/***
+-   mockcpp is a C/C++ mock framework.
+-   Copyright [2008] [Darwin Yuan <darwin.yuan@gmail.com>]
+-
+-   Licensed under the Apache License, Version 2.0 (the "License");
+-   you may not use this file except in compliance with the License.
+-   You may obtain a copy of the License at
+-
+-      http://www.apache.org/licenses/LICENSE-2.0
+-
+-   Unless required by applicable law or agreed to in writing, software
+-   distributed under the License is distributed on an "AS IS" BASIS,
+-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-   See the License for the specific language governing permissions and
+-   limitations under the License.
+-***/
+-
+-#ifndef __MOCKCPP_API_HOOK_H__
+-#define __MOCKCPP_API_HOOK_H__
+-
+-#include <mockcpp/mockcpp.h>
+-
+-MOCKCPP_NS_START
+-
+-struct ApiHookImpl;
+-
+-struct ApiHook
+-{
+-    ApiHook ( const void* api
+-            , const void* stub );
+-
+-    ~ApiHook();
+-
+-private:
+-    ApiHookImpl* This;;
+-};
+-
+-MOCKCPP_NS_END
+-
+-#endif
++/***
++   mockcpp is a C/C++ mock framework.
++   Copyright [2008] [Darwin Yuan <darwin.yuan@gmail.com>]
++
++   Licensed under the Apache License, Version 2.0 (the "License");
++   you may not use this file except in compliance with the License.
++   You may obtain a copy of the License at
++
++      http://www.apache.org/licenses/LICENSE-2.0
++
++   Unless required by applicable law or agreed to in writing, software
++   distributed under the License is distributed on an "AS IS" BASIS,
++   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++   See the License for the specific language governing permissions and
++   limitations under the License.
++***/
++
++#ifndef __MOCKCPP_API_HOOK_H__
++#define __MOCKCPP_API_HOOK_H__
++
++#include <mockcpp/mockcpp.h>
++
++MOCKCPP_NS_START
++
++struct ApiHookImpl;
++
++struct ApiHook
++{
++    ApiHook ( const void* api
++            , const void* stub );
++
++    ~ApiHook();
++
++private:
++    ApiHookImpl* This;
++};
++
++MOCKCPP_NS_END
++
++#endif
+diff --git a/include/mockcpp/ApiHookFunctor.h b/include/mockcpp/ApiHookFunctor.h
+index a860a95..6a77488 100644
+--- a/include/mockcpp/ApiHookFunctor.h
++++ b/include/mockcpp/ApiHookFunctor.h
+@@ -20,6 +20,7 @@
+ 
+ #include <mockcpp/mockcpp.h>
+ #include <mockcpp/GlobalMockObject.h>
++#include <mockcpp/ArgumentsMacroHelpers.h>
+ 
+ MOCKCPP_NS_START
+ 
+@@ -30,20 +31,21 @@ struct ApiHookFunctor
+ };
+ 
+ const std::string empty_caller("");
+-#define __MOCKCPP_API_HOOK_FUNCTOR_DEF(n, CallingConvention) \
+-template <typename R DECL_TEMPLATE_ARGS(n), unsigned int Seq> \
+-struct ApiHookFunctor<R CallingConvention (DECL_ARGS(n)), Seq> \
++
++#define __MOCKCPP_C_API_HOOK_FUNCTOR_DEF(n, CallingConvention) \
++template<typename R DECL_TEMPLATE_ARGS(n), unsigned int Seq> \
++struct ApiHookFunctor<R (CallingConvention *)(DECL_ARGS(n)), Seq> \
+ { \
+ private: \
+-   typedef R CallingConvention F (DECL_ARGS(n)); \
++   typedef R (CallingConvention *F) (DECL_ARGS(n)); \
+  \
+    static R CallingConvention hook(DECL_PARAMS_LIST(n)) \
+    { \
+-      return GlobalMockObject::instance.invoke<R>(apiAddress) \
+-                                (empty_caller DECL_REST_PARAMS(n)); \
++     return GlobalMockObject::instance.invoke<R>(apiAddress) \
++      (empty_caller, RefAny() DECL_REST_PARAMS(n)); \
+    } \
+  \
+-   static bool appliedBy(F* api) \
++   static bool appliedBy(F api) \
+    { return apiAddress == reinterpret_cast<void*>(api); } \
+  \
+    static void* getHook() \
+@@ -53,51 +55,112 @@ private: \
+    { if(--refCount == 0) apiAddress = 0; } \
+ public: \
+  \
+-   static void* getApiHook(F* api) \
++   static void* getApiHook(F api) \
++   { \
++     if(!appliedBy(api)) return 0; \
++     ++refCount; \
++     return getHook(); \
++   } \
++ \
++   static void* applyApiHook(F api) \
++   { \
++     if(apiAddress != 0) return 0; \
++     apiAddress = reinterpret_cast<void*>(api); \
++     refCount = 1; \
++     return getHook(); \
++   } \
++ \
++   static bool freeApiHook(void* hook) \
++   { \
++     if(getHook() != hook) return false; \
++     freeHook(); \
++     return true; \
++   } \
++private: \
++   static void* apiAddress; \
++   static unsigned int refCount; \
++}; \
++template<typename R DECL_TEMPLATE_ARGS(n), unsigned int Seq> \
++void* ApiHookFunctor<R (CallingConvention *)(DECL_ARGS(n)), Seq>::apiAddress = 0; \
++template<typename R DECL_TEMPLATE_ARGS(n), unsigned int Seq> \
++unsigned int ApiHookFunctor<R (CallingConvention *)(DECL_ARGS(n)), Seq>::refCount = 0
++
++/* For C++ method */
++#define __MOCKCPP_CXX_API_HOOK_FUNCTOR_DEF(n, CallingConvention, ConstConvention) \
++template<typename C, typename R DECL_TEMPLATE_ARGS(n), unsigned int Seq> \
++struct ApiHookFunctor<R (CallingConvention C::*)(DECL_ARGS(n)) ConstConvention, Seq> \
++{ \
++private: \
++   typedef ApiHookFunctor<R (CallingConvention C::*)(DECL_ARGS(n)) ConstConvention, Seq> ThisType; \
++   typedef R (CallingConvention C::*F) (DECL_ARGS(n)) ConstConvention; \
++ \
++   R CallingConvention hook(DECL_PARAMS_LIST(n)) \
++   { \
++     C *This = reinterpret_cast<C *>(this); \
++     return GlobalMockObject::instance.invoke<R>(apiAddress) \
++      (empty_caller, This DECL_REST_PARAMS(n)); \
++   } \
++ \
++   static bool appliedBy(F api) \
++   { return apiAddress == Details::methodToAddr(api); } \
++ \
++   static void* getHook() \
++   { return Details::methodToAddr(&ThisType::hook); } \
++ \
++   static void freeHook() \
++   { if(--refCount == 0) apiAddress = 0; } \
++public: \
++ \
++   static void* getApiHook(F api) \
+    { \
+-      if(! appliedBy(api)) return 0; \
+-      ++refCount; \
+-      return getHook(); \
++     if(!appliedBy(api)) return 0; \
++     ++refCount; \
++     return getHook(); \
+    } \
+  \
+-   static void* applyApiHook(F* api) \
++   static void* applyApiHook(F api) \
+    { \
+-      if(apiAddress != 0) return 0; \
+-      apiAddress = reinterpret_cast<void*>(api); \
+-      refCount = 1; \
+-      return getHook(); \
++     if(apiAddress != 0) return 0; \
++     apiAddress = Details::methodToAddr(api); \
++     refCount = 1; \
++     return getHook(); \
+    } \
+  \
+    static bool freeApiHook(void* hook) \
+    { \
+-       if(getHook() != hook) return false; \
+-       freeHook(); \
+-       return true; \
++     if(getHook() != hook) return false; \
++     freeHook(); \
++     return true; \
+    } \
+ private: \
+    static void* apiAddress; \
+    static unsigned int refCount; \
+ }; \
+-template <typename R DECL_TEMPLATE_ARGS(n), unsigned int Seq> \
+-void* ApiHookFunctor<R CallingConvention (DECL_ARGS(n)), Seq>::apiAddress = 0; \
+-template <typename R DECL_TEMPLATE_ARGS(n), unsigned int Seq> \
+-unsigned int ApiHookFunctor<R CallingConvention (DECL_ARGS(n)), Seq>::refCount = 0 
++template<typename C, typename R DECL_TEMPLATE_ARGS(n), unsigned int Seq> \
++void* ApiHookFunctor<R (CallingConvention C::*)(DECL_ARGS(n)) ConstConvention, Seq>::apiAddress = 0; \
++template<typename C, typename R DECL_TEMPLATE_ARGS(n), unsigned int Seq> \
++unsigned int ApiHookFunctor<R (CallingConvention C::*)(DECL_ARGS(n)) ConstConvention, Seq>::refCount = 0
+ 
+-#if defined(_MSC_VER)
+-// TODO: ApiHook related tests failed on VS2019.
+-// [  ERROR   ] TestApiHook.h:66: hardware exception STATUS_ILLEGAL_INSTRUCTION raised in setup or running test
+-// [  ERROR   ] TestApiHook.h:66 : hardware exception STATUS_ACCESS_VIOLATION raised in teardown
+-#if _MSC_VER >= 1920    // VS 2019 
++#ifdef WIN32
++#if defined(_MSC_VER) && defined(BUILD_FOR_X86)
+ #define MOCKCPP_API_HOOK_FUNCTOR_DEF(n) \
+-__MOCKCPP_API_HOOK_FUNCTOR_DEF(n, __stdcall)
++__MOCKCPP_C_API_HOOK_FUNCTOR_DEF(n, ); \
++__MOCKCPP_C_API_HOOK_FUNCTOR_DEF(n, __stdcall); \
++__MOCKCPP_CXX_API_HOOK_FUNCTOR_DEF(n, , ); \
++__MOCKCPP_CXX_API_HOOK_FUNCTOR_DEF(n, , const); \
++__MOCKCPP_CXX_API_HOOK_FUNCTOR_DEF(n, __stdcall, ); \
++__MOCKCPP_CXX_API_HOOK_FUNCTOR_DEF(n, __stdcall, const)
+ #else
+ #define MOCKCPP_API_HOOK_FUNCTOR_DEF(n) \
+-__MOCKCPP_API_HOOK_FUNCTOR_DEF(n, ); \
+-__MOCKCPP_API_HOOK_FUNCTOR_DEF(n, __stdcall) 
++__MOCKCPP_C_API_HOOK_FUNCTOR_DEF(n, ); \
++__MOCKCPP_CXX_API_HOOK_FUNCTOR_DEF(n, , ); \
++__MOCKCPP_CXX_API_HOOK_FUNCTOR_DEF(n, , const)
+ #endif
+ #else
+ #define MOCKCPP_API_HOOK_FUNCTOR_DEF(n) \
+-__MOCKCPP_API_HOOK_FUNCTOR_DEF(n, )
++__MOCKCPP_C_API_HOOK_FUNCTOR_DEF(n, ); \
++__MOCKCPP_CXX_API_HOOK_FUNCTOR_DEF(n, , ); \
++__MOCKCPP_CXX_API_HOOK_FUNCTOR_DEF(n, , const)
+ #endif
+ 
+ MOCKCPP_API_HOOK_FUNCTOR_DEF(0);
+diff --git a/include/mockcpp/ApiHookGenerator.h b/include/mockcpp/ApiHookGenerator.h
+index 569d20f..beb04a9 100644
+--- a/include/mockcpp/ApiHookGenerator.h
++++ b/include/mockcpp/ApiHookGenerator.h
+@@ -26,7 +26,7 @@ MOCKCPP_NS_START
+ template <typename F, unsigned int Seq>
+ struct ApiHookGenerator
+ {
+-    static void* findApiHook(F* api)
++    static void* findApiHook(F api)
+     {
+         void* hook;
+ 
+@@ -36,7 +36,7 @@ struct ApiHookGenerator
+         return hook;
+     }
+ 
+-    static void* appyApiHook(F* api)
++    static void* appyApiHook(F api)
+     {
+        void* hook;
+ 
+@@ -61,10 +61,10 @@ private:
+ template <typename F>
+ struct ApiHookGenerator<F, 0>
+ {
+-    static void* findApiHook(F* api)
++    static void* findApiHook(F api)
+     { return 0; }
+ 
+-    static void* appyApiHook(F* api)
++    static void* appyApiHook(F api)
+     { 
+         oss_t oss;
+         
+diff --git a/include/mockcpp/ApiHookHolderFactory.h b/include/mockcpp/ApiHookHolderFactory.h
+index 6105caf..a40e3e1 100644
+--- a/include/mockcpp/ApiHookHolderFactory.h
++++ b/include/mockcpp/ApiHookHolderFactory.h
+@@ -27,7 +27,7 @@ struct ApiHookHolder;
+ struct ApiHookHolderFactory
+ {
+    template <typename F>
+-   static ApiHookHolder* create(F* api)
++   static ApiHookHolder* create(F api)
+    {
+       return new ParameterizedApiHookHolder<F>(api);
+    }
+diff --git a/include/mockcpp/ApiHookMocker.h b/include/mockcpp/ApiHookMocker.h
+index 3d7c963..5c11422 100644
+--- a/include/mockcpp/ApiHookMocker.h
++++ b/include/mockcpp/ApiHookMocker.h
+@@ -21,18 +21,119 @@
+ #include <mockcpp/mockcpp.h>
+ #include <mockcpp/GlobalMockObject.h>
+ #include <mockcpp/ApiHookHolderFactory.h>
++#include <mockcpp/ArgumentsMacroHelpers.h>
++#include <mockcpp/MethodInfoReader.h>
++#include <mockcpp/DelegatedMethodGetter.h>
+ 
+ MOCKCPP_NS_START
+ 
+-template <typename API>
+-InvocationMockBuilderGetter mockAPI(const std::string& name, API* api)
++struct mockAPIauto {};
++template<typename API = mockAPIauto> struct mockAPI;
++
++template<typename API> struct mockAPI
+ {
++  static InvocationMockBuilderGetter get(
++    const std::string& name, const std::string& type, API api)
++  {
++    return MOCKCPP_NS::GlobalMockObject::instance.method
++      ( type.empty() ? name : name + " #" + type + "#"
++      , Details::methodToAddr(api)
++      , ApiHookHolderFactory::create(api));
++  }
++
++  template<typename C>
++  static InvocationMockBuilderGetter get_virtual(
++    const std::string& name, const std::string& type, const C *c, API api)
++  {
++    void ***vtbl = (void ***)c;
++    std::pair<unsigned int, unsigned int> indices =
++      getIndicesOfMethod<C, API>(api);
++    union { void *_addr; API _api; };
++    _addr = (*vtbl)[indices.second];
+     return MOCKCPP_NS::GlobalMockObject::instance.method
+-                 ( name
+-                 , reinterpret_cast<const void*>(api)
+-                 , ApiHookHolderFactory::create(api));
+-}
++      ( type.empty() ? name : name + " #" + type + "#"
++      , _addr
++      , ApiHookHolderFactory::create(_api));
++  }
++
++  template<typename C>
++  static InvocationMockBuilderGetter get_virtual(
++    const std::string& name, const std::string& type, const C &c, API api)
++  {
++    return get_virtual(name, type, &c, api);
++  }
++};  // struct mockAPI
++
++template<> struct mockAPI<mockAPIauto>
++{
++#define __MOCKCPP_C_API_GET_FUNCTION_DEF(n, CallingConvention) \
++  template<typename R DECL_TEMPLATE_ARGS(n)> \
++  static InvocationMockBuilderGetter get( \
++    const std::string& name, const std::string& type, R (CallingConvention *api)(DECL_ARGS(n))) \
++  { \
++    typedef R (CallingConvention *API)(DECL_ARGS(n)); \
++    return mockAPI<API>::get(name, type, api); \
++  }
++
++#define __MOCKCPP_CXX_API_GET_FUNCTION_DEF(n, CallingConvention, ConstMethod) \
++  template<typename R, typename C DECL_TEMPLATE_ARGS(n)> \
++  static InvocationMockBuilderGetter get( \
++    const std::string& name, const std::string& type, R (CallingConvention C::*api)(DECL_ARGS(n)) ConstMethod) \
++  { \
++    typedef R (CallingConvention C::*API)(DECL_ARGS(n)) ConstMethod; \
++    return mockAPI<API>::get(name, type, api); \
++  } \
++  template<typename R, typename C DECL_TEMPLATE_ARGS(n)> \
++  static InvocationMockBuilderGetter get_virtual( \
++    const std::string& name, const std::string& type, const C *c, R (CallingConvention C::*api)(DECL_ARGS(n)) ConstMethod) \
++  { \
++    typedef R (CallingConvention C::*API)(DECL_ARGS(n)) ConstMethod; \
++    return mockAPI<API>::get_virtual(name, type, c, api); \
++  } \
++  template<typename R, typename C DECL_TEMPLATE_ARGS(n)> \
++  static InvocationMockBuilderGetter get_virtual( \
++    const std::string& name, const std::string& type, const C &c, R (CallingConvention C::*api)(DECL_ARGS(n)) ConstMethod) \
++  { \
++    typedef R (CallingConvention C::*API)(DECL_ARGS(n)) ConstMethod; \
++    return mockAPI<API>::get_virtual(name, type, c, api); \
++  }
++
++#ifdef WIN32
++#if defined(_MSC_VER) && defined(BUILD_FOR_X86)
++#define MOCKCPP_API_GET_FUNCTION_DEF(n) \
++  __MOCKCPP_C_API_GET_FUNCTION_DEF(n, ); \
++  __MOCKCPP_C_API_GET_FUNCTION_DEF(n, __stdcall); \
++  __MOCKCPP_CXX_API_GET_FUNCTION_DEF(n, , ); \
++  __MOCKCPP_CXX_API_GET_FUNCTION_DEF(n, , const); \
++  __MOCKCPP_CXX_API_GET_FUNCTION_DEF(n, __stdcall, ); \
++  __MOCKCPP_CXX_API_GET_FUNCTION_DEF(n, __stdcall, const)
++#else
++#define MOCKCPP_API_GET_FUNCTION_DEF(n) \
++  __MOCKCPP_C_API_GET_FUNCTION_DEF(n, ); \
++  __MOCKCPP_CXX_API_GET_FUNCTION_DEF(n, , ); \
++  __MOCKCPP_CXX_API_GET_FUNCTION_DEF(n, , const)
++#endif
++#else
++#define MOCKCPP_API_GET_FUNCTION_DEF(n) \
++  __MOCKCPP_C_API_GET_FUNCTION_DEF(n, ); \
++  __MOCKCPP_CXX_API_GET_FUNCTION_DEF(n, , ); \
++  __MOCKCPP_CXX_API_GET_FUNCTION_DEF(n, , const)
++#endif
+ 
++  MOCKCPP_API_GET_FUNCTION_DEF(0);
++  MOCKCPP_API_GET_FUNCTION_DEF(1);
++  MOCKCPP_API_GET_FUNCTION_DEF(2);
++  MOCKCPP_API_GET_FUNCTION_DEF(3);
++  MOCKCPP_API_GET_FUNCTION_DEF(4);
++  MOCKCPP_API_GET_FUNCTION_DEF(5);
++  MOCKCPP_API_GET_FUNCTION_DEF(6);
++  MOCKCPP_API_GET_FUNCTION_DEF(7);
++  MOCKCPP_API_GET_FUNCTION_DEF(8);
++  MOCKCPP_API_GET_FUNCTION_DEF(9);
++  MOCKCPP_API_GET_FUNCTION_DEF(10);
++  MOCKCPP_API_GET_FUNCTION_DEF(11);
++  MOCKCPP_API_GET_FUNCTION_DEF(12);
++};  // struct mockAPI<mockAPIauto>
+ 
+ MOCKCPP_NS_END
+ 
+diff --git a/include/mockcpp/ArgumentsListDef.h.rule b/include/mockcpp/ArgumentsListDef.h.rule
+new file mode 100644
+index 0000000..4bbe599
+--- /dev/null
++++ b/include/mockcpp/ArgumentsListDef.h.rule
+@@ -0,0 +1 @@
++Artificial dependency for a custom command.
+diff --git a/include/mockcpp/ArgumentsMacroHelpers.h b/include/mockcpp/ArgumentsMacroHelpers.h
+index 8d0aa5f..c64b5b3 100644
+--- a/include/mockcpp/ArgumentsMacroHelpers.h
++++ b/include/mockcpp/ArgumentsMacroHelpers.h
+@@ -50,5 +50,17 @@
+ #define DECL_REST_ARGS(n) SIMPLE_REPEAT(n, REST_ARGS)
+ #define DECL_REST_PARAMS(n) SIMPLE_REPEAT(n, REST_PARAMS)
+ #define DECL_REST_ARG_DECL(n) SIMPLE_REPEAT(n, REST_ARG_DECL)
++
++#define MOCKER_PP_CAT(a, b)  MOCKER_PP_CAT_I(a, b)
++#define MOCKER_PP_CAT_I(a, b)  MOCKER_PP_CAT_II(~, a ## b)
++#define MOCKER_PP_CAT_II(p, res)  res
++
++#define MOCKER_PP_VARIADIC_SIZE(...)  MOCKER_PP_VARIADIC_SIZE_I(__VA_ARGS__)
++#define MOCKER_PP_VARIADIC_SIZE_I(...)  MOCKER_PP_VARIADIC_SIZE_II(MOCKER_PP_VARIADIC_SIZE_S(__VA_ARGS__, 64, 63, 62, 61, 60, 59, 58, 57, 56, 55, 54, 53, 52, 51, 50, 49, 48, 47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34, 33, 32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1,))
++#define MOCKER_PP_VARIADIC_SIZE_II(res)  res
++#define MOCKER_PP_VARIADIC_SIZE_S(e0, e1, e2, e3, e4, e5, e6, e7, e8, e9, e10, e11, e12, e13, e14, e15, e16, e17, e18, e19, e20, e21, e22, e23, e24, e25, e26, e27, e28, e29, e30, e31, e32, e33, e34, e35, e36, e37, e38, e39, e40, e41, e42, e43, e44, e45, e46, e47, e48, e49, e50, e51, e52, e53, e54, e55, e56, e57, e58, e59, e60, e61, e62, e63, size, ...)  size
++
++#define MOCKER_PP_OVERLOAD(prefix, ...)  MOCKER_PP_CAT(prefix, MOCKER_PP_VARIADIC_SIZE(__VA_ARGS__))
++
+ #endif
+ 
+diff --git a/include/mockcpp/ArgumentsMatchBuilder.h b/include/mockcpp/ArgumentsMatchBuilder.h
+index db98e14..e3a4177 100644
+--- a/include/mockcpp/ArgumentsMatchBuilder.h
++++ b/include/mockcpp/ArgumentsMatchBuilder.h
+@@ -44,8 +44,21 @@ struct ArgumentsMatchBuilder : public Builder
+                  , const Any& c11 = any()
+                  , const Any& c12 = any()
+     );
+-
+-    Builder& which(unsigned int which1, const Any& c);
++#if 0
++    Builder& with( Constraint* c01 = any()
++                 , Constraint* c02 = any()
++                 , Constraint* c03 = any()
++                 , Constraint* c04 = any()
++                 , Constraint* c05 = any()
++                 , Constraint* c06 = any()
++                 , Constraint* c07 = any()
++                 , Constraint* c08 = any()
++                 , Constraint* c09 = any()
++                 , Constraint* c10 = any()
++                 , Constraint* c11 = any()
++                 , Constraint* c12 = any()
++    );
++#endif
+ 
+     virtual ~ArgumentsMatchBuilder() {}
+ 
+diff --git a/include/mockcpp/ArgumentsMatchBuilder.tcc b/include/mockcpp/ArgumentsMatchBuilder.tcc
+index 44a49f4..0f654d0 100644
+--- a/include/mockcpp/ArgumentsMatchBuilder.tcc
++++ b/include/mockcpp/ArgumentsMatchBuilder.tcc
+@@ -39,15 +39,6 @@ with( const Any& c01
+     return *this;
+ }
+ 
+-template <typename Builder>
+-Builder&
+-ArgumentsMatchBuilder<Builder>::
+-which(unsigned int which1, const Any& c)
+-{
+-    getMocker()->addMatcher(new ConstraintSet(which1, c.getConstraint()));
+-    return *this;
+-}
+-
+ #if 0
+ template <typename Builder>
+ Builder&
+diff --git a/include/mockcpp/BeforeMatchBuilder.tcc b/include/mockcpp/BeforeMatchBuilder.tcc
+index 2d159d9..62c3b14 100644
+--- a/include/mockcpp/BeforeMatchBuilder.tcc
++++ b/include/mockcpp/BeforeMatchBuilder.tcc
+@@ -21,9 +21,8 @@ BeforeMatchBuilder<Builder>&
+ BeforeMatchBuilder<Builder>::before(InvocationMockerNamespace* ns, const std::string& id)
+ {
+     getMocker()->addMatcher(
+-			new PendingMatcher(
+-				new BeforeMatcher(),
+-               ns , id , getMocker()));
++        new PendingMatcher(
++	    new BeforeMatcher(), ns , id , getMocker()));
+ 
+     return *this;
+ }
+diff --git a/include/mockcpp/CallerMatchBuilder.tcc b/include/mockcpp/CallerMatchBuilder.tcc
+index 952371a..a9779dd 100644
+--- a/include/mockcpp/CallerMatchBuilder.tcc
++++ b/include/mockcpp/CallerMatchBuilder.tcc
+@@ -1,20 +1,20 @@
+-
++
+ #include <mockcpp/InvocationMocker.h>
+ #include <mockcpp/CallerMatcher.h>
+-
+-
+-MOCKCPP_NS_START
+-
+-
+-//////////////////////////////////////////////////////////////////////
+-template <class Builder>
+-Builder&
+-CallerMatchBuilder<Builder>::caller(const std::string& nameOfCaller)
+-{
+-    getMocker()->addMatcher(new CallerMatcher(nameOfCaller)); 
+-    return *this;
+-}
+-
+-//////////////////////////////////////////////////////////////////////
+-
+-MOCKCPP_NS_END
++
++
++MOCKCPP_NS_START
++
++
++//////////////////////////////////////////////////////////////////////
++template <class Builder>
++Builder&
++CallerMatchBuilder<Builder>::caller(const std::string& nameOfCaller)
++{
++    getMocker()->addMatcher(new CallerMatcher(nameOfCaller)); 
++    return *this;
++}
++
++//////////////////////////////////////////////////////////////////////
++
++MOCKCPP_NS_END
+diff --git a/include/mockcpp/CallerMatcher.h b/include/mockcpp/CallerMatcher.h
+index fe80098..2f9326a 100644
+--- a/include/mockcpp/CallerMatcher.h
++++ b/include/mockcpp/CallerMatcher.h
+@@ -28,12 +28,12 @@ struct Invocation;
+ 
+ struct CallerMatcher : public Matcher
+ {
+-	CallerMatcher(const std::string& name);
++  CallerMatcher(const std::string& name);
+ 
+-	bool matches(const Invocation& inv) const;    
+-    void increaseInvoked(const Invocation& inv);
+-    void verify() ;
+-    std::string toString() const ;
++  bool matches(const Invocation& inv) const;    
++  void increaseInvoked(const Invocation& inv);
++  void verify() ;
++  std::string toString() const ;
+ 
+ private:
+ 	std::string nameOfCaller;
+diff --git a/include/mockcpp/ChainableMockMethod.h b/include/mockcpp/ChainableMockMethod.h
+index ba37e20..5aefe00 100644
+--- a/include/mockcpp/ChainableMockMethod.h
++++ b/include/mockcpp/ChainableMockMethod.h
+@@ -34,52 +34,52 @@ struct SelfDescribe;
+ template <typename RT>
+ struct ChainableMockMethodBase
+ {
+-    ChainableMockMethodBase(Invokable* invokable_)
+-		: invokable(invokable_)
+-    {}
+-
+-    RT operator()( const std::string& nameOfCaller
+-                 , const RefAny& p01 = RefAny()
+-                 , const RefAny& p02 = RefAny()
+-                 , const RefAny& p03 = RefAny()
+-                 , const RefAny& p04 = RefAny()
+-                 , const RefAny& p05 = RefAny()
+-                 , const RefAny& p06 = RefAny()
+-                 , const RefAny& p07 = RefAny()
+-                 , const RefAny& p08 = RefAny()
+-                 , const RefAny& p09 = RefAny()
+-                 , const RefAny& p10 = RefAny()
+-                 , const RefAny& p11 = RefAny()
+-                 , const RefAny& p12 = RefAny()
++  ChainableMockMethodBase(Invokable* invokable_)
++    : invokable(invokable_)
++  {}
++
++  RT operator()(const std::string& nameOfCaller
++    , const RefAny& pThisPointer = RefAny()
++    , const RefAny& p01 = RefAny()
++    , const RefAny& p02 = RefAny()
++    , const RefAny& p03 = RefAny()
++    , const RefAny& p04 = RefAny()
++    , const RefAny& p05 = RefAny()
++    , const RefAny& p06 = RefAny()
++    , const RefAny& p07 = RefAny()
++    , const RefAny& p08 = RefAny()
++    , const RefAny& p09 = RefAny()
++    , const RefAny& p10 = RefAny()
++    , const RefAny& p11 = RefAny()
++    , const RefAny& p12 = RefAny()
+     )
++  {
++    SelfDescribe* resultProvider = 0;
++
++    try {
++      const Any& result = \
++        invokable->invoke(nameOfCaller, pThisPointer
++          , p01, p02, p03, p04, p05, p06
++          , p07, p08, p09, p10, p11, p12
++          , resultProvider);
++      return getResult(result, resultProvider);
++    } catch (std::exception& ex)
+     {
+-	SelfDescribe* resultProvider = 0;
+-
+-	try {
+-		const Any& result = \
+-		invokable->invoke( nameOfCaller
+-                            , p01, p02, p03, p04, p05, p06
+-                            , p07, p08, p09, p10, p11, p12
+-                            , resultProvider);
+-		return getResult(result, resultProvider);
+-        }
+-        catch(std::exception& ex)
+-        {
+-           MOCKCPP_REPORT_FAILURE(ex.what());
+-        }
+-		const Any& dummyResult = Any();
+-		return getResult(dummyResult, resultProvider);
++      MOCKCPP_REPORT_FAILURE(ex.what());
+     }
++    const Any& dummyResult = Any();
++    return getResult(dummyResult, resultProvider);
++  }
+ 
+-    virtual ~ChainableMockMethodBase() {}
++  virtual ~ChainableMockMethodBase() {}
+ 
+ protected:
+ 
+-    virtual RT getResult(const Any& result, SelfDescribe*) = 0;
++  virtual RT getResult(const Any& result, SelfDescribe*) = 0;
+ 
+ private:
+ 
+-    Invokable* invokable;
++  Invokable* invokable;
+ };
+ 
+ 
+@@ -87,41 +87,41 @@ private:
+ template <typename RT>
+ struct ChainableMockMethod : public ChainableMockMethodBase<RT>
+ {
+-    RT getResult(const Any& anyResult, SelfDescribe* resultProvider)
+-    {
+-      const Any& result = \
+-              Result( any_castable<RT>(anyResult) 
+-                    , typeid(RT)
+-                    , TypeString<RT>::value()
+-                    , resultProvider).getResult(anyResult);
++  RT getResult(const Any& anyResult, SelfDescribe* resultProvider)
++  {
++    const Any& result = \
++      Result(any_castable<RT>(anyResult)
++        , typeid(RT)
++        , TypeString<RT>::value()
++        , resultProvider).getResult(anyResult);
+ 
+-      MOCKCPP_ASSERT_FALSE_MESSAGE(
+-         "The return value for a non-void method was not specified",
+-         result.empty());
++    MOCKCPP_ASSERT_FALSE_MESSAGE(
++      "The return value for a non-void method was not specified",
++      result.empty());
+ 
+-      return any_cast<RT>(result);
+-    }
++    return any_cast<RT>(result);
++  }
+ 
+ public:
+ 
+-    ChainableMockMethod(Invokable* invokable)
+-		: ChainableMockMethodBase<RT>(invokable)
+-    {}
++  ChainableMockMethod(Invokable* invokable)
++    : ChainableMockMethodBase<RT>(invokable)
++  {}
+ };
+ 
+ //////////////////////////////////////////////////////////////////
+ template <>
+ struct ChainableMockMethod<void> : public ChainableMockMethodBase<void>
+ {
+-    void getResult(const Any& result, SelfDescribe*)
+-    {
+-    }
++  void getResult(const Any& result, SelfDescribe*)
++  {
++  }
+ 
+ public:
+ 
+-    ChainableMockMethod(Invokable* invokable)
+-		: ChainableMockMethodBase<void>(invokable)
+-    {}
++  ChainableMockMethod(Invokable* invokable)
++    : ChainableMockMethodBase<void>(invokable)
++  {}
+ };
+ 
+ //////////////////////////////////////////////////////////////////
+diff --git a/include/mockcpp/ChainableMockMethodContainer.h b/include/mockcpp/ChainableMockMethodContainer.h
+index 60c3eb9..4cc2d7e 100644
+--- a/include/mockcpp/ChainableMockMethodContainer.h
++++ b/include/mockcpp/ChainableMockMethodContainer.h
+@@ -40,6 +40,7 @@ struct ChainableMockMethodContainer
+     InvocationMocker* findInvocationMocker(const std::string& id) const;
+ 
+     void reset();
++    void reset(ChainableMockMethodKey* key);
+     void verify();
+ 
+ private:
+diff --git a/include/mockcpp/ChainableMockMethodCore.h b/include/mockcpp/ChainableMockMethodCore.h
+index 98df8d7..217ef4c 100644
+--- a/include/mockcpp/ChainableMockMethodCore.h
++++ b/include/mockcpp/ChainableMockMethodCore.h
+@@ -46,6 +46,7 @@ public:
+     // Method
+     const Any& 
+         invoke( const std::string& nameOfCaller
++              , const RefAny& pThisPointer
+               , const RefAny& p1 
+               , const RefAny& p2
+               , const RefAny& p3
+diff --git a/include/mockcpp/ChainingMockHelper.h b/include/mockcpp/ChainingMockHelper.h
+index ac275cc..65bc3f4 100644
+--- a/include/mockcpp/ChainingMockHelper.h
++++ b/include/mockcpp/ChainingMockHelper.h
+@@ -35,8 +35,6 @@
+ #include <mockcpp/types/Any.h>
+ #include <mockcpp/ProcStub.h>
+ 
+-#include <memory>
+-
+ MOCKCPP_NS_START
+ 
+ struct Matcher;
+@@ -54,12 +52,6 @@ Constraint* eq(const T& val)
+ 	return new IsEqual<T>(val);
+ }
+ 
+-template <typename V, typename D = std::default_delete<V>>
+-Constraint* eq(const V* val)
+-{
+-	return new IsEqual<std::unique_ptr<V, D> >(val);
+-}
+-
+ template <typename T>
+ Constraint* neq(const T& val)
+ {
+diff --git a/include/mockcpp/CheckWith.h b/include/mockcpp/CheckWith.h
+index 4f021ca..337b841 100644
+--- a/include/mockcpp/CheckWith.h
++++ b/include/mockcpp/CheckWith.h
+@@ -40,7 +40,7 @@ struct CheckWith : public Constraint
+ 
+     std::string toString() const
+     {
+-      return std::string("checkWith(") + 
++      return std::string("check(") + 
+              MOCKCPP_NS::toTypeAndValueString(predict) +
+              std::string(")");
+     }
+diff --git a/include/mockcpp/CodeModifier.h b/include/mockcpp/CodeModifier.h
+index cef9dc4..31d1bff 100644
+--- a/include/mockcpp/CodeModifier.h
++++ b/include/mockcpp/CodeModifier.h
+@@ -24,10 +24,10 @@ MOCKCPP_NS_START
+ 
+ struct CodeModifier
+ {
++	// @TODO: 在modify里面加入Cache刷新
+ 	static bool modify(void *dest, const void *src, size_t size);
+ };
+ 
+ MOCKCPP_NS_END
+ 
+ #endif
+-
+diff --git a/include/mockcpp/ConstraintSet.h b/include/mockcpp/ConstraintSet.h
+index 8d19198..dfe8894 100644
+--- a/include/mockcpp/ConstraintSet.h
++++ b/include/mockcpp/ConstraintSet.h
+@@ -30,8 +30,6 @@ struct ConstraintSetImpl;
+ 
+ struct ConstraintSet: public StatelessMatcher
+ {
+-    ConstraintSet(unsigned int which, Constraint* p);
+-
+     ConstraintSet( Constraint* p01 = any()
+                  , Constraint* p02 = any()
+                  , Constraint* p03 = any()
+diff --git a/include/mockcpp/DefaultMethodAddrGetterDef.h.rule b/include/mockcpp/DefaultMethodAddrGetterDef.h.rule
+new file mode 100644
+index 0000000..4bbe599
+--- /dev/null
++++ b/include/mockcpp/DefaultMethodAddrGetterDef.h.rule
+@@ -0,0 +1 @@
++Artificial dependency for a custom command.
+diff --git a/include/mockcpp/DelegatedMethod.h b/include/mockcpp/DelegatedMethod.h
+index 18380ed..27b4eb2 100644
+--- a/include/mockcpp/DelegatedMethod.h
++++ b/include/mockcpp/DelegatedMethod.h
+@@ -45,7 +45,7 @@ struct DelegatedMethod<VPTRIndex, VTBLIndex, ArgumentsList<R DECL_REST_ARGS(n)>
+       IndexInvokableGetter* getter = \
+                       VirtualTable::getInvokableGetter(this, VPTRIndex); \
+       return ChainableMockMethod<R>(getter->getInvokable(VPTRIndex, VTBLIndex)) \
+-                      ("" DECL_REST_PARAMS(n)); \
++                      ("", RefAny() DECL_REST_PARAMS(n)); \
+    } \
+ }
+ 
+@@ -62,7 +62,7 @@ struct DelegatedMethod<VPTRIndex, VTBLIndex, ArgumentsListConst<R DECL_REST_ARGS
+       IndexInvokableGetter* getter = \
+                       VirtualTable::getInvokableGetter(this, VPTRIndex); \
+       return ChainableMockMethod<R>(getter->getInvokable(VPTRIndex, VTBLIndex)) \
+-                      ("" DECL_REST_PARAMS(n)); \
++                      ("", RefAny() DECL_REST_PARAMS(n)); \
+    } \
+ }
+ 
+diff --git a/include/mockcpp/DelegatedMethodDef.h.rule b/include/mockcpp/DelegatedMethodDef.h.rule
+new file mode 100644
+index 0000000..4bbe599
+--- /dev/null
++++ b/include/mockcpp/DelegatedMethodDef.h.rule
+@@ -0,0 +1 @@
++Artificial dependency for a custom command.
+diff --git a/include/mockcpp/DelegatedMethodGetByVptrDef.h.rule b/include/mockcpp/DelegatedMethodGetByVptrDef.h.rule
+new file mode 100644
+index 0000000..4bbe599
+--- /dev/null
++++ b/include/mockcpp/DelegatedMethodGetByVptrDef.h.rule
+@@ -0,0 +1 @@
++Artificial dependency for a custom command.
+diff --git a/include/mockcpp/DelegatedMethodGetDef.h.rule b/include/mockcpp/DelegatedMethodGetDef.h.rule
+new file mode 100644
+index 0000000..4bbe599
+--- /dev/null
++++ b/include/mockcpp/DelegatedMethodGetDef.h.rule
+@@ -0,0 +1 @@
++Artificial dependency for a custom command.
+diff --git a/include/mockcpp/DestructorAddrGetterDef.h.rule b/include/mockcpp/DestructorAddrGetterDef.h.rule
+new file mode 100644
+index 0000000..4bbe599
+--- /dev/null
++++ b/include/mockcpp/DestructorAddrGetterDef.h.rule
+@@ -0,0 +1 @@
++Artificial dependency for a custom command.
+diff --git a/include/mockcpp/GlobalMockObject.h b/include/mockcpp/GlobalMockObject.h
+index 7d2046a..1b2e905 100644
+--- a/include/mockcpp/GlobalMockObject.h
++++ b/include/mockcpp/GlobalMockObject.h
+@@ -38,10 +38,26 @@ struct GlobalMockObject
+ {
+    static void verify();
+    static void reset();
++   static void reset(const void* api);
+ 
+    static MockObjectType instance;
+ };
+ 
++namespace Details {
++  template<typename Method>
++  void *methodToAddr(Method m)
++  {
++    union
++    {
++      void *addr_;
++      Method m_;
++    };
++
++    m_ = m;
++    return addr_;
++  }
++}  // namespace Details
++
+ MOCKCPP_NS_END
+ 
+ #endif
+diff --git a/include/mockcpp/GnuMethodInfoReader.h b/include/mockcpp/GnuMethodInfoReader.h
+index 0945ad7..7fb3358 100644
+--- a/include/mockcpp/GnuMethodInfoReader.h
++++ b/include/mockcpp/GnuMethodInfoReader.h
+@@ -73,6 +73,10 @@ GnuMethodDescription getGnuDescOfVirtualMethod(Method input)
+ 	MethodDescriptionUnion<ExpectedMethodType> m;
+ 	m.method = input;
+ 
++#if defined(__arm__) || defined(__aarch64__)
++   m.desc.u.index++;
++#endif
++
+    oss_t oss;
+    oss << "Virtual method address should be odd, please make sure the method "
+        << TypeString<Method>::value() << " is a virtual method";
+diff --git a/include/mockcpp/HookMockObject.h b/include/mockcpp/HookMockObject.h
+index ef989a6..eae1ddb 100644
+--- a/include/mockcpp/HookMockObject.h
++++ b/include/mockcpp/HookMockObject.h
+@@ -47,6 +47,7 @@ struct HookMockObject : public ChainableMockObjectBase
+     }
+ 
+     void reset();
++    void reset(const void* api);
+ 
+ private:
+ 
+diff --git a/include/mockcpp/Ignore.h b/include/mockcpp/Ignore.h
+index 0aa9c38..c9e1fe5 100644
+--- a/include/mockcpp/Ignore.h
++++ b/include/mockcpp/Ignore.h
+@@ -19,6 +19,7 @@
+ #define __MOCKCPP_IGNORE_H
+ 
+ #include <mockcpp/mockcpp.h>
++#include <mockcpp/types/Any.h>
+ 
+ MOCKCPP_NS_START
+ 
+@@ -30,9 +31,13 @@ struct Ignore
+    }
+ };
+ 
+-struct Any;
++const Any ignore = Any(Ignore());
+ 
+-Any& getIgnore();
++inline static
++Any& getIgnore()
++{
++    return const_cast<Any&>(ignore);
++}
+ 
+ MOCKCPP_NS_END
+ 
+diff --git a/include/mockcpp/InterfaceInfo.h b/include/mockcpp/InterfaceInfo.h
+index e35166d..09f4caf 100644
+--- a/include/mockcpp/InterfaceInfo.h
++++ b/include/mockcpp/InterfaceInfo.h
+@@ -26,7 +26,7 @@
+ 
+ MOCKCPP_NS_START
+ 
+-#if defined(__GNUC__) && !defined(__clang__)
++#if defined(__GNUC__)
+ 
+ //////////////////////////////////////////////////////
+ unsigned int
+@@ -44,9 +44,7 @@ unsigned int getNumberOfVtbls()
+ template <typename Interface>
+ unsigned int getNumberOfVtbls()
+ {
+-   // temparly comment out it to support mocking some complecated classes on VS
+-   // return sizeof(Interface)/sizeof(void*);
+-   return 2; 
++   return sizeof(Interface)/sizeof(void*);
+ }
+ 
+ #endif
+diff --git a/include/mockcpp/Invocation.h b/include/mockcpp/Invocation.h
+index 03393bd..ab111d8 100644
+--- a/include/mockcpp/Invocation.h
++++ b/include/mockcpp/Invocation.h
+@@ -32,6 +32,7 @@ struct InvocationImpl;
+ struct Invocation
+ {
+     Invocation(const std::string nameOfCaller
++             , const RefAny& pThisPointer = RefAny()
+              , const RefAny& p01 = RefAny()
+              , const RefAny& p02 = RefAny()
+              , const RefAny& p03 = RefAny()
+@@ -48,8 +49,15 @@ struct Invocation
+ 
+     virtual ~Invocation();
+ 
++    RefAny& getThisPointer(void) const;
++
++    // i is beginning with 1
+     RefAny& getParameter(const unsigned int i) const;
+ 
++    // return in follow order:
++    // 'this' pointer(if it is exist), p1, p2, p3, p4 ... pN
++    RefAny& getParameterWithThis(const unsigned int i) const;
++
+     std::string getNameOfCaller() const;
+ 
+     std::string toString(void) const;
+diff --git a/include/mockcpp/InvocationMockBuilder.tcc b/include/mockcpp/InvocationMockBuilder.tcc
+index f564737..e7be58c 100644
+--- a/include/mockcpp/InvocationMockBuilder.tcc
++++ b/include/mockcpp/InvocationMockBuilder.tcc
+@@ -6,16 +6,15 @@ MOCKCPP_NS_START
+ //////////////////////////////////////////////////////
+ template <class Builder>
+ InvocationMockBuilder<Builder>::InvocationMockBuilder(InvocationMocker* mocker)
+-	: invocationMocker(mocker)
++  : invocationMocker(mocker)
+ {
+ }
+ 
+ //////////////////////////////////////////////////////
+ template <class Builder>
+-InvocationMocker*
+-InvocationMockBuilder<Builder>::getMocker() const
++InvocationMocker* InvocationMockBuilder<Builder>::getMocker() const
+ {
+-    return invocationMocker;
++  return invocationMocker;
+ }
+ 
+ MOCKCPP_NS_END
+diff --git a/include/mockcpp/InvocationMockBuilderGetter.h b/include/mockcpp/InvocationMockBuilderGetter.h
+index 1e2d3cc..0578d7f 100644
+--- a/include/mockcpp/InvocationMockBuilderGetter.h
++++ b/include/mockcpp/InvocationMockBuilderGetter.h
+@@ -34,16 +34,20 @@ struct Method;
+ ///////////////////////////////////////////////
+ struct InvocationMockBuilderGetter
+ {
+-    InvocationMockBuilderGetter(InvocationMockerContainer* container, Method* method);
+-    ~InvocationMockBuilderGetter();
++  InvocationMockBuilderGetter(
++    InvocationMockerContainer* container, Method* method, const void* addr);
++  ~InvocationMockBuilderGetter();
+ 
+-    StubsBuilder stubs(); 
+-    MockBuilder expects(Matcher* matcher); 
+-    DefaultBuilder defaults();
++  StubsBuilder stubs(); 
++  MockBuilder expects(Matcher* matcher); 
++  MockBuilder times(unsigned int n);  // same as expects(exactly(n))
++  DefaultBuilder defaults();
++  InvocationMockBuilderGetter &reset();
+ 
+ private:
+-    InvocationMockerContainer* invocationMockerContainer;
+-    Method* method;
++  InvocationMockerContainer* invocationMockerContainer;
++  Method* method;
++  const void* addr;
+ };
+ 
+ ///////////////////////////////////////////////
+diff --git a/include/mockcpp/Invokable.h b/include/mockcpp/Invokable.h
+index a1b78d7..4b4d183 100644
+--- a/include/mockcpp/Invokable.h
++++ b/include/mockcpp/Invokable.h
+@@ -33,24 +33,27 @@ struct SelfDescribe;
+ ///////////////////////////////////////////////
+ struct Invokable
+ {
+-    virtual const Any&
+-        invoke( const std::string& nameOfCaller
+-              , const RefAny& p1
+-              , const RefAny& p2
+-              , const RefAny& p3
+-              , const RefAny& p4
+-              , const RefAny& p5
+-              , const RefAny& p6
+-              , const RefAny& p7
+-              , const RefAny& p8
+-              , const RefAny& p9
+-              , const RefAny& p10
+-              , const RefAny& p11
+-              , const RefAny& p12
+-              , SelfDescribe* &resultProvider) = 0;
+-
+-    
+-    virtual ~Invokable() {}
++  // isMemberMethod used to sign the callee function is a C++ member method,
++  //   if isMemberMethod is true, p01 is 'this' pointer
++  virtual const Any&
++    invoke( const std::string& nameOfCaller
++          , const RefAny& pThisPointer
++          , const RefAny& p1
++          , const RefAny& p2
++          , const RefAny& p3
++          , const RefAny& p4
++          , const RefAny& p5
++          , const RefAny& p6
++          , const RefAny& p7
++          , const RefAny& p8
++          , const RefAny& p9
++          , const RefAny& p10
++          , const RefAny& p11
++          , const RefAny& p12
++          , SelfDescribe* &resultProvider) = 0;
++
++
++  virtual ~Invokable() {}
+ };
+ 
+ ///////////////////////////////////////////////
+diff --git a/include/mockcpp/IsAnythingHelper.h b/include/mockcpp/IsAnythingHelper.h
+index 7bf7765..e47d89b 100644
+--- a/include/mockcpp/IsAnythingHelper.h
++++ b/include/mockcpp/IsAnythingHelper.h
+@@ -26,7 +26,7 @@ struct Constraint;
+ 
+ Constraint* any();
+ 
+-//static const Constraint* _ = 0;
++static const Constraint* _ = 0;
+ 
+ bool isAnyConstraint(Constraint* c);
+ 
+diff --git a/include/mockcpp/IsEqual.h b/include/mockcpp/IsEqual.h
+index a006d19..c11677a 100644
+--- a/include/mockcpp/IsEqual.h
++++ b/include/mockcpp/IsEqual.h
+@@ -21,7 +21,6 @@
+ #include <mockcpp/types/AnyCast.h>
+ #include <mockcpp/Constraint.h>
+ #include <mockcpp/Formatter.h>
+-#include <memory>
+ 
+ MOCKCPP_NS_START
+ 
+@@ -52,36 +51,6 @@ private:
+     T expectedValue;
+ };
+ 
+-template <typename V, typename D>
+-struct IsEqual<std::unique_ptr<V, D> > : public Constraint
+-{
+-    IsEqual(const V* expected)
+-      : expectedValue(expected)
+-    {}
+-
+-    ~IsEqual() {}
+-
+-    bool eval(const RefAny& val) const
+-    {
+-        if (val.type() != typeid(std::unique_ptr<V, D>))
+-        {
+-            return false;
+-        }
+-        return (unique_ptr_any_cast<std::unique_ptr<V, D> >(val)).get() == expectedValue;
+-    }
+-
+-    std::string toString() const
+-    {
+-      return std::string("eq(unique_ptr ") + 
+-             MOCKCPP_NS::toTypeAndValueString(expectedValue) +
+-             std::string(")");
+-    }
+-
+-private:
+-
+-    const V* expectedValue;
+-};
+-
+ MOCKCPP_NS_END
+ 
+ #endif
+diff --git a/include/mockcpp/IsMirror.h b/include/mockcpp/IsMirror.h
+index 9f54b0b..360d746 100644
+--- a/include/mockcpp/IsMirror.h
++++ b/include/mockcpp/IsMirror.h
+@@ -157,7 +157,21 @@ public:
+             "parameter \"size\" of IsMirror<void*> cannot be specified as 0", 
+             size > 0);
+     }
++};
++
++//////////////////////////////////////////////////////////////////////
++template <>
++struct IsMirror<const void*> : public IsMirrorBase<const void*>
++{
++public:
+ 
++  IsMirror(const void* p, size_t size)
++    : IsMirrorBase<const void*>(p, size)
++  {
++    MOCKCPP_ASSERT_TRUE_MESSAGE(
++      "parameter \"size\" of IsMirror<const void*> cannot be specified as 0",
++      size > 0);
++  }
+ };
+ 
+ MOCKCPP_NS_END
+diff --git a/include/mockcpp/JmpCode.h b/include/mockcpp/JmpCode.h
+index 26f77b0..ed0fac6 100644
+--- a/include/mockcpp/JmpCode.h
++++ b/include/mockcpp/JmpCode.h
+@@ -33,6 +33,7 @@ struct JmpCode
+     
+     void*  getCodeData() const;
+     size_t getCodeSize() const;
++    void flushCache() const;
+ private:
+ 	JmpCodeImpl* This;
+ };
+diff --git a/include/mockcpp/MethodIndiceCheckerDef.h.rule b/include/mockcpp/MethodIndiceCheckerDef.h.rule
+new file mode 100644
+index 0000000..4bbe599
+--- /dev/null
++++ b/include/mockcpp/MethodIndiceCheckerDef.h.rule
+@@ -0,0 +1 @@
++Artificial dependency for a custom command.
+diff --git a/include/mockcpp/MethodTypeTraitsDef.h.rule b/include/mockcpp/MethodTypeTraitsDef.h.rule
+new file mode 100644
+index 0000000..4bbe599
+--- /dev/null
++++ b/include/mockcpp/MethodTypeTraitsDef.h.rule
+@@ -0,0 +1 @@
++Artificial dependency for a custom command.
+diff --git a/include/mockcpp/MockBuilder.h b/include/mockcpp/MockBuilder.h
+index 4bc1991..1d6f472 100644
+--- a/include/mockcpp/MockBuilder.h
++++ b/include/mockcpp/MockBuilder.h
+@@ -37,7 +37,7 @@ typedef InvocationMockBuilder<
+            BeforeMatchBuilder<
+             ArgumentsMatchBuilder<
+              AfterMatchBuilder<
+-              StubBuilder< 
++              StubBuilder<
+                MoreStubBuilder<
+                 IdentityBuilder
+                >
+@@ -47,7 +47,6 @@ typedef InvocationMockBuilder<
+            >
+           >
+          > MockBuilder;
+-
+ ///////////////////////////////////////////////
+ 
+ MOCKCPP_NS_END
+diff --git a/include/mockcpp/MockObject.h b/include/mockcpp/MockObject.h
+index ddea02c..c98f9e7 100644
+--- a/include/mockcpp/MockObject.h
++++ b/include/mockcpp/MockObject.h
+@@ -54,6 +54,16 @@ struct MockObject : public MockObjectBase
+    {
+    }
+ 
++   MockObject& getObject()
++   {
++	   return *this;
++   }
++   
++   Interface* getInterface()
++   {
++	   return (Interface*)toPointerToInterface();
++   }
++
+    /////////////////////////////////////////////////////////////
+    operator Interface* ()
+    {
+diff --git a/include/mockcpp/MockObjectHelper.h b/include/mockcpp/MockObjectHelper.h
+index 51dec33..93f3216 100644
+--- a/include/mockcpp/MockObjectHelper.h
++++ b/include/mockcpp/MockObjectHelper.h
+@@ -40,11 +40,5 @@ MOCKCPP_NS_END
+             MOCKCPP_NS::MockObjectTraits<FAKE_BOOST_TYPEOF(obj)>::TYPE \
+        >::value() + "::"#m).c_str()) 
+ 
+-#define MOCK_OVERLOAD_METHOD(obj, type, m) \
+-   obj.method((type) &MOCKCPP_NS::MockObjectTraits<FAKE_BOOST_TYPEOF(obj)>::TYPE::m, \
+-       ("("#type")" + MOCKCPP_NS::TypeString< \
+-            MOCKCPP_NS::MockObjectTraits<FAKE_BOOST_TYPEOF(obj)>::TYPE \
+-       >::value() + "::"#m).c_str())
+-
+ #endif
+ 
+diff --git a/include/mockcpp/MsvcMethodInfoReader.h b/include/mockcpp/MsvcMethodInfoReader.h
+index f1bc06a..dc205f2 100644
+--- a/include/mockcpp/MsvcMethodInfoReader.h
++++ b/include/mockcpp/MsvcMethodInfoReader.h
+@@ -1,84 +1,84 @@
+-/***
+-   mockcpp is a C/C++ mock framework.
+-   Copyright [2008] [Darwin Yuan <darwin.yuan@gmail.com>]
+-
+-   Licensed under the Apache License, Version 2.0 (the "License");
+-   you may not use this file except in compliance with the License.
+-   You may obtain a copy of the License at
+-
+-      http://www.apache.org/licenses/LICENSE-2.0
+-
+-   Unless required by applicable law or agreed to in writing, software
+-   distributed under the License is distributed on an "AS IS" BASIS,
+-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-   See the License for the specific language governing permissions and
+-   limitations under the License.
+-***/
+-#ifndef __MOCKCPP_MSVC_METHOD_INFO_READER_H
+-#define __MOCKCPP_MSVC_METHOD_INFO_READER_H
+-
+-#include <mockcpp/mockcpp.h>
+-#include <mockcpp/ReportFailure.h>
+-
+-MOCKCPP_NS_START
+-
+-#ifdef MSVC_VMG_ENABLED
+-
+-struct MsvcVmgMFP
+-{
+-   void* m_func_address; 
+-   int m_delta;
+-   int m_vtordisp;
+-   int m_vtable_index; 
+-};
+-
+-template <typename Method>
+-union MsvcMethodUnion
+-{
+-   MsvcVmgMFP mfp;
+-   Method method;
+-};
+-
+-///////////////////////////////////////////////
+-template <typename Method>
+-void* getAddrOfMethod(Method input)
+-{
+-	MsvcMethodUnion<Method> m;
+-	m.method = input;
+-	return m.mfp.m_func_address;
+-}
+-
+-///////////////////////////////////////////////////////////
+-
+-#else
+-
+-// TODO
+-template <typename Method>
+-void* getAddrOfMethod(Method input)
+-{
+-   MOCKCPP_REPORT_FAILURE("please add /D MSVC_VMG_ENABLED and /vmg to your compiler option");
+-	return 0;
+-}
+-
+-///////////////////////////////////////////////////////////
+-// TODO
+-template <typename C, typename Method>
+-unsigned int getIndexOfMethod(Method method)
+-{
+-   MOCKCPP_REPORT_FAILURE("please add /D MSVC_VMG_ENABLED and /vmg to your compiler option");
+-	return 0;
+-}
+-
+-///////////////////////////////////////////////////////////
+-// TODO
+-template <typename C, typename Method>
+-unsigned int getDeltaOfMethod(Method method)
+-{
+-   MOCKCPP_REPORT_FAILURE("please add /D MSVC_VMG_ENABLED and /vmg to your compiler option");
+-	return 0;
+-}
+-#endif
+-
+-MOCKCPP_NS_END
+-
+-#endif
++/***
++   mockcpp is a C/C++ mock framework.
++   Copyright [2008] [Darwin Yuan <darwin.yuan@gmail.com>]
++
++   Licensed under the Apache License, Version 2.0 (the "License");
++   you may not use this file except in compliance with the License.
++   You may obtain a copy of the License at
++
++      http://www.apache.org/licenses/LICENSE-2.0
++
++   Unless required by applicable law or agreed to in writing, software
++   distributed under the License is distributed on an "AS IS" BASIS,
++   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++   See the License for the specific language governing permissions and
++   limitations under the License.
++***/
++#ifndef __MOCKCPP_MSVC_METHOD_INFO_READER_H
++#define __MOCKCPP_MSVC_METHOD_INFO_READER_H
++
++#include <mockcpp/mockcpp.h>
++#include <mockcpp/ReportFailure.h>
++
++MOCKCPP_NS_START
++
++#ifdef MSVC_VMG_ENABLED
++
++struct MsvcVmgMFP
++{
++   void* m_func_address; 
++   int m_delta;
++   int m_vtordisp;
++   int m_vtable_index; 
++};
++
++template <typename Method>
++union MsvcMethodUnion
++{
++   MsvcVmgMFP mfp;
++   Method method;
++};
++
++///////////////////////////////////////////////
++template <typename Method>
++void* getAddrOfMethod(Method input)
++{
++	MsvcMethodUnion<Method> m;
++	m.method = input;
++	return m.mfp.m_func_address;
++}
++
++///////////////////////////////////////////////////////////
++
++#else
++
++// TODO
++template <typename Method>
++void* getAddrOfMethod(Method input)
++{
++   MOCKCPP_REPORT_FAILURE("please add /D MSVC_VMG_ENABLED and /vmg to your compiler option");
++	return 0;
++}
++
++///////////////////////////////////////////////////////////
++// TODO
++template <typename C, typename Method>
++unsigned int getIndexOfMethod(Method method)
++{
++   MOCKCPP_REPORT_FAILURE("please add /D MSVC_VMG_ENABLED and /vmg to your compiler option");
++	return 0;
++}
++
++///////////////////////////////////////////////////////////
++// TODO
++template <typename C, typename Method>
++unsigned int getDeltaOfMethod(Method method)
++{
++   MOCKCPP_REPORT_FAILURE("please add /D MSVC_VMG_ENABLED and /vmg to your compiler option");
++	return 0;
++}
++#endif
++
++MOCKCPP_NS_END
++
++#endif
+diff --git a/include/mockcpp/MsvcRtti.h b/include/mockcpp/MsvcRtti.h
+index 268f0b7..ef4d0d3 100644
+--- a/include/mockcpp/MsvcRtti.h
++++ b/include/mockcpp/MsvcRtti.h
+@@ -34,7 +34,7 @@ struct PMD
+ 
+ struct RTTIBaseClassDescriptor
+ {
+-    std::type_info* typeInfo; //type descriptor of the class
++	std::type_info* typeInfo; //type descriptor of the class
+     unsigned int numContainedBases; //number of nested classes following in the Base Class Array
+     PMD where;        //pointer-to-member displacement info
+     unsigned int attributes;        //flags, usually 0
+@@ -61,8 +61,8 @@ struct RTTICompleteObjectLocator
+ 	const std::type_info* typeInfo; //TypeDescriptor of the complete class
+     RTTIClassHierarchyDescriptor* pClassDescriptor; //describes inheritance hierarchy
+ 
+-    RTTICompleteObjectLocator(unsigned int index
+-            , const std::type_info& info, RTTIClassHierarchyDescriptor* desc)
++    RTTICompleteObjectLocator(unsigned int index,
++	    const std::type_info& info, RTTIClassHierarchyDescriptor* desc)
+ 		: signature(0), offset(index*sizeof(void*)), cdOffset(0)
+ 		, typeInfo(&info), pClassDescriptor(desc)
+ 	{}
+diff --git a/include/mockcpp/ParameterizedApiHookHolder.h b/include/mockcpp/ParameterizedApiHookHolder.h
+index 39b7670..b7493f1 100644
+--- a/include/mockcpp/ParameterizedApiHookHolder.h
++++ b/include/mockcpp/ParameterizedApiHookHolder.h
+@@ -28,9 +28,9 @@ template <typename F>
+ struct ParameterizedApiHookHolder 
+    : public ApiHookHolder
+ {
+-   const static unsigned int maxSeq = 10;
++   const static unsigned int maxSeq = 26;
+ 
+-   ParameterizedApiHookHolder(F* api) 
++   ParameterizedApiHookHolder(F api) 
+    {
+       (m_hook = ApiHookGenerator<F, maxSeq>::findApiHook(api)) ||
+       (m_hook = ApiHookGenerator<F, maxSeq>::appyApiHook(api)); 
+diff --git a/include/mockcpp/ProcStub.h b/include/mockcpp/ProcStub.h
+index 1f23844..b2beb0c 100644
+--- a/include/mockcpp/ProcStub.h
++++ b/include/mockcpp/ProcStub.h
+@@ -57,8 +57,8 @@ std::string getParameterMismatchString(int n
+ #define MOCKCPP_CHECK_AND_ASSIGN_PARAMETER(N) \
+         MOCKCPP_ASSERT_TRUE_MESSAGE( \
+                     getParameterMismatchString(N, TypeString<MOCKP##N>::value(), inv) \
+-                        , any_castable<MOCKP##N>(inv.getParameter(N))); \
+-        MOCKP##N p##N = any_cast<MOCKP##N>(inv.getParameter(N));
++                        , any_castable<MOCKP##N>(inv.getParameterWithThis(N))); \
++        MOCKP##N p##N = any_cast<MOCKP##N>(inv.getParameterWithThis(N));
+     
+ #define PROC_STUB_CONS()  \
+     ProcStub(Func f, std::string name) \
+@@ -126,6 +126,8 @@ PROC_STUB_DEF(9);
+ PROC_STUB_DEF(10);
+ PROC_STUB_DEF(11);
+ PROC_STUB_DEF(12);
++// one more for C++ Member Method(1 'this' pointer + 12 parameters = 13)
++PROC_STUB_DEF(13);
+ 
+ #define VARDIC_PROC_STUB_DEF(n) \
+ template <typename R DECL_TEMPLATE_ARGS(n)>  \
+diff --git a/include/mockcpp/WinCodeModifier.h b/include/mockcpp/WinCodeModifier.h
+new file mode 100644
+index 0000000..144b605
+--- /dev/null
++++ b/include/mockcpp/WinCodeModifier.h
+@@ -0,0 +1,16 @@
++#ifndef __MOCKCPP_WINCODEMODIFIER_H__
++#define __MOCKCPP_WINCODEMODIFIER_H__
++
++#include <mockcpp/CodeModifier.h>
++
++MOCKCPP_NS_START
++
++struct WinCodeModifier : public CodeModifier
++{
++	bool modify(void *dest, void *src, size_t size);
++};
++
++
++MOCKCPP_NS_END
++
++#endif
+diff --git a/include/mockcpp/mockcpp.h b/include/mockcpp/mockcpp.h
+index 306bc7a..f9d1791 100644
+--- a/include/mockcpp/mockcpp.h
++++ b/include/mockcpp/mockcpp.h
+@@ -19,6 +19,13 @@
+ #define __MOCKCPP_H
+ 
+ #include <fake_boost/fake_boost.h>
++#ifdef _MSC_VER
++#define _MOCKCPP_COMPILER_MSVC  _MSC_VER
++#elif defined(__GNUC__)
++#define _MOCKCPP_COMPILER_GNUC
++#else
++#error "Unknown compiler!"
++#endif
+ 
+ #if !defined(MOCKCPP_NO_NAMESPACE) || (MOCKCPP_NO_NAMESPACE == 0)
+ # define MOCKCPP_NS mockcpp
+@@ -38,23 +45,48 @@
+ # define MOCKCPP_EXPORT 
+ #endif
+ 
++#if  ( defined (__aarch64__))
++
++#define BUILD_FOR_AARCH64
++
++#elif  ( defined (__arm__))
++
++#define BUILD_FOR_AARCH32
+ 
+-#if  ( defined (__LP64__) \
++#elif  ( defined (__LP64__) \
+     || defined (__64BIT__) \
+     || defined (_LP64) \
+     || ((defined(__WORDSIZE)) && (__WORDSIZE == 64)) \
+-	|| defined(WIN64))
++    || defined(_WIN64))
+ 
+-#define BUILD_FOR_X64 1
+-#define BUILD_FOR_X86 0
++#define BUILD_FOR_X64
+ 
+-#else	
++#else
+ 
+-#define BUILD_FOR_X64 0
+-#define BUILD_FOR_X86 1
++#define BUILD_FOR_X86
+ 
+ #endif
+ 
++MOCKCPP_NS_START
++
++namespace __CHECK {
++
++  template<bool condition>
++  struct STATIC_ASSERT_FAILURE;
++
++  template<> struct STATIC_ASSERT_FAILURE<true>
++  {
++    enum { value = 1 };
++  };
++
++  template<int x> struct STATIC_ASSERT_TEST;
++
++#define MOCKCPP_STATIC_ASSERT(C) \
++  typedef MOCKCPP_NS::__CHECK::STATIC_ASSERT_TEST< \
++    sizeof(MOCKCPP_NS::__CHECK::STATIC_ASSERT_FAILURE<!!(C)>)> \
++    mockcpp_static_assert_typedef
++}
+ 
++MOCKCPP_NS_END
+ #endif // __MOCKCPP_H
+ 
+diff --git a/include/mockcpp/mockcpp.hpp b/include/mockcpp/mockcpp.hpp
+index f7a68a1..fe0e536 100644
+--- a/include/mockcpp/mockcpp.hpp
++++ b/include/mockcpp/mockcpp.hpp
+@@ -1,24 +1,24 @@
+ /***
+-    mockcpp is a generic C/C++ mock framework.
+-    Copyright (C) <2009>  <Darwin Yuan: darwin.yuan@gmail.com>
++   mockcpp is a C/C++ mock framework.
++   Copyright [2008] [Darwin Yuan <darwin.yuan@gmail.com>]
+ 
+-    This program is free software: you can redistribute it and/or modify
+-    it under the terms of the GNU General Public License as published by
+-    the Free Software Foundation, either version 3 of the License, or
+-    (at your option) any later version.
++   Licensed under the Apache License, Version 2.0 (the "License");
++   you may not use this file except in compliance with the License.
++   You may obtain a copy of the License at
+ 
+-    This program is distributed in the hope that it will be useful,
+-    but WITHOUT ANY WARRANTY; without even the implied warranty of
+-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+-    GNU General Public License for more details.
++      http://www.apache.org/licenses/LICENSE-2.0
+ 
+-    You should have received a copy of the GNU General Public License
+-    along with this program.  If not, see <http://www.gnu.org/licenses/>.
++   Unless required by applicable law or agreed to in writing, software
++   distributed under the License is distributed on an "AS IS" BASIS,
++   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++   See the License for the specific language governing permissions and
++   limitations under the License.
+ ***/
+ 
+ #ifndef __MOCKCPP_HPP_
+ #define __MOCKCPP_HPP_
+ 
++#define MSVC_VMG_ENABLED
+ #include <mockcpp/mockcpp.h>
+ #include <mockcpp/ChainingMockHelper.h>
+ #include <mockcpp/MockObjectHelper.h>
+diff --git a/include/mockcpp/mokc.h b/include/mockcpp/mokc.h
+index 800a766..69725b0 100644
+--- a/include/mockcpp/mokc.h
++++ b/include/mockcpp/mokc.h
+@@ -22,13 +22,26 @@
+ #  include <mockcpp/ChainingMockHelper.h>
+ #  include <mockcpp/ProcStub.h>
+ 
+-#  if defined(MOCKCPP_USE_MOCKABLE) 
+-#    include <mockcpp/Functor.h>
+-#    define MOCKER(api) MOCKCPP_NS::GlobalMockObject::instance.method(#api)
+-#  else
+-#    include <mockcpp/ApiHookMocker.h>
+-#    define MOCKER(api) MOCKCPP_NS::mockAPI(#api, api)
+-#  endif
++# if defined(MOCKCPP_USE_MOCKABLE) 
++#   include <mockcpp/Functor.h>
++#   define MOCKER(api) MOCKCPP_NS::GlobalMockObject::instance.method(#api)
++# else
++#   include <mockcpp/ApiHookMocker.h>
++// @TODO : write instructions
++// @TODO : update mockcpp
++//#   define __MOCKER_MODE_1(api) MOCKCPP_NS::mockAPI<>::get(#api, "", api)
++//#   define __MOCKER_MODE_2(api, API) MOCKCPP_NS::mockAPI<API>::get(#api, #API, api)
++//#   define __MOCKER_CPP_MODE_1(api) MOCKCPP_NS::mockAPI<>::get(#api, "", api)
++//#   define __MOCKER_CPP_MODE_2(api, API) MOCKCPP_NS::mockAPI<API>::get(#api, #API, api)
++//#   define __MOCKER_CPP_VIRTUAL_MODE_1(obj, api) MOCKCPP_NS::mockAPI<>::get_virtual(#api, "", obj, api)
++//#   define __MOCKER_CPP_VIRTUAL_MODE_2(obj, api, API) MOCKCPP_NS::mockAPI<API>::get_virtual(#api, #API, obj, api)
++#   define MOCKER(api, ...) MOCKCPP_NS::mockAPI<__VA_ARGS__>::get(#api, ""#__VA_ARGS__, api)
++#   define MOCKER_CPP(api, ...) MOCKCPP_NS::mockAPI<__VA_ARGS__>::get(#api, ""#__VA_ARGS__, api)
++#   define MOCKER_CPP_VIRTUAL(obj, api, ...) MOCKCPP_NS::mockAPI<__VA_ARGS__>::get_virtual(#api, ""#__VA_ARGS__, obj, api)
++// adapter for amock
++#   define AMOCKER MOCKER
++#   define LLT_GLOBALOBJMOCKER GlobalMockObject
++# endif
+ 
+ USING_MOCKCPP_NS
+ 
+diff --git a/include/mockcpp/types/Any.h b/include/mockcpp/types/Any.h
+index 35f0324..a59cadf 100644
+--- a/include/mockcpp/types/Any.h
++++ b/include/mockcpp/types/Any.h
+@@ -34,6 +34,10 @@ struct Any : public AnyBase
+       : AnyBase(new ValueHolder<ValueType>(value))
+    {}
+ 
++#if 0
++   Any(const char* value);
++#endif
++   
+    Any(const Any & other);
+ 
+ public:
+diff --git a/include/mockcpp/types/AnyBase.h b/include/mockcpp/types/AnyBase.h
+index f688198..c898062 100644
+--- a/include/mockcpp/types/AnyBase.h
++++ b/include/mockcpp/types/AnyBase.h
+@@ -46,12 +46,12 @@ public:
+ 
+     std::string toTypeAndValueString() const;
+ 
+-    PlaceHolder* getContent() const;
+-
+ protected:
+ 
+     AnyBase& swap(AnyBase& rhs);
+ 
++    PlaceHolder* getContent() const;
++
+ private:
+ 
+     PlaceHolder* content;
+@@ -59,10 +59,7 @@ private:
+ private:
+ 
+     template<typename ValueType>
+-    friend ValueType * __type_any_cast(AnyBase *);
+-
+-    template<typename ValueType>
+-    friend ValueType& __unique_ptr_any_cast(const AnyBase* operand);
++    friend ValueType * __any_cast(AnyBase *);
+ };
+ 
+ MOCKCPP_NS_END
+diff --git a/include/mockcpp/types/AnyCast.h b/include/mockcpp/types/AnyCast.h
+index 2b6a264..6e233f5 100644
+--- a/include/mockcpp/types/AnyCast.h
++++ b/include/mockcpp/types/AnyCast.h
+@@ -22,7 +22,6 @@
+ 
+ #include <mockcpp/types/AnyBase.h>
+ #include <mockcpp/TypeTraits.h>
+-#include <mockcpp/Ignore.h>
+ 
+ #include <assert.h>
+ #define MOCKCPP_ASSERT(expr) assert(expr)
+@@ -30,43 +29,23 @@
+ MOCKCPP_NS_START
+ 
+ /////////////////////////////////////////////////////////////////
+-
+-template<typename ValueType>
+-ValueType *__ignore_type_any_cast(AnyBase *operand)
+-{
+-   static char buf[sizeof(ValueType)] = {0};
+-   return operand->type() == typeid(Ignore) ? reinterpret_cast<ValueType *>(buf) : 0;
+-}
+-
+-template<typename ValueType>
+-ValueType* __type_any_cast(AnyBase *operand)
++template <typename ValueType>
++ValueType* __any_cast(AnyBase* operand)
+ {
+    typedef typename TypeTraits<ValueType>::Type nonref;
+    typedef Holder<nonref> holder;
+ 
+-   if (operand->type() != typeid(ValueType))
+-   {
+-	   return 0;
+-   }
+-
+-   holder* p = dynamic_cast<holder*>(operand->getContent());
+-   return p ? &const_cast<ValueType&>(p->getValue()) : 0;
+-}
+-
+-template <typename ValueType>
+-ValueType* __any_cast(AnyBase* operand)
+-{
+-   if (operand == 0)
++   if (operand == 0 || operand->type() != typeid(ValueType))
+    {
+       return 0;
+    }
+ 
+-   ValueType *p = __type_any_cast<ValueType>(operand);
++   holder* p = dynamic_cast<holder*>(operand->getContent());
+ 
+-   return p ? p : __ignore_type_any_cast<ValueType>(operand);
++   return p ? &const_cast<ValueType&>(p->getValue()) : 0;
+ }
+ 
+-//////////////////////////////////////////////// /////////////////
++/////////////////////////////////////////////////////////////////
+ template <typename ValueType, bool IsEnum>
+ struct AnyCast
+ {
+@@ -177,36 +156,6 @@ bool any_castable(const AnyBase& val)
+ 
+ /////////////////////////////////////////////////////////////////
+ 
+-template<typename ValueType>
+-ValueType& __unique_ptr_any_cast(AnyBase* operand)
+-{
+-    typedef typename TypeTraits<ValueType>::Type nonref;
+-    typedef Holder<nonref> holder;
+-
+-    holder* p = dynamic_cast<holder*>(operand->getContent());
+-    return const_cast<ValueType&>(p->getValue());
+-}
+-
+-template<typename ValueType>
+-ValueType& __unique_ptr_any_cast(const AnyBase* operand)
+-{
+-    typedef typename TypeTraits<ValueType>::Type nonref;
+-    typedef Holder<nonref> holder;
+-
+-    holder* p = dynamic_cast<holder*>(operand->getContent());
+-    return const_cast<ValueType&>(p->getValue());
+-}
+-
+-template<typename ValueType>
+-ValueType& unique_ptr_any_cast(AnyBase& operand) {
+-    return __unique_ptr_any_cast<ValueType>(&operand);
+-}
+-
+-template<typename ValueType>
+-ValueType& unique_ptr_any_cast(const AnyBase& operand) {
+-    return __unique_ptr_any_cast<ValueType>(&operand);
+-}
+-
+ MOCKCPP_NS_END
+ 
+ #endif 
+diff --git a/include/mockcpp/types/PlaceHolder.h b/include/mockcpp/types/PlaceHolder.h
+index e5cd5c5..2fd8aec 100644
+--- a/include/mockcpp/types/PlaceHolder.h
++++ b/include/mockcpp/types/PlaceHolder.h
+@@ -36,7 +36,7 @@ struct PlaceHolder
+     virtual std::string toString(void) const = 0;
+     virtual std::string toTypeString(void) const = 0;
+     virtual std::string toTypeAndValueString(void) const = 0;
+-    virtual Constraint* getConstraint() const { return 0; }
++    virtual Constraint* getConstraint() const { return NULL; }
+ };
+ 
+ MOCKCPP_NS_END
+diff --git a/include/mockcpp/types/RefAny.h b/include/mockcpp/types/RefAny.h
+index 4144665..46509c9 100644
+--- a/include/mockcpp/types/RefAny.h
++++ b/include/mockcpp/types/RefAny.h
+@@ -32,6 +32,11 @@ struct RefAny : public AnyBase
+       : AnyBase(new RefHolder<ValueType>(value))
+    {}
+ 
++#if 0
++   RefAny(const char* value);
++   RefAny(char* value);
++#endif
++
+    RefAny(const RefAny & other);
+ 
+ public:
+diff --git a/include/mockcpp/types/ValueHolder.h b/include/mockcpp/types/ValueHolder.h
+index 54ac300..62175af 100644
+--- a/include/mockcpp/types/ValueHolder.h
++++ b/include/mockcpp/types/ValueHolder.h
+@@ -29,7 +29,6 @@
+ #include <mockcpp/IsEqual.h>
+ #include <mockcpp/Void.h>
+ #include <mockcpp/IsAnythingHelper.h>
+-#include <mockcpp/Ignore.h>
+ 
+ MOCKCPP_NS_START
+ 
+@@ -41,10 +40,6 @@ Constraint* constraint(const T& value)
+     return new IsEqual<T>(value);
+ }
+ 
+-#ifndef _MSC_VER
+-#pragma GCC diagnostic push
+-#pragma GCC diagnostic ignored "-Wunused-function"
+-#endif
+ Constraint* constraint(Constraint* c)
+ {
+     return c == 0 ? any() : c;
+@@ -54,9 +49,6 @@ Constraint* constraint(const Constraint* c)
+ {
+     return constraint(const_cast<Constraint*>(c));
+ }
+-#ifndef _MSC_VER
+-#pragma GCC diagnostic pop
+-#endif
+ 
+ Constraint* constraint(const Void& v)
+ {
+@@ -108,9 +100,9 @@ protected:
+        unsigned short us;
+        unsigned char  uc;
+        Held(const unsigned long  value) : ul(value) {}
+-       Held(const unsigned int   value) : ul(value) {}
+-       Held(const unsigned short value) : ul(value) {}
+-       Held(const unsigned char  value) : ul(value) {}
++       Held(const unsigned int   value) : ui(value) {}
++       Held(const unsigned short value) : us(value) {}
++       Held(const unsigned char  value) : uc(value) {}
+     } held;
+ public:
+ 
+@@ -207,9 +199,9 @@ protected:
+        short ss;
+        char  sc;
+        Held(const long  value) : sl(value) {}
+-       Held(const int   value) : sl(value) {}
+-       Held(const short value) : sl(value) {}
+-       Held(const char  value) : sl(value) {}
++       Held(const int   value) : si(value) {}
++       Held(const short value) : ss(value) {}
++       Held(const char  value) : sc(value) {}
+     } held;
+ public:
+ 
+diff --git a/src/ApiHookKey.cpp b/src/ApiHookKey.cpp
+index fbdc4c1..db6bdb3 100644
+--- a/src/ApiHookKey.cpp
++++ b/src/ApiHookKey.cpp
+@@ -14,57 +14,57 @@
+    See the License for the specific language governing permissions and
+    limitations under the License.
+ ***/
+-
+-#include <mockcpp/ApiHookKey.h>
+-#include <mockcpp/ApiHook.h>
+-#include <mockcpp/ApiHookHolder.h>
+-
+-MOCKCPP_NS_START
+-
+-///////////////////////////////////////////////////////////
+-ApiHookKey::ApiHookKey(const void* api, ApiHookHolder* holder)
+-   : apiAddress(api)
+-   , hookHolder(holder)
+-{
+-   hook = new ApiHook(api, holder->getApiHook());
+-}
+-
+-///////////////////////////////////////////////////////////
+-ApiHookKey::ApiHookKey(const void* api)
+-   : apiAddress(api), hook(0), hookHolder(0)
+-{
+-}
+-
+-////////////////////////////////////////////////////////////
+-ApiHookKey::~ApiHookKey()
+-{
+-   delete hook;
+-   delete hookHolder;
+-}   
+-
+-////////////////////////////////////////////////////////////
+-bool ApiHookKey::equals(
+-      const ChainableMockMethodKey* const rhs) const
+-{
+-    if(rhs == 0)
+-    {
+-       return false;
+-    }
+-
+-    if(this == rhs)
+-    {
+-       return true;
+-    }
+-
+-    ApiHookKey* key = \
+-          dynamic_cast<ApiHookKey*> \
+-             (const_cast<ChainableMockMethodKey*>(rhs));
+-    if(key == 0)
+-    {
+-       return false;
+-    }
+-     
+-    return key->apiAddress == this->apiAddress;
+-}
+-
+-MOCKCPP_NS_END
++
++#include <mockcpp/ApiHookKey.h>
++#include <mockcpp/ApiHook.h>
++#include <mockcpp/ApiHookHolder.h>
++
++MOCKCPP_NS_START
++
++///////////////////////////////////////////////////////////
++ApiHookKey::ApiHookKey(const void* api, ApiHookHolder* holder)
++   : apiAddress(api)
++   , hookHolder(holder)
++{
++   hook = new ApiHook(api, holder->getApiHook());
++}
++
++///////////////////////////////////////////////////////////
++ApiHookKey::ApiHookKey(const void* api)
++   : apiAddress(api), hook(0), hookHolder(0)
++{
++}
++
++////////////////////////////////////////////////////////////
++ApiHookKey::~ApiHookKey()
++{
++   delete hook;
++   delete hookHolder;
++}   
++
++////////////////////////////////////////////////////////////
++bool ApiHookKey::equals(
++      const ChainableMockMethodKey* const rhs) const
++{
++    if(rhs == 0)
++    {
++       return false;
++    }
++
++    if(this == rhs)
++    {
++       return true;
++    }
++
++    ApiHookKey* key = \
++          dynamic_cast<ApiHookKey*> \
++             (const_cast<ChainableMockMethodKey*>(rhs));
++    if(key == 0)
++    {
++       return false;
++    }
++     
++    return key->apiAddress == this->apiAddress;
++}
++
++MOCKCPP_NS_END
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+deleted file mode 100644
+index e843915..0000000
+--- a/src/CMakeLists.txt
++++ /dev/null
+@@ -1,340 +0,0 @@
+-
+-INCLUDE(${PROJECT_SOURCE_DIR}/tools/testngpp.cmake)
+-
+-find_package (Python3 COMPONENTS Interpreter)
+-
+-IF(Python3_FOUND)
+-    SET(PYTHON ${Python3_EXECUTABLE})
+-ELSE()
+-    MESSAGE(FATAL_ERROR "No Python interpreter found")
+-ENDIF(Python3_FOUND)
+-
+-IF(NOT DEFINED MOCKCPP_ALLOW_MI)
+-  SET(MOCKCPP_ALLOW_MI TRUE)
+-ENDIF(NOT DEFINED MOCKCPP_ALLOW_MI)
+-
+-SET(MOCKCPP_SRC_ROOT ${CMAKE_SOURCE_DIR})
+-
+-IF(NOT DEFINED MOCKCPP_XUNIT)
+-   SET(MOCKCPP_XUNIT STDEXCEPT)
+-ENDIF()
+-
+-
+-   
+-# Set MOCKCPP_MAX_INHERITANCE
+-#
+-IF(MOCKCPP_ALLOW_MI)
+-    SET(MOCKCPP_ALLOW_MULTI_INHERITANCE 1)
+-    IF(NOT DEFINED MOCKCPP_MAX_INHERITANCE)
+-        SET(MOCKCPP_MAX_INHERITANCE 2)
+-    ENDIF(NOT DEFINED MOCKCPP_MAX_INHERITANCE)
+-ELSE(MOCKCPP_ALLOW_MI)
+-    SET(MOCKCPP_ALLOW_MULTI_INHERITANCE 0)
+-    SET(MOCKCPP_MAX_INHERITANCE 1)
+-ENDIF(MOCKCPP_ALLOW_MI)
+-
+-IF(MOCKCPP_NO_NAMESPACE)
+-   SET(MOCKCPP_NO_NAMESPACE 1)
+-ELSE(MOCKCPP_NO_NAMESPACE)
+-   SET(MOCKCPP_NO_NAMESPACE 0)
+-ENDIF(MOCKCPP_NO_NAMESPACE)
+-#
+-# Set MOCKCPP_MAX_VTBL_SIZE
+-#
+-IF(NOT MOCKCPP_MAX_VTBL_SIZE)
+-    SET(MOCKCPP_MAX_VTBL_SIZE 20)
+-ENDIF(NOT MOCKCPP_MAX_VTBL_SIZE)
+-
+-IF(NOT MOCKCPP_MAX_PARAMETERS)
+-    SET(MOCKCPP_MAX_PARAMETERS 12)
+-ENDIF(NOT MOCKCPP_MAX_PARAMETERS)
+-
+-ADD_DEFINITIONS(
+-    -DPACKAGE_NAME=${PACKAGE_NAME}
+-    -DPACKAGE_STRING=${PACKAGE_STRING}
+-    -DPACKAGE_BUGREPORT=${PACKAGE_BUGREPORT}
+-    -DPACKAGE_URL=${PACKAGE_URL}
+-    -DPACKAGE=${PACKAGE}
+-    -DVERSION=${VERSION}
+-    -DMOCKCPP_NO_NAMESPACE=${MOCKCPP_NO_NAMESPACE}
+-    -DMOCKCPP_ALLOW_MULTI_INHERITANCE=${MOCKCPP_ALLOW_MULTI_INHERITANCE}
+-    -DMOCKCPP_MAX_INHERITANCE=${MOCKCPP_MAX_INHERITANCE}
+-    -DMOCKCPP_MAX_VTBL_SIZE=${MOCKCPP_MAX_VTBL_SIZE}
+-    -DMOCKCPP_MAX_PARAMETERS=${MOCKCPP_MAX_PARAMETERS}
+-)
+-
+-FIND_FILE(BOOST_HEADER
+-            typeof.hpp 
+-            PATHS ${MOCKCPP_SRC_ROOT}/3rdparty/boost/typeof 
+-            NO_DEFAULT_PATH 
+-            NO_CMAKE_ENVIRONMENT_PATH 
+-            NO_CMAKE_PATH 
+-            NO_SYSTEM_ENVIRONMENT_PATH 
+-            NO_CMAKE_SYSTEM_PATH)
+-IF(NOT EXISTS ${BOOST_HEADER})
+-ADD_DEFINITIONS(-DNO_BOOST=1)
+-ENDIF()
+-
+-IF(MSVC)
+-    ADD_DEFINITIONS(-DMSVC_VMG_ENABLED) #  /Z7)
+-    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /vmg")
+-	INCLUDE_DIRECTORIES(BEFORE ${MOCKCPP_SRC_ROOT}/3rdparty/msinttypes)
+-ELSE(MSVC)
+-    ADD_DEFINITIONS(-std=c++11)
+-ENDIF(MSVC)
+-
+-#IF(UNIX)
+-#MESSAGE("UNIX")
+-#ADD_DEFINITIONS(
+-#    -g -ggdb
+-#)
+-#ENDIF(UNIX)
+-
+-IF(UNIX AND NOT CYGWIN)
+-ADD_DEFINITIONS(
+-    -fPIC
+-)
+-ENDIF(UNIX AND NOT CYGWIN)
+-
+-IF(CMAKE_CL_64)
+-    ADD_DEFINITIONS(-DWIN64)
+-ENDIF(CMAKE_CL_64)
+-
+-SET(MOCKCPP_SRCS 
+-    AfterMatcher.cpp
+-    AnyBase.cpp
+-    AnyCast.cpp
+-    Any.cpp
+-    Asserter.cpp
+-    AssertionFailedError.cpp
+-    BeforeMatcher.cpp
+-    CallerMatcher.cpp
+-    ChainableMockMethodContainer.cpp
+-    ChainableMockMethodCore.cpp
+-    ChainableMockMethodIndexKey.cpp
+-    ChainableMockMethodNameKey.cpp
+-    ChainableMockObjectBase.cpp
+-    ChainableMockObject.cpp
+-    ChainingMockHelper.cpp
+-    ConstraintSet.cpp
+-    DecoratedConstraint.cpp
+-    DefaultMatcher.cpp
+-    DefaultStub.cpp
+-    DelegatedMethodGetter.cpp
+-    MethodIndiceChecker.cpp
+-    DieStub.cpp
+-    Exception.cpp
+-    ExpectsMatcher.cpp
+-    Formatter.cpp
+-    IdentityBuilder.cpp
+-    IgnoreResultHandler.cpp
+-    IgnoreResultHandlerFactory.cpp
+-    IgnoreReturnStub.cpp
+-    Ignore.cpp
+-    InterfaceInfo.cpp
+-    Invocation.cpp
+-    InvocationId.cpp
+-    InvocationMockBuilderGetter.cpp
+-    InvocationMocker.cpp
+-    InvocationMockerSet.cpp
+-    InvocationTimesMatcher.cpp
+-    InvokedAtLeast.cpp
+-    InvokedAtMost.cpp
+-    InvokedExactly.cpp
+-    InvokedOnce.cpp
+-    InvokedTimesMatcher.cpp
+-    IsAnythingHelper.cpp
+-    IsStringContains.cpp
+-    IsStringEndWith.cpp
+-    IsStringStartWith.cpp
+-    MismatchResultHandler.cpp
+-    MismatchResultHandlerFactory.cpp
+-    MockObjectBase.cpp
+-    NormalResultHandler.cpp
+-    NormalResultHandlerFactory.cpp
+-    OutBoundPointer.cpp
+-    PendingMatcher.cpp
+-    ProcStub.cpp
+-    RefAny.cpp
+-    RepeatStub.cpp
+-    Result.cpp
+-    ReturnObjectList.cpp
+-    ReturnStub.cpp
+-    SimpleInvocationRecorder.cpp
+-    StringConstraint.cpp
+-    StubContainer.cpp
+-    StubsMatcher.cpp
+-    TestFailureMatcher.cpp
+-    ThenStub.cpp
+-    TypelessConstraintAdapter.cpp
+-    TypelessStubAdapter.cpp
+-    TypeString.cpp
+-    VirtualTable.cpp
+-    VirtualTableUtils.cpp
+-    VoidResultHandler.cpp
+-    VoidResultHandlerFactory.cpp
+-    WillStub.cpp
+-    HookMockObject.cpp
+-    ApiHookKey.cpp
+-    GlobalMockObject.cpp
+-    JmpOnlyApiHook.cpp
+-    JmpCode.cpp
+-    ApiHook.cpp
+-
+-)
+-
+-IF(${MOCKCPP_XUNIT} STREQUAL "GTEST" OR ${MOCKCPP_XUNIT} STREQUAL "gtest")
+-
+-   IF(NOT DEFINED MOCKCPP_XUNIT_HOME)
+-      MESSAGE(FATAL_ERROR "Please specify MOCKCPP_XUNIT_HOME as the home path of googletest")
+-   ENDIF()
+-   FIND_FILE(GTEST_HEADER
+-             gtest.h 
+-             PATHS ${MOCKCPP_XUNIT_HOME}/include/gtest 
+-             NO_DEFAULT_PATH 
+-             NO_CMAKE_ENVIRONMENT_PATH 
+-             NO_CMAKE_PATH 
+-             NO_SYSTEM_ENVIRONMENT_PATH 
+-             NO_CMAKE_SYSTEM_PATH)
+-   IF(NOT EXISTS ${GTEST_HEADER})
+-      MESSAGE(FATAL_ERROR "gtest.h not found in ${MOCKCPP_XUNIT_HOME}/include/gtest, please specify MOCKCPP_XUNIT_HOME as the home path of googletest correctly.")
+-   ENDIF()
+-   INCLUDE_DIRECTORIES(BEFORE ${MOCKCPP_XUNIT_HOME}/include)
+-   SET(MOCKCPP_SRCS ${MOCKCPP_SRCS} ports/failure/gtest_report_failure.cpp)
+-
+-ELSEIF(${MOCKCPP_XUNIT} STREQUAL "CppUTest" OR ${MOCKCPP_XUNIT} STREQUAL "cpputest")
+-
+-   IF(NOT DEFINED MOCKCPP_XUNIT_HOME)
+-      MESSAGE(FATAL_ERROR "Please specify MOCKCPP_XUNIT_HOME as the home path of googletest")
+-   ENDIF()
+-   FIND_FILE(CPPUTEST_HEADER
+-             TestHarness.h 
+-             PATHS ${MOCKCPP_XUNIT_HOME}/include/CppUTest
+-             NO_DEFAULT_PATH 
+-             NO_CMAKE_ENVIRONMENT_PATH 
+-             NO_CMAKE_PATH 
+-             NO_SYSTEM_ENVIRONMENT_PATH 
+-             NO_CMAKE_SYSTEM_PATH)
+-   IF(NOT EXISTS ${CPPUTEST_HEADER})
+-      MESSAGE(FATAL_ERROR "TestHarness.h not found in ${MOCKCPP_XUNIT_HOME}/include/CppUTest, please specify MOCKCPP_XUNIT_HOME as the home path of CppUTest correctly.")
+-   ENDIF()
+-   INCLUDE_DIRECTORIES(BEFORE ${MOCKCPP_XUNIT_HOME}/include ${MOCKCPP_XUNIT_HOME}/include/Platforms/VisualCpp)
+-   SET(MOCKCPP_SRCS ${MOCKCPP_SRCS} ports/failure/cpputest_report_failure.cpp)   
+-   
+-ELSEIF(${MOCKCPP_XUNIT} STREQUAL "CPPUNIT" OR ${MOCKCPP_XUNIT} STREQUAL "cppunit")
+-   IF(NOT DEFINED MOCKCPP_XUNIT_HOME)
+-      MESSAGE(FATAL_ERROR "Please specify MOCKCPP_XUNIT_HOME as the home path of cppunit")
+-   ENDIF()
+-   FIND_FILE(CPPUNIT_HEADER Exception.h 
+-             PATHS ${MOCKCPP_XUNIT_HOME}/include/cppunit
+-             NO_DEFAULT_PATH 
+-             NO_CMAKE_ENVIRONMENT_PATH 
+-             NO_CMAKE_PATH 
+-             NO_SYSTEM_ENVIRONMENT_PATH 
+-             NO_CMAKE_SYSTEM_PATH)
+-   IF(NOT EXISTS ${CPPUNIT_HEADER})
+-      MESSAGE(FATAL_ERROR "Can't find file Exception.h, please specify MOCKCPP_XUNIT_HOME as the home path of cppunit correctly.")
+-   ENDIF()
+-   INCLUDE_DIRECTORIES(BEFORE ${MOCKCPP_XUNIT_HOME}/include)
+-   SET(MOCKCPP_SRCS ${MOCKCPP_SRCS} ports/failure/cppunit_report_failure.cpp)
+-ELSEIF(${MOCKCPP_XUNIT} STREQUAL "Catch2" OR ${MOCKCPP_XUNIT} STREQUAL "catch2")
+-   IF(NOT DEFINED MOCKCPP_XUNIT_HOME)
+-      MESSAGE(FATAL_ERROR "Please specify MOCKCPP_XUNIT_HOME as the home path of catch2")
+-   ENDIF()
+-   FIND_FILE(CATCH2_HEADER
+-             catch_test_macros.hpp 
+-             PATHS ${MOCKCPP_XUNIT_HOME}/catch2
+-             NO_DEFAULT_PATH 
+-             NO_CMAKE_ENVIRONMENT_PATH 
+-             NO_CMAKE_PATH 
+-             NO_SYSTEM_ENVIRONMENT_PATH 
+-             NO_CMAKE_SYSTEM_PATH)
+-   IF(NOT EXISTS ${CATCH2_HEADER})
+-      MESSAGE(FATAL_ERROR "Can't find file catch_test_macros.hpp, please specify MOCKCPP_XUNIT_HOME as the home path of catch2 correctly.")
+-   ENDIF()
+-   INCLUDE_DIRECTORIES(BEFORE ${MOCKCPP_XUNIT_HOME})
+-   SET(MOCKCPP_SRCS ${MOCKCPP_SRCS} ports/failure/catch2_report_failure.cpp)
+-ELSE()
+-   SET(MOCKCPP_SRCS ${MOCKCPP_SRCS} ports/failure/stdexcept_report_failure.cpp)
+-ENDIF()
+-
+-IF(MSVC OR MINGW)
+-   SET(MOCKCPP_SRCS 
+-       ${MOCKCPP_SRCS} 
+-       WinCodeModifier.cpp
+-   ) 
+-ELSE(MSVC OR MINGW)
+-   SET(MOCKCPP_SRCS 
+-       ${MOCKCPP_SRCS} 
+-       UnixCodeModifier.cpp
+-   )
+-ENDIF(MSVC OR MINGW)
+-######################################################
+-SET(MOCKCPP_HEADERS_PATH ${MOCKCPP_SRC_ROOT}/include/mockcpp)
+-
+-SET(MOCKCPP_VTBL_RELATED_HEADERS 
+-    ${MOCKCPP_HEADERS_PATH}/DelegatedMethodGetDef.h 
+-    ${MOCKCPP_HEADERS_PATH}/DelegatedMethodGetByVptrDef.h 
+-    ${MOCKCPP_HEADERS_PATH}/DestructorAddrGetterDef.h 
+-    ${MOCKCPP_HEADERS_PATH}/MethodIndiceCheckerDef.h
+-    ${MOCKCPP_HEADERS_PATH}/DefaultMethodAddrGetterDef.h
+-)
+-
+-SET(MOCKCPP_ARG_RELATED_HEADER_FILES
+-    ${MOCKCPP_HEADERS_PATH}/DelegatedMethodDef.h 
+-    ${MOCKCPP_HEADERS_PATH}/ArgumentsListDef.h  
+-    ${MOCKCPP_HEADERS_PATH}/MethodTypeTraitsDef.h
+-)
+-
+-IF(MOCKCPP_ALLOW_MI)
+-    SET(ALLOW_MI yes)
+-ELSE(MOCKCPP_ALLOW_MI)
+-    SET(ALLOW_MI no)
+-ENDIF(MOCKCPP_ALLOW_MI)
+-
+-######################################################
+-SET(VTBL_GENERATOR ${MOCKCPP_SRC_ROOT}/src/generate_vtbl_related_files.py)
+-SET(EXTRA_VTBL_HEADERS_DEFS
+-    --allow-mi=${ALLOW_MI}
+-    --max-inheritance=${MOCKCPP_MAX_INHERITANCE}
+-    --max-vtbl-size=${MOCKCPP_MAX_VTBL_SIZE}
+-    --include-path=${MOCKCPP_HEADERS_PATH}
+-)
+-FOREACH(HEADER ${MOCKCPP_VTBL_RELATED_HEADERS})
+-    GET_FILENAME_COMPONENT(HEADER_NAME ${HEADER} NAME)
+-    ADD_CUSTOM_COMMAND(
+-        OUTPUT ${HEADER}
+-        COMMAND ${PYTHON} ${VTBL_GENERATOR} ${EXTRA_VTBL_HEADERS_DEFS} ${HEADER_NAME}
+-    )
+-ENDFOREACH()
+-
+-######################################################
+-SET(ARG_GENERATOR ${MOCKCPP_SRC_ROOT}/src/generate_arg_related_files.py)
+-SET(EXTRA_ARG_HEADERS_DEFS
+-    --max-parameters=${MOCKCPP_MAX_PARAMETERS}
+-    --include-path=${MOCKCPP_HEADERS_PATH}
+-)
+-FOREACH(HEADER ${MOCKCPP_ARG_RELATED_HEADER_FILES})
+-    GET_FILENAME_COMPONENT(HEADER_NAME ${HEADER} NAME)
+-    ADD_CUSTOM_COMMAND(
+-        OUTPUT ${HEADER}
+-        COMMAND ${PYTHON} ${ARG_GENERATOR} ${EXTRA_ARG_HEADERS_DEFS} ${HEADER_NAME}
+-    )
+-ENDFOREACH()
+-
+-######################################################
+-LINK_DIRECTORIES(${CMAKE_BINARY_DIR}/src ${CMAKE_BINARY_DIR}/tests/3rdparty/testngpp/src)
+-
+-ADD_LIBRARY(mockcpp STATIC ${MOCKCPP_SRCS})
+-
+-INCLUDE_DIRECTORIES(BEFORE ${MOCKCPP_SRC_ROOT}/include ${MOCKCPP_SRC_ROOT}/3rdparty)
+-
+-ADD_CUSTOM_TARGET(vtbl_related_headers DEPENDS ${MOCKCPP_VTBL_RELATED_HEADERS})
+-ADD_CUSTOM_TARGET(arg_related_headers DEPENDS ${MOCKCPP_ARG_RELATED_HEADER_FILES})
+-
+-ADD_DEPENDENCIES(mockcpp vtbl_related_headers arg_related_headers)
+-
+-INSTALL(
+-   TARGETS mockcpp
+-   ARCHIVE DESTINATION lib)
+-#   ARCHIVE DESTINATION binary/${TESTNGPP_OS_COMPILER}/mockcpp/lib)
+diff --git a/src/ChainableMockMethodContainer.cpp b/src/ChainableMockMethodContainer.cpp
+index 71658a4..3adbf23 100644
+--- a/src/ChainableMockMethodContainer.cpp
++++ b/src/ChainableMockMethodContainer.cpp
+@@ -49,6 +49,7 @@ struct ChainableMockMethodContainerImpl
+    InvocationMocker* findInvocationMocker(const std::string& id) const;
+ 
+    void reset();
++   void reset(ChainableMockMethodKey* key);
+    void verify();
+ 
+    bool verified;
+@@ -81,17 +82,35 @@ namespace
+   }
+ }
+ 
++/////////////////////////////////////////////////////////////////////////
++namespace
++{
++  struct IsMethodKeyMatch
++  {
++    IsMethodKeyMatch(ChainableMockMethodKey* key)
++      : myKey(key)
++    {}
++
++    bool operator()(ChainableMockMethodContainerImpl::ValueType value)
++    {
++      return myKey->equals(getKey(value));
++    }
++
++    ChainableMockMethodKey* myKey;
++  };
++}
++
+ /////////////////////////////////////////////////////////////////////////
+ void
+ ChainableMockMethodContainerImpl::reset()
+ {
+-    //for_each(methods.begin(), methods.end(), resetMethod);
+-	for(Iterator i = methods.begin(); i != methods.end(); i++)
+-	{
+-		resetMethod(*i);
+-	}
+-    methods.clear();
+-    verified = false;
++  //for_each(methods.begin(), methods.end(), resetMethod);
++  for (Iterator i = methods.begin(); i != methods.end(); i++)
++  {
++    resetMethod(*i);
++  }
++  methods.clear();
++  verified = false;
+ }
+ 
+ /////////////////////////////////////////////////////////////////////////
+@@ -114,6 +133,19 @@ ChainableMockMethodContainerImpl::verify()
+     for_each(methods.begin(), methods.end(), verifyMethod);
+ }
+ 
++void
++ChainableMockMethodContainerImpl::reset(ChainableMockMethodKey* key)
++{
++  ConstIterator i = std::find_if(methods.begin()
++    , methods.end()
++    , IsMethodKeyMatch(key));
++
++  if (i != methods.end()) {
++    resetMethod(*i);
++    methods.remove(*i);
++  }
++}
++
+ /////////////////////////////////////////////////////////////////////////
+ ChainableMockMethodContainerImpl::~ChainableMockMethodContainerImpl()
+ {
+@@ -156,25 +188,6 @@ ChainableMockMethodContainerImpl::findInvocationMocker(const std::string& id) co
+    return 0;
+ }
+ 
+-/////////////////////////////////////////////////////////////////////////
+-namespace
+-{
+-  struct IsMethodKeyMatch
+-  {
+-    IsMethodKeyMatch(ChainableMockMethodKey* key)
+-      : myKey(key)
+-    {}
+-
+-    bool operator()(ChainableMockMethodContainerImpl::ValueType value)
+-    {
+-       return myKey->equals(getKey(value));
+-    }
+-
+-    ChainableMockMethodKey* myKey;
+-  };
+-
+-}
+-
+ /////////////////////////////////////////////////////////////////////////
+ ChainableMockMethodCore*
+ ChainableMockMethodContainerImpl::getMethod(ChainableMockMethodKey* key) const
+@@ -227,6 +240,12 @@ ChainableMockMethodContainer::verify()
+    This->verify();
+ }
+ 
++void
++ChainableMockMethodContainer::reset(ChainableMockMethodKey* key)
++{
++  This->reset(key);
++}
++
+ /////////////////////////////////////////////////////////////////////////
+ MOCKCPP_NS_END
+ 
+diff --git a/src/ChainableMockMethodCore.cpp b/src/ChainableMockMethodCore.cpp
+index c254c0f..aa9d193 100644
+--- a/src/ChainableMockMethodCore.cpp
++++ b/src/ChainableMockMethodCore.cpp
+@@ -149,6 +149,7 @@ ChainableMockMethodCore::getName() const
+ const Any&
+ ChainableMockMethodCore::invoke
+              ( const std::string& nameOfCaller
++             , const RefAny& pThisPointer
+              , const RefAny& p1
+              , const RefAny& p2
+              , const RefAny& p3
+@@ -163,7 +164,8 @@ ChainableMockMethodCore::invoke
+              , const RefAny& p12
+              , SelfDescribe* &resultProvider)
+ {
+-    Invocation inv(nameOfCaller,p1,p2,p3,p4,p5,p6,p7,p8,p9,p10,p11,p12);
++    Invocation inv(nameOfCaller,pThisPointer
++      ,p1,p2,p3,p4,p5,p6,p7,p8,p9,p10,p11,p12);
+     return This->invoke(inv, resultProvider);
+ }
+ 
+diff --git a/src/ChainableMockObject.cpp b/src/ChainableMockObject.cpp
+index 33505c1..9784018 100644
+--- a/src/ChainableMockObject.cpp
++++ b/src/ChainableMockObject.cpp
+@@ -85,7 +85,7 @@ getMethod(const std::string& name, InvocationMockerNamespace* ns)
+ ChainableMockObject::ChainableMockObject(const std::string& name)
+     : ChainableMockObjectBase(name)
+ {
+-	This = new ChainableMockObjectImpl(this->getMethodContainer());
++  This = new ChainableMockObjectImpl(this->getMethodContainer());
+ }
+ 
+ //////////////////////////////////////////////////////////////
+@@ -99,7 +99,8 @@ InvocationMockBuilderGetter
+ ChainableMockObject::method(const std::string& name)
+ {
+     ChainableMockMethodCore* core = This->getMethod(name, this);
+-    return InvocationMockBuilderGetter(core, core);
++    // @TODO: how to get the 'api' ?
++    return InvocationMockBuilderGetter(core, core, NULL);
+ }
+ 
+ //////////////////////////////////////////////////////////////
+diff --git a/src/ChainingMockHelper.cpp b/src/ChainingMockHelper.cpp
+index a8b8d99..8e059fb 100644
+--- a/src/ChainingMockHelper.cpp
++++ b/src/ChainingMockHelper.cpp
+@@ -131,10 +131,10 @@ Stub* returnObjectList( const Any& o01
+                       , const Any& o11
+                       , const Any& o12)
+ {
+-    return new TypelessStubAdapter(
+-                 new ReturnObjectList(
+-                       o01, o02, o03, o04, o05, o06,
+-                       o07, o08, o09, o10, o11, o12));
++  return new TypelessStubAdapter(
++           new ReturnObjectList(
++             o01, o02, o03, o04, o05, o06,
++             o07, o08, o09, o10, o11, o12));
+ }
+ 
+ MOCKCPP_EXPORT
+diff --git a/src/ConstraintSet.cpp b/src/ConstraintSet.cpp
+index b846daf..15736ea 100644
+--- a/src/ConstraintSet.cpp
++++ b/src/ConstraintSet.cpp
+@@ -97,20 +97,6 @@ ConstraintSetImpl::matches(const Invocation& inv) const
+ ////////////////////////////////////////////////////////////
+ #define INIT_CONSTRAINT(i) This->constraints.push_back(p##i)
+ 
+-ConstraintSet::ConstraintSet(unsigned int which, Constraint* p)
+-   : This(new ConstraintSetImpl())
+-{
+-    if(which >= 12 || p == 0) return;
+-
+-    for(unsigned int i=0; i<which; i++)
+-    {
+-        This->constraints.push_back(any());
+-    }
+-
+-    
+-    This->constraints.push_back(p);
+-}
+-
+ ConstraintSet::ConstraintSet(
+                Constraint* p1
+              , Constraint* p2
+diff --git a/src/DummyApiHook.cpp b/src/DummyApiHook.cpp
+index 7093ce4..aa80dcd 100644
+--- a/src/DummyApiHook.cpp
++++ b/src/DummyApiHook.cpp
+@@ -14,41 +14,41 @@
+    See the License for the specific language governing permissions and
+    limitations under the License.
+ ***/
+-
+-#include <mockcpp/CApiHook.h>
+-
+-MOCKCPP_NS_START
+-
+-struct CApiHookImpl
+-{
+-	CApiHookImpl(CApiHook::Address pfnOld, CApiHook::Address pfnNew );
+-	~CApiHookImpl();
+-};
+-
+-
+-/////////////////////////////////////////////////////////////////
+-CApiHookImpl::CApiHookImpl(CApiHook::Address pfnOld, CApiHook::Address pfnNew )
+-{
+-}
+-
+-/////////////////////////////////////////////////////////////////
+-CApiHookImpl::~CApiHookImpl()
+-{
+-}
+-
+-/////////////////////////////////////////////////////////////////
+-CApiHook::CApiHook(CApiHook::Address pfnOld, CApiHook::Address pfnNew)
+-   : This(new CApiHookImpl(pfnOld, pfnNew))
+-{
+-}
+-
+-/////////////////////////////////////////////////////////////////
+-CApiHook::~CApiHook()
+-{
+-	delete This;
+-}
+-
+-/////////////////////////////////////////////////////////////////
+-
+-MOCKCPP_NS_END
+-
++
++#include <mockcpp/CApiHook.h>
++
++MOCKCPP_NS_START
++
++struct CApiHookImpl
++{
++	CApiHookImpl(CApiHook::Address pfnOld, CApiHook::Address pfnNew );
++	~CApiHookImpl();
++};
++
++
++/////////////////////////////////////////////////////////////////
++CApiHookImpl::CApiHookImpl(CApiHook::Address pfnOld, CApiHook::Address pfnNew )
++{
++}
++
++/////////////////////////////////////////////////////////////////
++CApiHookImpl::~CApiHookImpl()
++{
++}
++
++/////////////////////////////////////////////////////////////////
++CApiHook::CApiHook(CApiHook::Address pfnOld, CApiHook::Address pfnNew)
++   : This(new CApiHookImpl(pfnOld, pfnNew))
++{
++}
++
++/////////////////////////////////////////////////////////////////
++CApiHook::~CApiHook()
++{
++	delete This;
++}
++
++/////////////////////////////////////////////////////////////////
++
++MOCKCPP_NS_END
++
+diff --git a/src/Formatter.cpp b/src/Formatter.cpp
+index d0211e6..aae9e3f 100644
+--- a/src/Formatter.cpp
++++ b/src/Formatter.cpp
+@@ -32,7 +32,7 @@ std::string toPointerString(void* p)
+    oss << "0x";
+    oss.flags (std::ios::hex);
+    oss.fill('0'); oss.width(8);
+-   oss << reinterpret_cast<unsigned long long>(p);
++   oss << reinterpret_cast<unsigned long>(p);
+ 
+    return oss.str();
+ }
+diff --git a/src/GlobalMockObject.cpp b/src/GlobalMockObject.cpp
+index eb41870..a72395f 100644
+--- a/src/GlobalMockObject.cpp
++++ b/src/GlobalMockObject.cpp
+@@ -47,5 +47,10 @@ void GlobalMockObject::reset()
+     instance.reset();
+ }
+ 
++void GlobalMockObject::reset(const void* api)
++{
++  instance.reset(api);
++}
++
+ MOCKCPP_NS_END
+ 
+diff --git a/src/HookMockObject.cpp b/src/HookMockObject.cpp
+index b50efd7..86ae7f3 100644
+--- a/src/HookMockObject.cpp
++++ b/src/HookMockObject.cpp
+@@ -44,6 +44,7 @@ struct HookMockObjectImpl
+    getMethod(const void* api);
+    
+    void reset();
++   void reset(const void* api);
+ 
+    ChainableMockMethodContainer* container;
+ 
+@@ -64,6 +65,13 @@ HookMockObjectImpl::reset()
+     container->reset();
+ }
+ 
++void
++HookMockObjectImpl::reset(const void* api)
++{
++  ApiHookKey key(api);
++  container->reset(&key);
++}
++
+ //////////////////////////////////////////////////////////////
+ ChainableMockMethodCore*
+ HookMockObjectImpl::
+@@ -123,7 +131,7 @@ InvocationMockBuilderGetter
+ HookMockObject::method(const std::string& name, const void* api, ApiHookHolder* hookHolder)
+ {
+     ChainableMockMethodCore* core = This->getMethod(name, api, hookHolder, this);
+-    return InvocationMockBuilderGetter(core, core);
++    return InvocationMockBuilderGetter(core, core, api);
+ }
+ 
+ //////////////////////////////////////////////////////////////
+@@ -144,6 +152,11 @@ void HookMockObject::reset()
+    This->reset();
+ }
+ 
++void HookMockObject::reset(const void* api)
++{
++  This->reset(api);
++}
++
+ //////////////////////////////////////////////////////////////
+ 
+ MOCKCPP_NS_END
+diff --git a/src/Ignore.cpp b/src/Ignore.cpp
+deleted file mode 100644
+index 6e5b326..0000000
+--- a/src/Ignore.cpp
++++ /dev/null
+@@ -1,37 +0,0 @@
+-/***
+-   mockcpp is a C/C++ mock framework.
+-   Copyright [2008] [Darwin Yuan <darwin.yuan@gmail.com>]
+-
+-   Licensed under the Apache License, Version 2.0 (the "License");
+-   you may not use this file except in compliance with the License.
+-   You may obtain a copy of the License at
+-
+-      http://www.apache.org/licenses/LICENSE-2.0
+-
+-   Unless required by applicable law or agreed to in writing, software
+-   distributed under the License is distributed on an "AS IS" BASIS,
+-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-   See the License for the specific language governing permissions and
+-   limitations under the License.
+-***/
+-
+-#include <mockcpp/Ignore.h>
+-#include <mockcpp/types/Any.h>
+-
+-MOCKCPP_NS_START
+-
+-///////////////////////////////////////////////
+-
+-const Any ignore = Any(Ignore());
+-
+-Any& getIgnore()
+-{
+-    return const_cast<Any&>(ignore);
+-}
+-
+-///////////////////////////////////////////////
+-
+-MOCKCPP_NS_END
+-
+-
+-
+diff --git a/src/IgnoreResultHandler.cpp b/src/IgnoreResultHandler.cpp
+index 2a0832c..22a030e 100644
+--- a/src/IgnoreResultHandler.cpp
++++ b/src/IgnoreResultHandler.cpp
+@@ -17,7 +17,6 @@
+ 
+ #include <mockcpp/IgnoreResultHandler.h>
+ #include <mockcpp/Ignore.h>
+-#include <mockcpp/types/Any.h>
+ #include <mockcpp/types/AnyCast.h>
+ 
+ MOCKCPP_NS_START
+@@ -29,7 +28,7 @@ bool IgnoreResultHandler::matches(const Any& val) const
+ 
+ const Any& IgnoreResultHandler::getResult(const Any& val) const
+ {
+-	return val;
++	return getEmptyAny();
+ }
+ 
+ MOCKCPP_NS_END
+diff --git a/src/InterfaceInfo.cpp b/src/InterfaceInfo.cpp
+index db5c00c..44ecb1e 100644
+--- a/src/InterfaceInfo.cpp
++++ b/src/InterfaceInfo.cpp
+@@ -15,7 +15,7 @@
+    limitations under the License.
+ ***/
+ 
+-#if defined(__GNUC__) && !defined(__clang__)
++#if defined(__GNUC__)
+ 
+ #include <cxxabi.h>
+ 
+@@ -110,13 +110,13 @@ getNumberOfBaseClassesByClassTypeInfo(const __class_type_info* info, unsigned in
+    const __vmi_class_type_info* vmi_base_info = dynamic_cast<const __vmi_class_type_info*>(info);
+    if(vmi_base_info != 0)
+    {
+-	return getNumberOfVtblsByVmi(vmi_base_info, number);
++		return getNumberOfVtblsByVmi(vmi_base_info, number);
+    }
+ 
+    const __si_class_type_info* si_base_info = dynamic_cast<const __si_class_type_info*>(info);
+    if(si_base_info != 0)
+    {
+-	return getNumberOfVtblsBySi(si_base_info, number);
++		return getNumberOfVtblsBySi(si_base_info, number);
+    }
+    
+    return number + 1;
+diff --git a/src/Invocation.cpp b/src/Invocation.cpp
+index 17019f5..c21fc54 100644
+--- a/src/Invocation.cpp
++++ b/src/Invocation.cpp
+@@ -27,41 +27,42 @@ MOCKCPP_NS_START
+ ////////////////////////////////////////////////////////////////
+ namespace
+ {
+-    const static unsigned int maxNumOfParameters = 12;
++  const static unsigned int maxNumOfParameters = 12;
+ };
+ 
+ ////////////////////////////////////////////////////////////////
+ struct InvocationImpl
+ {
+-    std::vector<RefAny> parameters;
+-    std::string nameOfCaller;
++  std::vector<RefAny> parameters;
++  std::string nameOfCaller;
++  RefAny thisPointer;
+ 
+-    std::string toString(void) const;
++  std::string toString(void) const;
+ 
+-    InvocationImpl(const std::string& name);
++  InvocationImpl(const std::string& name);
+ };
+ 
+ ////////////////////////////////////////////////////////////////
+ InvocationImpl::InvocationImpl(const std::string &name)
+-: nameOfCaller(name)
++  : nameOfCaller(name)
+ {
+ }
+ ////////////////////////////////////////////////////////////////
+ std::string InvocationImpl::toString() const
+ {
+-    oss_t oss;
++  oss_t oss;
+ 
+-    for (unsigned int i=0; i<maxNumOfParameters; i++)
+-    {
+-      if (parameters[i].empty())
+-          return oss.str();
++  for (unsigned int i=0; i<maxNumOfParameters; i++)
++  {
++    if (parameters[i].empty())
++      return oss.str();
+ 
+-      if (i > 0) oss << ", ";
++    if (i > 0) oss << ", ";
+ 
+-      oss << parameters[i].toTypeAndValueString();
+-    }
++    oss << parameters[i].toTypeAndValueString();
++  }
+ 
+-    return oss.str();
++  return oss.str();
+ }
+ 
+ ////////////////////////////////////////////////////////////////
+@@ -70,6 +71,7 @@ std::string InvocationImpl::toString() const
+ 
+ Invocation::Invocation(
+                      const std::string name
++                   , const RefAny& pThisPointer
+                    , const RefAny& p1
+                    , const RefAny& p2
+                    , const RefAny& p3
+@@ -85,48 +87,69 @@ Invocation::Invocation(
+    )
+    : This(new InvocationImpl(name))
+ {
+-    INIT_PARAMETER(1);
+-    INIT_PARAMETER(2);
+-    INIT_PARAMETER(3);
+-    INIT_PARAMETER(4);
+-    INIT_PARAMETER(5);
+-    INIT_PARAMETER(6);
+-    INIT_PARAMETER(7);
+-    INIT_PARAMETER(8);
+-    INIT_PARAMETER(9);
+-    INIT_PARAMETER(10);
+-    INIT_PARAMETER(11);
+-    INIT_PARAMETER(12);
++  This->thisPointer = pThisPointer;
++  INIT_PARAMETER(1);
++  INIT_PARAMETER(2);
++  INIT_PARAMETER(3);
++  INIT_PARAMETER(4);
++  INIT_PARAMETER(5);
++  INIT_PARAMETER(6);
++  INIT_PARAMETER(7);
++  INIT_PARAMETER(8);
++  INIT_PARAMETER(9);
++  INIT_PARAMETER(10);
++  INIT_PARAMETER(11);
++  INIT_PARAMETER(12);
+ }
+ 
+ ////////////////////////////////////////////////////////////////
+ Invocation::~Invocation()
+ {
+-    delete This;
++  delete This;
+ }
+ 
+ ////////////////////////////////////////////////////////////////
++RefAny& Invocation::getThisPointer(void) const
++{
++  return This->thisPointer;
++}
++
+ RefAny& Invocation::getParameter(const unsigned int i) const
+ {
+-    if (i < 1 || i > maxNumOfParameters )
+-    {
+-       return getEmptyRefAny();
+-    }
++  if (i < 1 || i > maxNumOfParameters )
++  {
++    return getEmptyRefAny();
++  }
++
++  return This->parameters[i-1];
++}
++
++RefAny& Invocation::getParameterWithThis(const unsigned int i) const
++{
++  if (This->thisPointer.empty())
++  {
++    return getParameter(i);
++  }
++
++  if (1 == i)
++  {
++    return This->thisPointer;
++  }
+ 
+-    return This->parameters[i-1];
++  return getParameter(i - 1);
+ }
+ 
+ ////////////////////////////////////////////////////////////////
+ std::string Invocation::toString(void) const
+ {
+-    return std::string("(") + This->toString() + std::string(")");
++  return std::string("(") + This->toString() + std::string(")");
+ }
+ 
+ ////////////////////////////////////////////////////////////////
+ 
+ std::string Invocation::getNameOfCaller() const
+ {
+-    return This->nameOfCaller;
++  return This->nameOfCaller;
+ }
+ 
+ ////////////////////////////////////////////////////////////////
+diff --git a/src/InvocationMockBuilderGetter.cpp b/src/InvocationMockBuilderGetter.cpp
+index b8f7510..8b3afd8 100644
+--- a/src/InvocationMockBuilderGetter.cpp
++++ b/src/InvocationMockBuilderGetter.cpp
+@@ -26,13 +26,16 @@
+ #include <mockcpp/InvocationMocker.h>
+ #include <mockcpp/DefaultMatcher.h>
+ #include <mockcpp/Method.h>
++#include <mockcpp/ChainingMockHelper.h>
++#include <mockcpp/GlobalMockObject.h>
+ 
+ MOCKCPP_NS_START
+ 
+ ///////////////////////////////////////////////////////////
+ InvocationMockBuilderGetter::
+-InvocationMockBuilderGetter(InvocationMockerContainer* container, Method* m)
+-	: invocationMockerContainer(container), method(m)
++InvocationMockBuilderGetter(
++  InvocationMockerContainer* container, Method* _method, const void* _addr)
++  : invocationMockerContainer(container), method(_method), addr(_addr)
+ {
+ 
+ }
+@@ -44,46 +47,60 @@ InvocationMockBuilderGetter::~InvocationMockBuilderGetter()
+ //////////////////////////////////////////////////////////
+ StubsBuilder InvocationMockBuilderGetter::stubs()
+ {
+-    InvocationMocker* mocker = new InvocationMocker(method);
+-    mocker->addMatcher(new StubsMatcher);
+-    mocker->addMatcher(new InvokedTimesMatcher(new SimpleInvocationRecorder));
++  InvocationMocker* mocker = new InvocationMocker(method);
++  mocker->addMatcher(new StubsMatcher);
++  mocker->addMatcher(new InvokedTimesMatcher(new SimpleInvocationRecorder));
+ 
+-    invocationMockerContainer->addInvocationMocker(mocker);
++  invocationMockerContainer->addInvocationMocker(mocker);
+ 
+-    return StubsBuilder(mocker);
++  return StubsBuilder(mocker);
+ }
+ 
+ //////////////////////////////////////////////////////////
+ MockBuilder InvocationMockBuilderGetter::expects(Matcher* matcher)
+ {
+-    InvocationMocker* mocker = new InvocationMocker(method);
++  InvocationMocker* mocker = new InvocationMocker(method);
+ 
+-    InvokedTimesRecorder* recorder = new SimpleInvocationRecorder;
+-    InvocationTimesMatcher* itMatcher = dynamic_cast<InvocationTimesMatcher*>(matcher);
+-    if (itMatcher != 0)
+-    {
+-      itMatcher->setInvokedTimesReader(recorder);
+-    }
++  InvokedTimesRecorder* recorder = new SimpleInvocationRecorder;
++  InvocationTimesMatcher* itMatcher = dynamic_cast<InvocationTimesMatcher*>(matcher);
++  if (itMatcher != 0)
++  {
++    itMatcher->setInvokedTimesReader(recorder);
++  }
+ 
+-    mocker->addMatcher(new ExpectsMatcher(matcher));
+-    mocker->addMatcher(new InvokedTimesMatcher(recorder));
++  mocker->addMatcher(new ExpectsMatcher(matcher));
++  mocker->addMatcher(new InvokedTimesMatcher(recorder));
+ 
+-    invocationMockerContainer->addInvocationMocker(mocker);
++  invocationMockerContainer->addInvocationMocker(mocker);
+ 
+-    return MockBuilder(mocker);
++  return MockBuilder(mocker);
++}
++
++//////////////////////////////////////////////////////////
++MockBuilder InvocationMockBuilderGetter::times(unsigned int n)
++{
++  return expects(exactly(n));
+ }
+ 
+ //////////////////////////////////////////////////////////
+ DefaultBuilder InvocationMockBuilderGetter::defaults()
+ {
+-    InvocationMocker* mocker = new InvocationMocker(method);
+-    mocker->addMatcher(new DefaultMatcher);
++  InvocationMocker* mocker = new InvocationMocker(method);
++  mocker->addMatcher(new DefaultMatcher);
+ 
+-    invocationMockerContainer->addDefaultInvocationMocker(mocker);
++  invocationMockerContainer->addDefaultInvocationMocker(mocker);
+ 
+-    return DefaultBuilder(mocker);
++  return DefaultBuilder(mocker);
+ }
+ 
++InvocationMockBuilderGetter &InvocationMockBuilderGetter::reset()
++{
++  if (addr) {
++    MOCKCPP_NS::GlobalMockObject::reset(addr);
++  }
++
++  return *this;
++}
+ //////////////////////////////////////////////////////////
+ 
+ MOCKCPP_NS_END
+diff --git a/src/JmpCode.cpp b/src/JmpCode.cpp
+index 35794fb..299a6fd 100644
+--- a/src/JmpCode.cpp
++++ b/src/JmpCode.cpp
+@@ -19,7 +19,8 @@
+ #include <string.h>
+ 
+ #include <mockcpp/JmpCode.h>
+-#include "JmpCodeArch.h"
++#include <mockcpp/Asserter.h>
++#include "src/JmpCodeArch.h"
+ 
+ MOCKCPP_NS_START
+ 
+@@ -27,54 +28,66 @@ MOCKCPP_NS_START
+ 
+ struct JmpCodeImpl
+ {
+-   ////////////////////////////////////////////////
+-   JmpCodeImpl(const void* from, const void* to)
+-   {
+-      ::memcpy(m_code, jmpCodeTemplate, JMP_CODE_SIZE);
+-      SET_JMP_CODE(m_code, from, to);
+-   }
+-
+-   ////////////////////////////////////////////////
+-   void*  getCodeData() const
+-   {
+-      return (void*) m_code;
+-   }
+-
+-   ////////////////////////////////////////////////
+-   size_t getCodeSize() const
+-   {
+-      return JMP_CODE_SIZE;
+-   }
+-
+-   ////////////////////////////////////////////////
+-
+-   unsigned char m_code[JMP_CODE_SIZE];
++  ////////////////////////////////////////////////
++  JmpCodeImpl(const void* from, const void* to)
++  {
++    m_from = from;
++    ::memcpy(m_code, jmpCodeTemplate, JMP_CODE_SIZE);
++    SET_JMP_CODE(m_code, from, to);
++  }
++
++  ////////////////////////////////////////////////
++  void*  getCodeData() const
++  {
++    return (void*) m_code;
++  }
++
++  ////////////////////////////////////////////////
++  size_t getCodeSize() const
++  {
++    return JMP_CODE_SIZE;
++  }
++
++  void flushCache() const
++  {
++    FLUSH_CACHE(m_from, JMP_CODE_SIZE);
++  }
++  ////////////////////////////////////////////////
++
++  unsigned char m_code[JMP_CODE_SIZE];
++  const void* m_from;
+ };
+ 
+ ///////////////////////////////////////////////////
+ JmpCode::JmpCode(const void* from, const void* to)
+-   : This(new JmpCodeImpl(from, to))
++  : This(new JmpCodeImpl(from, to))
+ {
+ }
+ 
+ ///////////////////////////////////////////////////
+ JmpCode::~JmpCode()
+ {
+-   delete This;
++  delete This;
+ }
+ 
+ ///////////////////////////////////////////////////
+ void*
+-JmpCode::getCodeData() const
++  JmpCode::getCodeData() const
+ {
+-   return This->getCodeData();
++  return This->getCodeData();
+ }
+ 
+ ///////////////////////////////////////////////////
+ size_t
+-JmpCode::getCodeSize() const
++  JmpCode::getCodeSize() const
+ {
+-   return This->getCodeSize();
++  return This->getCodeSize();
++}
++
++void
++  JmpCode::flushCache() const
++{
++  This->flushCache();
+ }
+ 
+ MOCKCPP_NS_END
+diff --git a/src/JmpCodeAARCH32.h b/src/JmpCodeAARCH32.h
+new file mode 100644
+index 0000000..0456b6d
+--- /dev/null
++++ b/src/JmpCodeAARCH32.h
+@@ -0,0 +1,21 @@
++
++#ifndef __MOCKCPP_JMP_CODE_AARCH32_H__
++#define __MOCKCPP_JMP_CODE_AARCH32_H__
++
++#include <stdlib.h>
++
++const unsigned char jmpCodeTemplate[] = { 0xEA, 0x00, 0x00, 0x00 };
++
++// @TODO : make it's style be same as JmpCodeAarch64
++#define SET_JMP_CODE(base, from, to) do { \
++    int offset = (int)to - (int)from - 8; \
++    offset = (offset >> 2) & 0x00FFFFFF; \
++    int code = *(int*)(base) | offset; \
++    *(int*)(base) = changeByteOrder(code); \
++  } while(0)
++
++#define FLUSH_CACHE(from, length) do { \
++  ::system("echo 3 > /proc/sys/vm/drop_caches"); \
++} while(0)
++
++#endif
+diff --git a/src/JmpCodeAARCH64.h b/src/JmpCodeAARCH64.h
+new file mode 100644
+index 0000000..95732fe
+--- /dev/null
++++ b/src/JmpCodeAARCH64.h
+@@ -0,0 +1,52 @@
++
++#ifndef __MOCKCPP_JMP_CODE_AARCH64_H__
++#define __MOCKCPP_JMP_CODE_AARCH64_H__
++
++#include <asm/unistd.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <sys/ioctl.h>
++#include <sys/mman.h>
++#include <sys/prctl.h>
++#include <sys/stat.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++MOCKCPP_NS_START
++
++struct l2cache_addr_range {
++    uintptr_t start;
++    uintptr_t end;
++};
++
++MOCKCPP_NS_END
++
++#define ADDR_ALIGN_UP(addr) ((((addr) + ((4096) - 1)) & (~((4096) - 1))) & 0xffffffffffffffff)
++#define ADDR_ALIGN_DOWN(addr) (((addr) & (~((4096) - 1))) & 0xffffffffffffffff)
++#define OUTER_CACHE_INV_RANGE _IOWR('S', 0x00, struct l2cache_addr_range)
++#define OUTER_CACHE_CLEAN_RANGE _IOWR('S', 0x01, struct l2cache_addr_range)
++#define OUTER_CACHE_FLUSH_RANGE _IOWR('S', 0x02, struct l2cache_addr_range)
++#define L1_INV_I_CACHE _IOWR('S', 0x03, struct l2cache_addr_range)
++#define D_TO_I_CACHEFLUSH_RANGE _IOWR('S', 0x04, struct l2cache_addr_range)
++
++#define CODESIZE 16U
++const unsigned char jmpCodeTemplate[CODESIZE] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 , 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
++// ldr x9, +8 
++// br x9 
++// addr 
++#define SET_JMP_CODE(base, from, to) do{    \
++    ((uint32_t*)base)[0] = 0x58000040 | 9;  \
++    ((uint32_t*)base)[1] = 0xd61f0000 | (9 << 5);   \
++    *(long long *)(base + 8) = (long long )to;  \
++    } while(0)
++
++#define FLUSH_CACHE(from, length) do {                                      \
++    struct l2cache_addr_range usr_data;                                     \
++    usr_data.start = ADDR_ALIGN_DOWN((unsigned long long)from);             \
++    usr_data.end = ADDR_ALIGN_UP((unsigned long long)from) + length;        \
++    __builtin___clear_cache((void *)usr_data.start, (void *)usr_data.end);  \
++} while (0)
++
++#endif
+\ No newline at end of file
+diff --git a/src/JmpCodeArch.h b/src/JmpCodeArch.h
+index 26abd73..60a9df3 100644
+--- a/src/JmpCodeArch.h
++++ b/src/JmpCodeArch.h
+@@ -19,10 +19,29 @@
+ 
+ #include <mockcpp/mockcpp.h>
+ 
+-#if BUILD_FOR_X64
+-# include "JmpCodeX64.h"
+-#elif BUILD_FOR_X86
+-# include "JmpCodeX86.h"
++template<typename T>
++inline T changeByteOrder(const T v) {
++  enum { S = sizeof(T) };
++  T rst = v;
++  char *p = (char *)&rst;
++  char tmp = 0;
++  for (unsigned int i = 0; i < S / 2; ++i) {
++    tmp = p[i];
++    p[i] = p[S - i - 1];
++    p[S - i - 1] = tmp;
++  }
++
++  return rst;
++}
++
++#if defined(BUILD_FOR_X64)
++# include "src/JmpCodeX64.h"
++#elif defined(BUILD_FOR_X86)
++# include "src/JmpCodeX86.h"
++#elif defined(BUILD_FOR_AARCH32)
++# include "src/JmpCodeAARCH32.h"
++#elif defined(BUILD_FOR_AARCH64)
++# include "src/JmpCodeAARCH64.h"
+ #endif
+ 
+ #endif
+diff --git a/src/JmpCodeX64.h b/src/JmpCodeX64.h
+index 198507a..54445dc 100644
+--- a/src/JmpCodeX64.h
++++ b/src/JmpCodeX64.h
+@@ -27,5 +27,6 @@ const unsigned char jmpCodeTemplate[]  =
+        *(uintptr_t *)(base + 6) = (uintptr_t)to; \
+    } while(0)
+ 
+-#endif
++#define FLUSH_CACHE(from, length) do {} while(0)
+ 
++#endif
+diff --git a/src/JmpCodeX86.h b/src/JmpCodeX86.h
+index ebdc526..707bea2 100644
+--- a/src/JmpCodeX86.h
++++ b/src/JmpCodeX86.h
+@@ -20,8 +20,10 @@
+ const unsigned char jmpCodeTemplate[]  = { 0xE9, 0x00, 0x00, 0x00, 0x00 };
+ #define SET_JMP_CODE(base, from, to) do { \
+         *(unsigned long*)(base + 1) = \
+-            (unsigned long long)to - (unsigned long long)from - sizeof(jmpCodeTemplate); \
++            (unsigned long)to - (unsigned long)from - sizeof(jmpCodeTemplate); \
+    } while(0)
+ 
++#define FLUSH_CACHE(from, length) do {} while(0)
++
+ #endif
+ 
+diff --git a/src/JmpOnlyApiHook.cpp b/src/JmpOnlyApiHook.cpp
+index d4cfa68..964828f 100644
+--- a/src/JmpOnlyApiHook.cpp
++++ b/src/JmpOnlyApiHook.cpp
+@@ -68,6 +68,7 @@ struct JmpOnlyApiHookImpl
+    void changeCode(const void* data)
+    {
+       CodeModifier::modify(const_cast<void*>(m_api), data, m_jmpCode.getCodeSize());
++      m_jmpCode.flushCache();
+    }
+ 
+    /////////////////////////////////////////////////////
+diff --git a/src/JmpOnlyApiHook.h b/src/JmpOnlyApiHook.h
+index d08ba05..e925a9f 100644
+--- a/src/JmpOnlyApiHook.h
++++ b/src/JmpOnlyApiHook.h
+@@ -14,28 +14,28 @@
+    See the License for the specific language governing permissions and
+    limitations under the License.
+ ***/
+-
+-#ifndef __MOCKCPP_JMP_ONLY_API_HOOK_H__
+-#define __MOCKCPP_JMP_ONLY_API_HOOK_H__
+-
+-#include <mockcpp/mockcpp.h>
+-
+-MOCKCPP_NS_START
+-
+-struct JmpOnlyApiHookImpl;
+-
+-struct JmpOnlyApiHook
+-{
+-    JmpOnlyApiHook
+-       ( const void* api
+-       , const void* stub );
+-
+-    ~JmpOnlyApiHook();
+-
+-private:
+-    JmpOnlyApiHookImpl* This;;
+-};
+-
+-MOCKCPP_NS_END
+-
+-#endif
++
++#ifndef __MOCKCPP_JMP_ONLY_API_HOOK_H__
++#define __MOCKCPP_JMP_ONLY_API_HOOK_H__
++
++#include <mockcpp/mockcpp.h>
++
++MOCKCPP_NS_START
++
++struct JmpOnlyApiHookImpl;
++
++struct JmpOnlyApiHook
++{
++    JmpOnlyApiHook
++       ( const void* api
++       , const void* stub );
++
++    ~JmpOnlyApiHook();
++
++private:
++    JmpOnlyApiHookImpl* This;;
++};
++
++MOCKCPP_NS_END
++
++#endif
+diff --git a/src/MockObjectBase.cpp b/src/MockObjectBase.cpp
+index b20f45d..71614a3 100644
+--- a/src/MockObjectBase.cpp
++++ b/src/MockObjectBase.cpp
+@@ -160,7 +160,7 @@ createInvocationMockerBuilderGetter(const std::string& name, \
+    ChainableMockMethodCore* method = \
+           This->getMethod(name, addr, vptrIndex, vtblIndex, this);
+ 
+-   return InvocationMockBuilderGetter(method, method);
++   return InvocationMockBuilderGetter(method, method, addr);
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////
+diff --git a/src/UnixCodeModifier.cpp b/src/UnixCodeModifier.cpp
+index ab4014e..90b9d4b 100644
+--- a/src/UnixCodeModifier.cpp
++++ b/src/UnixCodeModifier.cpp
+@@ -1,66 +1,69 @@
+-/***
+-   mockcpp is a C/C++ mock framework.
+-   Copyright [2008] [Darwin Yuan <darwin.yuan@gmail.com>]
+-                    [Chen Guodong <sinojelly@gmail.com>]
+-   Licensed under the Apache License, Version 2.0 (the "License");
+-   you may not use this file except in compliance with the License.
+-   You may obtain a copy of the License at
+-
+-      http://www.apache.org/licenses/LICENSE-2.0
+-
+-   Unless required by applicable law or agreed to in writing, software
+-   distributed under the License is distributed on an "AS IS" BASIS,
+-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-   See the License for the specific language governing permissions and
+-   limitations under the License.
+-***/
+-
+-#include <string.h>
+-#include <inttypes.h>
+-#include <sys/mman.h>
+-
+-#include <mockcpp/CodeModifier.h>
+-
+-#define PAGE_ALIGN_BITS  12
+-
+-//////////////////////////////////////////////////////////////////
+-#define PAGE_SIZE   (1 << PAGE_ALIGN_BITS)
+-#define ALIGN_TO_PAGE_BOUNDARY(addr) (void*) (((uintptr_t)addr) & (~((1<<(PAGE_ALIGN_BITS))-1)))
+-//////////////////////////////////////////////////////////////////
+-
+-MOCKCPP_NS_START
+-
+-bool CodeModifier::modify(void *dest, const void *src, size_t size)
+-{
+-    if(::mprotect(ALIGN_TO_PAGE_BOUNDARY(dest), PAGE_SIZE * 2, PROT_EXEC | PROT_WRITE | PROT_READ ) != 0)
+-    {  
+-       return false; 
+-    }
+-
+-    ::memcpy(dest, src, size);
+-
+-
+-#if 0
+-	#if BUILD_FOR_X86
+-	//(void)memcpy(dest, src, size); // something wrong on linux: after memcpy(or 5 single byte copy),  the 4 bytes following jmp, src is 0x07c951b0, but dest is 0x07b851b0. so use unsigned int *, it works ok.
+-	*((unsigned char *)dest) = *((unsigned char *)src);
+-	*((unsigned long *)((unsigned long)dest + 1)) = *((unsigned long *)((unsigned long)src + 1));
+-	#else
+-	*((unsigned char *)dest) = *((unsigned char *)src);
+-	*((unsigned char *)((unsigned long)dest + 1)) = *((unsigned char *)((unsigned long)src + 1));
+-    // after this line, dest+2 is 0x00c90000, not 0, so change it.
+-	*((unsigned char *)((unsigned long)dest + 2)) = *((unsigned char *)((unsigned long)src + 2));
+-	*((unsigned char *)((unsigned long)dest + 3)) = *((unsigned char *)((unsigned long)src + 3));
+-	*((unsigned char *)((unsigned long)dest + 4)) = *((unsigned char *)((unsigned long)src + 4));
+-	*((unsigned char *)((unsigned long)dest + 5)) = *((unsigned char *)((unsigned long)src + 5));
+-	*((unsigned long *)((unsigned long)dest + 6)) = *((unsigned long *)((unsigned long)src + 6));
+-	#endif
+-#endif
+-
+-	return true;
+-}
+-
+-
+-MOCKCPP_NS_END
+-
+-
++/***
++   mockcpp is a C/C++ mock framework.
++   Copyright [2008] [Darwin Yuan <darwin.yuan@gmail.com>]
++                    [Chen Guodong <sinojelly@gmail.com>]
++   Licensed under the Apache License, Version 2.0 (the "License");
++   you may not use this file except in compliance with the License.
++   You may obtain a copy of the License at
++
++      http://www.apache.org/licenses/LICENSE-2.0
++
++   Unless required by applicable law or agreed to in writing, software
++   distributed under the License is distributed on an "AS IS" BASIS,
++   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++   See the License for the specific language governing permissions and
++   limitations under the License.
++***/
++
++#include <string.h>
++#include <inttypes.h>
++#include <sys/mman.h>
++
++#include <mockcpp/CodeModifier.h>
++#include "src/JmpCodeArch.h"
++
++#define PAGE_ALIGN_BITS  12
++
++//////////////////////////////////////////////////////////////////
++#define PAGE_SIZE   (1 << PAGE_ALIGN_BITS)
++#define ALIGN_TO_PAGE_BOUNDARY(addr) (void*) (((uintptr_t)addr) & (~((1<<(PAGE_ALIGN_BITS))-1)))
++//////////////////////////////////////////////////////////////////
++
++MOCKCPP_NS_START
++
++bool CodeModifier::modify(void *dest, const void *src, size_t size)
++{
++    if(::mprotect(ALIGN_TO_PAGE_BOUNDARY(dest), PAGE_SIZE * 2, PROT_EXEC | PROT_WRITE | PROT_READ ) != 0)
++    {  
++       return false; 
++    }
++
++    ::memcpy(dest, src, size);
++    ::msync(dest, size, MS_SYNC);
++
++    FLUSH_CACHE(dest, size);
++
++#if 0
++	#if BUILD_FOR_X86
++	//(void)memcpy(dest, src, size); // something wrong on linux: after memcpy(or 5 single byte copy),  the 4 bytes following jmp, src is 0x07c951b0, but dest is 0x07b851b0. so use unsigned int *, it works ok.
++	*((unsigned char *)dest) = *((unsigned char *)src);
++	*((unsigned long *)((unsigned long)dest + 1)) = *((unsigned long *)((unsigned long)src + 1));
++	#else
++	*((unsigned char *)dest) = *((unsigned char *)src);
++	*((unsigned char *)((unsigned long)dest + 1)) = *((unsigned char *)((unsigned long)src + 1));
++    // after this line, dest+2 is 0x00c90000, not 0, so change it.
++	*((unsigned char *)((unsigned long)dest + 2)) = *((unsigned char *)((unsigned long)src + 2));
++	*((unsigned char *)((unsigned long)dest + 3)) = *((unsigned char *)((unsigned long)src + 3));
++	*((unsigned char *)((unsigned long)dest + 4)) = *((unsigned char *)((unsigned long)src + 4));
++	*((unsigned char *)((unsigned long)dest + 5)) = *((unsigned char *)((unsigned long)src + 5));
++	*((unsigned long *)((unsigned long)dest + 6)) = *((unsigned long *)((unsigned long)src + 6));
++	#endif
++#endif
++
++	return true;
++}
++
++
++MOCKCPP_NS_END
++
++
+diff --git a/src/get_long_opt.py b/src/get_long_opt.py
+index 4e32eb0..f5b4044 100644
+--- a/src/get_long_opt.py
++++ b/src/get_long_opt.py
+@@ -2,39 +2,45 @@
+ 
+ import getopt, sys
+ 
++
+ class LongOptString:
+-	def __init__(self, optString, example):
+-		self.optString = optString
+-		self.example = example
++    def __init__(self, optString, example):
++        self.optString = optString
++        self.example = example
++
++    def toAssignable(self):
++        return self.optString + '='
+ 
+-	def toAssignable(self):
+-		return self.optString + '='
++    def toLongOptString(self):
++        return '--' + self.optString
+ 
+-	def toLongOptString(self):
+-		return '--' + self.optString
++    def toLongAssignable(self):
++        return '--' + self.optString + '='
+ 
+-	def toLongAssignable(self):
+-		return '--' + self.optString + '='
++    def toUsage(self):
++        return self.toLongAssignable() + self.example
+ 
+-	def toUsage(self):
+-		return self.toLongAssignable() + self.example
+ 
+ def getAssignableOptStrings(longOpts):
+-	return [i.toAssignable() for i in longOpts]
++    return [i.toAssignable() for i in longOpts]
++
+ 
+ def getUsageString(longOpts):
+-	return " ".join([i.toUsage() for i in longOpts])
++    return " ".join([i.toUsage() for i in longOpts])
++
+ 
+ def usage(longOpts):
+-	print(sys.argv[0], getUsageString(longOpts))
++    print(sys.argv[0], getUsageString(longOpts))
++
+ 
+ def getOpt(longOpts):
+-	try:
+-		return getopt.getopt(sys.argv[1:], '', getAssignableOptStrings(longOpts))
+-	except (getopt.GetoptError, err):
+-		print(str(err), file=sys.stderr)
+-		usage(longOpts)
+-		sys.exit(2)
++    try:
++        return getopt.getopt(sys.argv[1:], '', getAssignableOptStrings(longOpts))
++    except getopt.GetoptError as err:
++        print >> sys.stderr, str(err)
++        usage(longOpts)
++        sys.exit(2)
++
+ 
+ def getContent(lines):
+-   return "\n".join(lines) + "\n"
++    return "\n".join(lines) + "\n"
+diff --git a/src/ports/failure/cppunit_report_failure.cpp b/src/ports/failure/cppunit_report_failure.cpp
+index fe6b544..87c26c8 100644
+--- a/src/ports/failure/cppunit_report_failure.cpp
++++ b/src/ports/failure/cppunit_report_failure.cpp
+@@ -14,23 +14,6 @@
+    See the License for the specific language governing permissions and
+    limitations under the License.
+ ***/
+-/***
+-    mockcpp is a generic C/C++ mock framework.
+-    Copyright (C) <2009>  <Darwin Yuan: darwin.yuan@gmail.com>
+-
+-    This program is free software: you can redistribute it and/or modify
+-    it under the terms of the GNU General Public License as published by
+-    the Free Software Foundation, either version 3 of the License, or
+-    (at your option) any later version.
+-
+-    This program is distributed in the hope that it will be useful,
+-    but WITHOUT ANY WARRANTY; without even the implied warranty of
+-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+-    GNU General Public License for more details.
+-
+-    You should have received a copy of the GNU General Public License
+-    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+-***/
+ 
+ #include <mockcpp/mockcpp.h>
+ #include <cppunit/Exception.h>
+diff --git a/src/ports/failure/cpputest_report_failure.cpp b/src/ports/failure/cpputest_report_failure.cpp
+index 161fe44..5da1e6c 100644
+--- a/src/ports/failure/cpputest_report_failure.cpp
++++ b/src/ports/failure/cpputest_report_failure.cpp
+@@ -14,23 +14,6 @@
+    See the License for the specific language governing permissions and
+    limitations under the License.
+ ***/
+-/***
+-    mockcpp is a generic C/C++ mock framework.
+-    Copyright (C) <2009>  <Darwin Yuan: darwin.yuan@gmail.com>
+-
+-    This program is free software: you can redistribute it and/or modify
+-    it under the terms of the GNU General Public License as published by
+-    the Free Software Foundation, either version 3 of the License, or
+-    (at your option) any later version.
+-
+-    This program is distributed in the hope that it will be useful,
+-    but WITHOUT ANY WARRANTY; without even the implied warranty of
+-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+-    GNU General Public License for more details.
+-
+-    You should have received a copy of the GNU General Public License
+-    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+-***/
+ 
+ #include <mockcpp/mockcpp.h>
+ #include <CppUTest/TestHarness.h>
+diff --git a/src/ports/failure/stdexcept_report_failure.cpp b/src/ports/failure/stdexcept_report_failure.cpp
+index a43b9df..8d83609 100644
+--- a/src/ports/failure/stdexcept_report_failure.cpp
++++ b/src/ports/failure/stdexcept_report_failure.cpp
+@@ -14,23 +14,6 @@
+    See the License for the specific language governing permissions and
+    limitations under the License.
+ ***/
+-/***
+-    mockcpp is a generic C/C++ mock framework.
+-    Copyright (C) <2009>  <Darwin Yuan: darwin.yuan@gmail.com>
+-
+-    This program is free software: you can redistribute it and/or modify
+-    it under the terms of the GNU General Public License as published by
+-    the Free Software Foundation, either version 3 of the License, or
+-    (at your option) any later version.
+-
+-    This program is distributed in the hope that it will be useful,
+-    but WITHOUT ANY WARRANTY; without even the implied warranty of
+-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+-    GNU General Public License for more details.
+-
+-    You should have received a copy of the GNU General Public License
+-    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+-***/
+ 
+ #include <mockcpp/AssertionFailedError.h>
+ #include <mockcpp/Exception.h>

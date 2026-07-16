@@ -1,0 +1,4 @@
+[submodule "vllm-ascend/csrc/third_party/catlass"]
+	path = vllm-ascend/csrc/third_party/catlass
+	url = https://gitcode.com/cann/catlass.git
+	branch = main

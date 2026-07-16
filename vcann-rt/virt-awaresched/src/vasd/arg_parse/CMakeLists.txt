@@ -1,0 +1,5 @@
+file(GLOB_RECURSE SRC_FILES *.cpp)
+FIND_INCLUDE_DIR(VAS_DAEMON_REGISTER_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR})
+add_library(vas_daemon_register STATIC ${SRC_FILES})
+target_include_directories(vas_daemon_register PUBLIC  ${VAS_DAEMON_REGISTER_INCLUDE})
+target_link_libraries(vas_daemon_register PUBLIC cli_parse conf util logger security)

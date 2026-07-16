@@ -1,0 +1,27 @@
+repos:
+  - repo: local
+    hooks:
+      - id: run-build
+        name: Run Release Build
+        entry: >
+          bash -c '
+          cd ubs-virt-ovs/build &&
+          cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON .. &&
+          bash ../../virt-awaresched/build.sh &&
+          bash ../../virt-optimizer/build.sh
+          '
+        language: system
+        pass_filenames: false
+        files: ^(?!test/).*(\.(h|c|cpp|sh|cmake)|CMakeLists\.txt)$
+      - id: clang-format
+        name: Run clang-format check
+        entry: clang-format
+        language: system
+        files: \.(h|c|cpp)$
+        args: [-style=file, -i]
+      - id: clang-tidy
+        name: Run clang-tidy check
+        entry: ./clang-tidy-multi.sh
+        language: system
+        files: ^(?!test/).*\.(h|c|cpp)$
+        pass_filenames: true

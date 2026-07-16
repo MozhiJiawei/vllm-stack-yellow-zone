@@ -1,0 +1,66 @@
+# UBS virt-optimizer 配置说明
+
+## 配置原则说明
+
+ubs-optimizer 的配置能力通过配置文件方式提供。
+
+ubs-optimizer 配置文件采用 JSON 格式，由键（key）和值（value）组成。
+每个配置项使用 "key": value 的方式表示，其中：
+
+- key 表示配置项名称
+- value 表示配置项取值
+
+配置文件包含系统采集参数、服务监听参数以及系统指标采集开关等内容。 配置项设计要求虚拟机，物理机保持一致配置。
+
+## 配置文件路径
+
+配置文件路径如下：
+
+```shell
+/usr/local/sbin/ubs-optimizer/config.json
+```
+
+## 配置文件示例
+
+示例配置如下：
+
+```shell
+{
+    "sampling_interval": 30,
+    "bind_port": 10101,
+    "vm_name": "openeuler",
+    "npu_type": "d802",
+    "system" : {
+      "ipi_collection": "enable",
+      "sched_collector": "enable",
+      "numa_collector": "enable"
+    }
+}
+```
+
+## 配置项说明
+
+配置项说明如下表所示：
+
+| 配置项 | 类型 | 说明 | 取值范围 / 可选值 | 默认值 | 单位 | 备注 |
+|--------|------|------|------------------|--------|------|------|
+| `sampling_interval` | integer | 指标采集周期 | 1 ~ 600 | 30 | 秒（s） | 必须为整数 |
+| `bind_port` | integer | 服务侦听端口 | 1024 ~ 49151 | 10101 | - | - |
+| `vm_name` | string | 虚拟机实例名称 | 任意字符串 | openeuler | - | - |
+| `npu_type` | string | NPU 设备标识符 | d802 / d803 | d802 | - | d802：A2 NPU设备<br>d803：A3 NPU设备 |
+| `ipi_collector` | string | 启用处理器间中断（IPI）监控 | enable / disable | enable | - | enable：启用 IPI 指标采集<br>disable：关闭 IPI 指标采集 |
+| `sched_collector` | string | 启用进程调度器分析 | enable / disable | enable | - | enable：启用调度器分析<br>disable：关闭调度器分析 |
+| `numa_collector` | string | 启用 NUMA 内存访问监控 | enable / disable | enable | - | enable：启用 NUMA 访问监控<br>disable：关闭 NUMA 访问监控 |
+
+## 注意事项
+
+建议尽可能启用以下系统采集模块：
+
+```shell
+ipi_collector
+sched_collector
+numa_collector
+```
+
+如果关闭上述采集模块，可能导致：<br>
+eBPF指标采集不完整，调优算法获取的数据不准确，调优策略判断异常，因此推荐在生产环境中全部启用。

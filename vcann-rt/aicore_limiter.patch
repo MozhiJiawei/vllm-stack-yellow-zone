@@ -1,0 +1,484 @@
+diff --git a/src/ascend/hook.c b/src/ascend/hook.c
+index 1fce52b..5c705aa 100644
+--- a/src/ascend/hook.c
++++ b/src/ascend/hook.c
+@@ -101,4 +101,5 @@ rt_entry_t rt_library_entry[] = {
+     {.name = "rtStreamSynchronize"},
+     {.name = "rtStreamDestroy"},
+     {.name = "rtDestroyStreamForce"},
+-};
+\ No newline at end of file
++    {.name = "rtGetDevice"},
++};
+diff --git a/src/core_limiter.c b/src/core_limiter.c
+index 1f2147c..3b71ea2 100644
+--- a/src/core_limiter.c
++++ b/src/core_limiter.c
+@@ -17,39 +17,6 @@
+ #include "hash_map.h"
+ #include "core_limiter.h"
+ 
+-// For multi-device support, use thread-local storage for scheduler context per device
+-static THREAD_LOCAL vnpu_time_slice_sched_t* current_device_sched_context = NULL;
+-static THREAD_LOCAL uint8_t current_device_vnpu_id = 0;
+-
+-// Get current device scheduler context (thread-local)
+-static vnpu_time_slice_sched_t* get_current_device_sched_context(void)
+-{
+-    return current_device_sched_context;
+-}
+-
+-// Initialize per-device scheduler context
+-static void init_device_sched_context(vnpu_time_slice_sched_t* ctx, uint8_t vnpu_id)
+-{
+-    current_device_sched_context = ctx;
+-    current_device_vnpu_id = vnpu_id;
+-}
+-
+-// Get current vnpu_id for active device
+-static uint8_t get_current_device_vnpu_id(void)
+-{
+-    return current_device_vnpu_id;
+-}
+-
+-// Helper macro to get the appropriate scheduler context
+-// Uses thread-local context for multi-device, falls back to global for legacy
+-#define GET_SCHED_CONTEXT() \
+-    (get_current_device_sched_context() ? get_current_device_sched_context() : g_vnpu_sched_context)
+-
+-// Get current device vnpu_id (falls back to global for legacy)
+-#define GET_DEVICE_VNPU_ID() \
+-    (get_current_device_sched_context() ? get_current_device_vnpu_id() : g_vnpu_id)
+-
+-// Legacy global for backward compatibility (single device mode)
+ vnpu_time_slice_sched_t *g_vnpu_sched_context = NULL;
+ uint8_t g_vnpu_id = 0;
+ volatile int g_terminate = 0;
+@@ -124,22 +91,13 @@ void core_limiter(rtStream_t stream, core_function func, void* param)
+     if (!is_core_limit()) {
+         return;
+     }
+-    
+-    vnpu_time_slice_sched_t* ctx = get_current_device_sched_context();
+-    uint8_t vnpu_id = get_current_device_vnpu_id();
+-    
+-    if (!ctx) {
+-        LOG_ERROR("No scheduler context for current device");
+-        return;
+-    }
+-    
+     while (!g_terminate) {
+         // g_sched_locking is a atomic_int for scheduler thread obtain lock with high priority
+         if (atomic_load(&g_sched_locking)) {
+             ns_sleep(WAITING_SLEEP_PERIOD);
+             continue;
+         }
+-        LOG_DEBUG("Core limiter is waiting for the mutex lock.");
++        LOG_DEBUG("Core limiter is waiting for the mutex lock. g_vnpu_id %d", g_vnpu_id);
+         // waiting for mutex == waiting for launch task
+         int rc = pthread_mutex_lock(&g_sched_mutex);
+         CHECK_COND_RETURN(rc != 0, "Failed to lock mutex, error code=%d.", rc);
+@@ -151,7 +109,7 @@ void core_limiter(rtStream_t stream, core_function func, void* param)
+         }
+         pthread_mutex_unlock(&g_sched_mutex);
+         // Recording time when the last task was delivered, which is used for schedule policy 2.
+-        atomic_store(&ctx->last_kernel_time_ns[vnpu_id], ns_now());
++        atomic_store(&g_vnpu_sched_context->last_kernel_time_ns[g_vnpu_id], ns_now());
+         return;
+     }
+ 
+@@ -173,35 +131,25 @@ bool check_timeout(atomic_uint_fast64_t* timestamp, uint64_t timeout_period)
+ 
+ inline bool is_vnpu_alive(int vnpu_id)
+ {
+-    vnpu_time_slice_sched_t* ctx = get_current_device_sched_context();
+-    if (!ctx || vnpu_id < 0 || vnpu_id >= MAX_VNPU) {
++    if (vnpu_id < 0 || vnpu_id >= MAX_VNPU) {
+         return false;
+     }
+-    return check_timeout(&ctx->last_alive_time_ns[vnpu_id], VNPU_TIMEOUT_PERIOD);
++    return check_timeout(&g_vnpu_sched_context->last_alive_time_ns[vnpu_id], VNPU_TIMEOUT_PERIOD);
+ }
+ 
+ inline bool vnpu_has_work(int vnpu_id)
+ {
+-    vnpu_time_slice_sched_t* ctx = get_current_device_sched_context();
+-    if (!ctx) {
+-        return false;
+-    }
+-    return check_timeout(&ctx->last_kernel_time_ns[vnpu_id], VNPU_NO_TASK_TIMEOUT_PERIOD);
++    return check_timeout(&g_vnpu_sched_context->last_kernel_time_ns[vnpu_id], VNPU_NO_TASK_TIMEOUT_PERIOD);
+ }
+ 
+ bool vnpu_sched_need_skip(void)
+ {
+-    vnpu_time_slice_sched_t* ctx = get_current_device_sched_context();
+-    if (!ctx) {
+-        return false;
+-    }
+-    
+     schedule_policy_t sched_policy = get_sched_policy();
+     if (sched_policy != SCHED_POLICY_ELASTIC) {
+         return false;
+     }
+ 
+-    if (vnpu_has_work(get_current_device_vnpu_id())) {
++    if (vnpu_has_work(g_vnpu_id)) {
+         return false;
+     }
+ 
+@@ -210,15 +158,10 @@ bool vnpu_sched_need_skip(void)
+ 
+ void vnpu_idling(void)
+ {
+-    vnpu_time_slice_sched_t* ctx = GET_SCHED_CONTEXT();
+-    if (!ctx) {
+-        return;
+-    }
+-    
+     int npu_core_limit_quota = 0;
+     for (int i = 0; i < MAX_VNPU; ++i) {
+         if (is_vnpu_alive(i)) {
+-            npu_core_limit_quota += atomic_load(&ctx->vnpu_core_limit_quota[i]);
++            npu_core_limit_quota += atomic_load(&g_vnpu_sched_context->vnpu_core_limit_quota[i]);
+         }
+         if (npu_core_limit_quota > HUNDRED_PERCENT) {
+             return;
+@@ -243,18 +186,13 @@ int select_next_owner(int vnpu_id)
+ 
+ void set_vnpu_and_idle(int vnpu_id, int next_vnpu_id)
+ {
+-    vnpu_time_slice_sched_t* ctx = GET_SCHED_CONTEXT();
+-    if (!ctx) {
+-        return;
+-    }
+-    
+     if (next_vnpu_id == -1) {
+         return;
+     }
+     if (get_sched_policy() == SCHED_POLICY_FIXED_SHARE && next_vnpu_id <= vnpu_id) {
+         vnpu_idling();
+     }
+-    atomic_store(&ctx->owner, next_vnpu_id);
++    atomic_store(&g_vnpu_sched_context->owner, next_vnpu_id);
+ }
+ 
+ void synchronize_and_clear_streams(void)
+@@ -270,6 +208,9 @@ void synchronize_and_clear_streams(void)
+             g_cache_streams.streams[remaining_count++] = stm;
+             continue;
+         }
++	int32_t devID = 0;
++	aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtGetDevice, &devID);
++	LOG_DEBUG("Get current Device %d returned with error code %d", devID, ret);
+         LOG_DEBUG("Stream %p is being synchronized.", (void*)stm);
+         RUNTIME_HOOK_CALL(rt_library_entry, rtStreamSynchronize, stm);
+         LOG_DEBUG("Stream synchronization end.");
+@@ -289,20 +230,13 @@ void compensate_delta_time(void)
+ 
+ bool add_and_consume_time_slice(uint8_t *turn_id)
+ {
+-    vnpu_time_slice_sched_t* ctx = GET_SCHED_CONTEXT();
+-    uint8_t vnpu_id = GET_DEVICE_VNPU_ID();
+-    
+-    if (!ctx) {
+-        return false;
+-    }
+-    
+     uint64_t now = ns_now();
+     uint64_t timeslice = get_core_cur_timeslice() + get_core_quota_timeslice();
+     set_core_cur_timeslice(timeslice);
+     if (timeslice <= 0) {
+-        int owner_vnpu_id = atomic_load(&ctx->owner);
+-        int next_vnpu_id = select_next_owner(owner_vnpu_id);
+-        set_vnpu_and_idle(owner_vnpu_id, next_vnpu_id);
++        int vnpu_id = atomic_load(&g_vnpu_sched_context->owner);
++        int next_vnpu_id = select_next_owner(vnpu_id);
++        set_vnpu_and_idle(vnpu_id, next_vnpu_id);
+         return false;
+     }
+ 
+@@ -312,10 +246,10 @@ bool add_and_consume_time_slice(uint8_t *turn_id)
+     set_core_cur_timeslice(0ULL);
+ 
+     // For Determining whether the current round of scheduling is complete for a container with multiple threads.
+-    *turn_id = atomic_load(&ctx->vnpu_schedule_turn[vnpu_id]);
++    *turn_id = atomic_load(&g_vnpu_sched_context->vnpu_schedule_turn[g_vnpu_id]);
+ 
+-    int owner_vnpu_id = atomic_load(&ctx->owner);
+-    int next_vnpu_id = select_next_owner(owner_vnpu_id);
++    int vnpu_id = atomic_load(&g_vnpu_sched_context->owner);
++    int next_vnpu_id = select_next_owner(vnpu_id);
+ 
+     while (end > now) {
+         now = ns_now();
+@@ -328,23 +262,16 @@ bool add_and_consume_time_slice(uint8_t *turn_id)
+     atomic_store(&g_sched_locking, true);
+     pthread_mutex_lock(&g_sched_mutex);
+     atomic_store(&g_sched_locking, false);
+-    set_vnpu_and_idle(owner_vnpu_id, next_vnpu_id);
++    set_vnpu_and_idle(vnpu_id, next_vnpu_id);
+     return true;
+ }
+ 
+ void *vnpu_scheduler_flush_thread(void *arg)
+ {
+     (void)arg;
+-    vnpu_time_slice_sched_t* ctx = GET_SCHED_CONTEXT();
+-    uint8_t vnpu_id = GET_DEVICE_VNPU_ID();
+-    
+-    if (!ctx) {
+-        return NULL;
+-    }
+-    
+     while (!g_terminate) {
+         uint64_t now = ns_now();
+-        atomic_store(&ctx->last_alive_time_ns[vnpu_id], now);
++        atomic_store(&g_vnpu_sched_context->last_alive_time_ns[g_vnpu_id], now);
+         ns_sleep(VNPU_FLUSH_PERIOD);
+     }
+     return NULL;
+@@ -364,14 +291,9 @@ int calculate_alive_vnpu_num(void)
+ void *npu_utilization_monitor_thread(void *arg)
+ {
+     (void)arg;
+-    vnpu_time_slice_sched_t* ctx = GET_SCHED_CONTEXT();
+-    if (!ctx) {
+-        return NULL;
+-    }
+-    
+     unsigned int utilization_rate = 0;
+     uint64_t begin = ns_now();
+-    atomic_store(&ctx->last_slide_window_time_ns, begin);
++    atomic_store(&g_vnpu_sched_context->last_slide_window_time_ns, begin);
+     int ret = enpu_dcmi_get_device_utilization_rate(get_logic_id(), get_card_id(), get_device_id(), &utilization_rate);
+     if (ret != ENPU_SUCCESS) {
+         LOG_ERROR("DCMI call failed with ret: %d.", ret);
+@@ -387,7 +309,7 @@ void *npu_utilization_monitor_thread(void *arg)
+ 
+     static int high_load_streak = 0;
+     static int low_load_streak = 0;
+-    int current_window = atomic_load(&ctx->slide_window_len);
++    int current_window = atomic_load(&g_vnpu_sched_context->slide_window_len);
+     int new_window = current_window;
+ 
+     if (utilization_rate > UTILIZATION_RATE_MAX) {
+@@ -417,25 +339,18 @@ void *npu_utilization_monitor_thread(void *arg)
+     }
+ 
+     if (new_window != current_window) {
+-        atomic_store(&ctx->slide_window_len, new_window);
++        atomic_store(&g_vnpu_sched_context->slide_window_len, new_window);
+     }
+     return NULL;
+ }
+ 
+ bool slide_window_check(int owner)
+ {
+-    vnpu_time_slice_sched_t* ctx = GET_SCHED_CONTEXT();
+-    uint8_t vnpu_id = GET_DEVICE_VNPU_ID();
+-    
+-    if (!ctx) {
+-        return false;
+-    }
+-    
+-    int slide_windows_len = atomic_load(&ctx->slide_window_len);
++    int slide_windows_len = atomic_load(&g_vnpu_sched_context->slide_window_len);
+     
+     for (int i = 1; i <= MAX_VNPU && slide_windows_len > 0; ++ i) {
+         int next_vnpu = (owner + i) % MAX_VNPU;
+-        if (next_vnpu == vnpu_id) {
++        if (next_vnpu == g_vnpu_id) {
+             return true;
+         }
+         // The slide window only contains alive vnpu.
+@@ -448,16 +363,9 @@ bool slide_window_check(int owner)
+ 
+ void check_and_borrow_timeslice(int owner)
+ {
+-    vnpu_time_slice_sched_t* ctx = GET_SCHED_CONTEXT();
+-    uint8_t vnpu_id = GET_DEVICE_VNPU_ID();
+-    
+-    if (!ctx) {
+-        return;
+-    }
+-    
+-    if (owner == vnpu_id) {
++    if (owner == g_vnpu_id) {
+         // Check and update slide_window_len, no borrow here
+-        if (!check_timeout(&ctx->last_slide_window_time_ns,
++        if (!check_timeout(&g_vnpu_sched_context->last_slide_window_time_ns,
+             WATTING_SLIDE_WINDOW_TIMEOUT_PERIOD)) {
+             pthread_t thread;
+             int rc = pthread_create(&thread, NULL, npu_utilization_monitor_thread, NULL);
+@@ -477,33 +385,30 @@ void check_and_borrow_timeslice(int owner)
+ void *vnpu_scheduler_thread(void *arg)
+ {
+     (void)arg;
+-    vnpu_time_slice_sched_t* ctx = GET_SCHED_CONTEXT();
+-    uint8_t vnpu_id = GET_DEVICE_VNPU_ID();
+-    
+-    if (!ctx) {
+-        LOG_ERROR("No scheduler context available for vnpu_scheduler_thread");
+-        return NULL;
+-    }
+-    
+     uint8_t turn_id = -1;
+     // For scheduler thread:
+     //     holding mutex: user can not launch task by core_limiter
+     //     release mutex: user can launch task by core_limiter
+     pthread_mutex_lock(&g_sched_mutex);
++
++    int logic_id = get_logic_id();
++    aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtSetDevice, logic_id);
++    CHECK_COND_RETURN_((ret != ACL_RT_SUCCESS), ret, "Call rtSetDevice fails after vnpu scheduler is created, ret: %d, target : %d", ret, logic_id);
++
+     while (!g_terminate) {
+         // Distributed thread scheduling.
+         // Scheduling is performed only when the owner is the current vnpu or the owner is disabled.
+-        int owner = atomic_load(&ctx->owner);
++        int owner = atomic_load(&g_vnpu_sched_context->owner);
+ 
+         // ELASTIC will consider borrow timeslice
+         if (get_sched_policy() == SCHED_POLICY_ELASTIC) {
+             check_and_borrow_timeslice(owner);
+         }
+ 
+-        if (owner != vnpu_id) {
++        if (owner != g_vnpu_id) {
+             if (!is_vnpu_alive(owner)) {
+-                int owner_vnpu_id = atomic_load(&ctx->owner);
+-                set_vnpu_and_idle(owner_vnpu_id, select_next_owner(owner_vnpu_id));
++                int vnpu_id = atomic_load(&g_vnpu_sched_context->owner);
++                set_vnpu_and_idle(vnpu_id, select_next_owner(vnpu_id));
+             }
+             ns_sleep(WAITING_SLEEP_PERIOD);
+             continue;
+@@ -512,26 +417,27 @@ void *vnpu_scheduler_thread(void *arg)
+         // Consumption time slice. The lock is released to the user process within the specified time.
+         bool flag = add_and_consume_time_slice(&turn_id);
+ 
++
+         // Only one thread is accepted.
+-        int rc = pthread_mutex_lock(&ctx->vnpu_schedule_mutex[vnpu_id]);
++        int rc = pthread_mutex_lock(&g_vnpu_sched_context->vnpu_schedule_mutex[g_vnpu_id]);
+         if (rc == EOWNERDEAD) {
+             LOG_INFO("The scheduling process has been detected to exit, and the scheduling is being taken over.");
+-            pthread_mutex_consistent(&ctx->vnpu_schedule_mutex[vnpu_id]);
++            pthread_mutex_consistent(&g_vnpu_sched_context->vnpu_schedule_mutex[g_vnpu_id]);
+         } else if (rc != 0) {
+             LOG_WARN("Failed to obtain mutex lock, error code=%d.", rc);
+             continue;
+         }
+ 
+         // if (previous scheduler not successed)
+-        if (atomic_load(&ctx->vnpu_schedule_turn[vnpu_id]) == turn_id) {
++        if (atomic_load(&g_vnpu_sched_context->vnpu_schedule_turn[g_vnpu_id]) == turn_id) {
+             // Only the slice of the main process is considered.
+             // Multi-process in the same vNPU is an unrecommended scenario and should be avoided as much as possible.
+             if (flag) {
+                 compensate_delta_time();
+             }
+-            atomic_store(&ctx->vnpu_schedule_turn[vnpu_id], turn_id + 1);
++            atomic_store(&g_vnpu_sched_context->vnpu_schedule_turn[g_vnpu_id], turn_id + 1);
+         }
+-        pthread_mutex_unlock(&ctx->vnpu_schedule_mutex[vnpu_id]);
++        pthread_mutex_unlock(&g_vnpu_sched_context->vnpu_schedule_mutex[g_vnpu_id]);
+     }
+     pthread_mutex_unlock(&g_sched_mutex);
+     hashmap_destroy(stream_map);
+@@ -592,6 +498,8 @@ int vnpu_scheduler_init(vnpu_time_slice_sched_t *vnpu_sched_shm)
+     set_core_cur_timeslice(0);
+     set_core_quota_timeslice(aicore_cur_timesilice);
+ 
++    LOG_INFO("aicore_limit_percent %d aicore_cur_timesilice %d", aicore_limit_percent, aicore_cur_timesilice);
++
+     pthread_t vnpu_scheduler_tid;
+     int rc = pthread_create(&vnpu_scheduler_tid, NULL, vnpu_scheduler_thread, NULL);
+     CHECK_COND_RETURN_ERROR_CODE(rc != 0, "Failed to create vnpu scheduler thread.");
+@@ -714,4 +622,4 @@ void remove_stream(void* unused, rtStream_t stm)
+ void set_event_destroy_status(void* evt)
+ {
+     (void)hashmap_remove(event_map, evt);
+-}
+\ No newline at end of file
++}
+diff --git a/src/include/log.h b/src/include/log.h
+index 6c582ef..ed772d0 100644
+--- a/src/include/log.h
++++ b/src/include/log.h
+@@ -65,6 +65,7 @@ typedef struct {
+     int line;
+     char message[LOG_MSG_MAX_LEN];
+     struct timespec timestamp;
++    unsigned long tid;
+ } LogMessage;
+ 
+ typedef struct {
+diff --git a/src/include/runtime_hook.h b/src/include/runtime_hook.h
+index 7e9a343..87a19db 100644
+--- a/src/include/runtime_hook.h
++++ b/src/include/runtime_hook.h
+@@ -135,6 +135,7 @@ typedef enum {
+     RUNTIME_HOOK_ENUM(rtStreamSynchronize),
+     RUNTIME_HOOK_ENUM(rtStreamDestroy),
+     RUNTIME_HOOK_ENUM(rtDestroyStreamForce),
++    RUNTIME_HOOK_ENUM(rtGetDevice),
+     RUNTIME_ENTRY_END,
+ }rt_hook_enum_t;
+ 
+@@ -144,4 +145,4 @@ extern rt_entry_t rt_library_entry[];
+ }
+ #endif
+ 
+-#endif 
+\ No newline at end of file
++#endif 
+diff --git a/src/log.c b/src/log.c
+index cc9544b..4bd48dd 100644
+--- a/src/log.c
++++ b/src/log.c
+@@ -478,6 +478,7 @@ void log_print(EnpuLogLevel level, const char* filename, int line, const char* f
+     LogMessage msg;
+     msg.level = level;
+     msg.line = line;
++    msg.tid = pthread_self();
+ 
+     char path_buf[FILE_PATH_LEN];
+     int ret = strncpy_s(path_buf, sizeof(path_buf), filename, strlen(filename));
+@@ -683,7 +684,7 @@ static int write_log_message(const LogMessage* msg, char* time_str, char* log_li
+         LOG_MSG_MAX_LEN + LOG_LINE_EXTRA_LEN - 1,
+         "[%s] [%s] [%s] [%s] [%d:%lu:%s:%d] %s\n",
+         time_str, log_level_str[msg->level], MODULE_NAME, SUB_MODULE_NAME,
+-        getpid(), (unsigned long)pthread_self(), msg->basename, msg->line, msg->message);
++        getpid(), msg->tid, msg->basename, msg->line, msg->message);
+     if (ret > 0) {
+         size_t buf_size = LOG_MSG_MAX_LEN + LOG_LINE_EXTRA_LEN;
+         if ((size_t)ret >= buf_size) {
+diff --git a/src/npu_manager.c b/src/npu_manager.c
+index 4b78bb3..72e89db 100644
+--- a/src/npu_manager.c
++++ b/src/npu_manager.c
+@@ -23,7 +23,7 @@
+ #include "npu_manager.h"
+ 
+ // Thread-local device context for each thread
+-static THREAD_LOCAL int active_device_index = INVALID_VALUE;
++static int active_device_index = INVALID_VALUE;
+ 
+ // Array to store all NPU device information
+ struct npu_info g_npu_info_array[MAX_NPU_DEVICES];
+@@ -487,8 +487,12 @@ void enpu_global_init(void)
+ 
+ static void __enpu_global_init_post(void)
+ {
++
++    int ret = aicore_limiter_initialize();
++    CHECK_COND_RETURN_LOG(ret != ENPU_SUCCESS, "Failed to init aicore limiter.");
++
+     // Set global environment variable to indicate successful initialization
+-    int ret = setenv("ENPU_ENABLE", "True", 1);
++    ret = setenv("ENPU_ENABLE", "True", 1);
+     CHECK_COND_RETURN(ret != 0, "Failed to set ENPU_ENABLE environment variable");
+ 
+     // Mark all devices as initialized

@@ -1,0 +1,4 @@
+#ifndef VIRT_CONFIG_H_IN_H
+#define VIRT_CONFIG_H_IN_H
+#define TEST_DIR "@TEST_DIR@"
+#endif //VIRT_CONFIG_H_IN_H

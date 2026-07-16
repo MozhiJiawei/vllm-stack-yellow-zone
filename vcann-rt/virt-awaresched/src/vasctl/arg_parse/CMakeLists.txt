@@ -1,0 +1,5 @@
+file(GLOB_RECURSE SRC_FILES *.cpp)
+FIND_INCLUDE_DIR(VAS_CTL_REGISTER_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR})
+add_library(vas_ctl_register STATIC ${SRC_FILES})
+target_include_directories(vas_ctl_register PUBLIC  ${VAS_CTL_REGISTER_INCLUDE})
+target_link_libraries(vas_ctl_register PUBLIC cli_parse util socket_client cmd_serialize acquire cluster_sched)

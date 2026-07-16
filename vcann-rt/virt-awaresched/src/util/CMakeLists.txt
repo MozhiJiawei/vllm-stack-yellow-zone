@@ -1,0 +1,5 @@
+file(GLOB_RECURSE UTIL_CPP "*.cpp")
+FIND_INCLUDE_DIR(UTIL_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR})
+add_library(util STATIC ${UTIL_CPP})
+target_include_directories(util PUBLIC ${UTIL_INCLUDE})
+target_link_libraries(util PRIVATE logger)

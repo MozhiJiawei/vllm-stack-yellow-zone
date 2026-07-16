@@ -1,0 +1,12 @@
+{
+    "sampling_interval": 30,
+    "bind_port": 10101,
+    "vm_name": "openeuler",
+    "npu_type": "d802",
+    "system" : {
+      "ipi_collection": "enable",
+      "sched_collector": "enable",
+      "numa_collector": "enable"
+    }
+}
+  

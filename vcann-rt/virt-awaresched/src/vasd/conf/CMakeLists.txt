@@ -1,0 +1,5 @@
+file(GLOB CONF_CPP "*.cpp")
+FIND_INCLUDE_DIR(CONF_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR})
+add_library(conf STATIC ${CONF_CPP})
+target_include_directories(conf PUBLIC ${CONF_INCLUDE})
+target_link_libraries(conf PUBLIC acquire)
