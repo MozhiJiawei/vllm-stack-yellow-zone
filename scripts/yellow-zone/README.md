@@ -25,3 +25,14 @@ DEVICE=/dev/davinci1 PORT=8001 CONTAINER_NAME=vllm-qwen3-8b-native-1 \
 
 The script only removes a pre-existing container whose name exactly matches
 `CONTAINER_NAME`; it does not inspect or modify unrelated containers.
+
+## Native Ascend diagnostics
+
+`diagnose-native-ascend.sh` reproduces the native container's device and driver
+mounts without loading a model. It reports host/container versions, runs
+`npu-smi` inside the container, and separately tests torch-npu SoC discovery and
+tensor allocation.
+
+```bash
+bash scripts/yellow-zone/diagnose-native-ascend.sh
+```
