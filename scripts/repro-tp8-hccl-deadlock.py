@@ -76,7 +76,7 @@ def worker(
     model: str,
     rank: int,
     master_port: int,
-    tensor_mib: int,
+    tensor_kib: int,
     compute_mib: int,
     decode_layers: int,
     execution_mode: str,
@@ -115,12 +115,12 @@ def worker(
         )
         log(f"HCCL group ready: {label}")
 
-        # A modest tensor is enough to launch a real HCCL all-reduce without
-        # allocating model parameters. float32 has 262144 elements per MiB.
+        # A decode TP all-reduce is typically only tens to hundreds of KiB
+        # (decode tokens x hidden size) and uses a 16-bit model dtype.
         tensor = torch.full(
-            (tensor_mib * 262_144,),
+            (tensor_kib * 512,),
             float(rank + 1),
-            dtype=torch.float32,
+            dtype=torch.float16,
             device=f"npu:{device}",
         )
         compute_input = None
@@ -169,6 +169,7 @@ def worker(
                     for _ in range(decode_layers):
                         compute_input.sigmoid_()
                         dist.all_reduce(tensor)
+                        tensor.mul_(1.0 / TP_SIZE)
                     graph_output = compute_input
                 log(f"ACL GRAPH capture done: {label}")
             phase_barrier.wait()
@@ -180,6 +181,7 @@ def worker(
                     for _ in range(decode_layers):
                         compute_input.sigmoid_()
                         dist.all_reduce(tensor)
+                        tensor.mul_(1.0 / TP_SIZE)
                     graph_output = compute_input
                 log(f"ACL GRAPH capture done: {label}")
             phase_barrier.wait()
@@ -221,9 +223,10 @@ def worker(
             log(f"RETURN synchronous all_reduce ({wave} wave): {label}")
 
         value = float(tensor[0].cpu().item())
-        collective_count = decode_layers if execution_mode == "aclgraph" else 1
         expected = float(
-            (TP_SIZE * (TP_SIZE + 1) // 2) * TP_SIZE ** (collective_count - 1)
+            (TP_SIZE * (TP_SIZE + 1) // 2) / TP_SIZE
+            if execution_mode == "aclgraph"
+            else TP_SIZE * (TP_SIZE + 1) // 2
         )
         if value != expected:
             raise RuntimeError(
@@ -257,10 +260,10 @@ def parse_args() -> argparse.Namespace:
         help="run a captured compute+all-reduce graph or the eager control (default: aclgraph)",
     )
     parser.add_argument(
-        "--tensor-mib",
+        "--tensor-kib",
         type=int,
-        default=4,
-        help="all-reduce tensor size per rank in MiB (default: 4)",
+        default=256,
+        help="FP16 decode all-reduce tensor size per rank in KiB (default: 256)",
     )
     parser.add_argument(
         "--compute-mib",
@@ -299,8 +302,8 @@ def parse_args() -> argparse.Namespace:
         help="torch.distributed HCCL timeout; keep above hang-timeout",
     )
     args = parser.parse_args()
-    if args.tensor_mib <= 0:
-        parser.error("--tensor-mib must be positive")
+    if args.tensor_kib <= 0:
+        parser.error("--tensor-kib must be positive")
     if args.compute_mib <= 0:
         parser.error("--compute-mib must be positive")
     if args.decode_layers <= 0:
@@ -455,7 +458,7 @@ def main() -> int:
     log(
         "CONFIG: "
         f"tp={TP_SIZE} execution_mode={args.execution_mode} "
-        f"decode_layers={args.decode_layers} tensor_mib={args.tensor_mib} "
+        f"decode_layers={args.decode_layers} tensor_kib={args.tensor_kib} "
         f"compute_mib={args.compute_mib} "
         f"stagger_seconds={args.stagger_seconds} "
         f"hang_timeout={args.hang_timeout} hccl_timeout={args.hccl_timeout} "
@@ -479,7 +482,7 @@ def main() -> int:
                         model,
                         rank,
                         ports[model],
-                        args.tensor_mib,
+                        args.tensor_kib,
                         args.compute_mib,
                         args.decode_layers,
                         args.execution_mode,
