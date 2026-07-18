@@ -14,8 +14,10 @@ script creates this order:
     NPU 4..7: B all-reduce first, A all-reduce second
 
 Thus the first wave contains four ranks of each all-reduce.  If an incomplete
-HCCL operation monopolizes per-device execution resources, the second process
-on every NPU cannot run the missing rank and both TP groups wait forever.
+HCCL operation monopolizes per-device execution resources, the opposite model
+must pass through an FP16 matrix multiplication before submitting its missing
+all-reduce rank.  A blocked matrix multiplication then prevents both TP groups
+from becoming complete and creates the intended hold-and-wait cycle.
 
 Exit status is 0 when a hang is observed (hypothesis reproduced), 1 when all
 collectives complete, and 2 when setup or launch fails.
@@ -72,6 +74,7 @@ def worker(
     rank: int,
     master_port: int,
     tensor_mib: int,
+    compute_size: int,
     phase_barrier: Any,
     race_start: Any,
     second_wave_start: Any,
@@ -85,6 +88,7 @@ def worker(
 
     device = rank
     label = f"model={model} rank={rank} npu={device}"
+    wave = "first" if is_first_wave(model, rank) else "second"
     faulthandler.enable(file=sys.stderr, all_threads=True)
     faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
     try:
@@ -114,6 +118,24 @@ def worker(
             dtype=torch.float32,
             device=f"npu:{device}",
         )
+        compute_left = None
+        compute_right = None
+        if wave == "second":
+            # The missing collective ranks must first pass through a real
+            # AI-Core operation. If the opposite model's incomplete HCCL work
+            # monopolizes this NPU, synchronize() below cannot finish and this
+            # rank never reaches its own all-reduce: the intended hold-and-wait.
+            compute_left = torch.randn(
+                (compute_size, compute_size),
+                dtype=torch.float16,
+                device=f"npu:{device}",
+            )
+            compute_right = torch.randn(
+                (compute_size, compute_size),
+                dtype=torch.float16,
+                device=f"npu:{device}",
+            )
+            torch.npu.synchronize()
 
         # Finish group creation in both models before warm-up.
         phase_barrier.wait()
@@ -141,9 +163,16 @@ def worker(
         log(f"ARMED: {label}")
         race_start.wait()
 
-        wave = "first" if is_first_wave(model, rank) else "second"
         if wave == "second":
             second_wave_start.wait()
+            log(f"ENTER compute before all_reduce: {label}")
+            status_queue.put(("COMPUTE_STARTED", model, rank, device, wave))
+            assert compute_left is not None and compute_right is not None
+            compute_output = torch.mm(compute_left, compute_right)
+            torch.npu.synchronize()
+            del compute_output
+            status_queue.put(("COMPUTE_DONE", model, rank, device, wave))
+            log(f"DONE compute before all_reduce: {label}")
 
         log(f"ENTER all_reduce ({wave} wave): {label}")
         work = dist.all_reduce(tensor, async_op=True)
@@ -179,6 +208,12 @@ def parse_args() -> argparse.Namespace:
         help="all-reduce tensor size per rank in MiB (default: 4)",
     )
     parser.add_argument(
+        "--compute-size",
+        type=int,
+        default=4096,
+        help="square FP16 matmul size for second-wave ranks (default: 4096)",
+    )
+    parser.add_argument(
         "--stagger-seconds",
         type=float,
         default=2.0,
@@ -211,6 +246,8 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.tensor_mib <= 0:
         parser.error("--tensor-mib must be positive")
+    if args.compute_size <= 0:
+        parser.error("--compute-size must be positive")
     if min(args.stagger_seconds, args.hang_timeout, args.startup_timeout, args.submit_timeout) <= 0:
         parser.error("all timeout/delay values must be positive")
     if args.hccl_timeout <= args.hang_timeout:
@@ -261,9 +298,15 @@ def dump_live_process_stacks(processes: list[mp.Process]) -> None:
 def print_collective_state(
     submitted: list[tuple[Any, ...]],
     done: list[tuple[Any, ...]],
+    compute_started: list[tuple[Any, ...]] | None = None,
+    compute_done: list[tuple[Any, ...]] | None = None,
 ) -> None:
     submitted_keys = {(message[1], message[2]) for message in submitted}
     done_keys = {(message[1], message[2]) for message in done}
+    compute_started_keys = {
+        (message[1], message[2]) for message in (compute_started or [])
+    }
+    compute_done_keys = {(message[1], message[2]) for message in (compute_done or [])}
     log("COLLECTIVE STATE:")
     for model in MODEL_NAMES:
         for rank in range(TP_SIZE):
@@ -272,9 +315,13 @@ def print_collective_state(
             if key in done_keys:
                 state = "DONE"
             elif key in submitted_keys:
-                state = "STUCK_AFTER_SUBMIT"
+                state = "STUCK_AFTER_ALL_REDUCE_SUBMIT"
+            elif key in compute_done_keys:
+                state = "STUCK_AFTER_COMPUTE_BEFORE_ALL_REDUCE_SUBMIT"
+            elif key in compute_started_keys:
+                state = "STUCK_IN_COMPUTE"
             else:
-                state = "STUCK_BEFORE_SUBMIT_RETURNED"
+                state = "STUCK_BEFORE_COMPUTE_OR_ALL_REDUCE"
             log(f"  model={model} rank={rank} npu={rank} wave={wave} state={state}")
 
 
@@ -334,7 +381,7 @@ def main() -> int:
     log(f"COMMAND: {shlex.join(sys.argv)}")
     log(
         "CONFIG: "
-        f"tp={TP_SIZE} tensor_mib={args.tensor_mib} "
+        f"tp={TP_SIZE} tensor_mib={args.tensor_mib} compute_size={args.compute_size} "
         f"stagger_seconds={args.stagger_seconds} "
         f"hang_timeout={args.hang_timeout} hccl_timeout={args.hccl_timeout} "
         f"ports={ports}"
@@ -357,6 +404,7 @@ def main() -> int:
                         rank,
                         ports[model],
                         args.tensor_mib,
+                        args.compute_size,
                         phase_barrier,
                         race_start,
                         second_wave_start,
@@ -411,19 +459,25 @@ def main() -> int:
         second_wave_submitted = [
             message for message in unexpected if message[0] == "SUBMITTED"
         ]
+        compute_started = [
+            message for message in unexpected if message[0] == "COMPUTE_STARTED"
+        ]
+        compute_done = [
+            message for message in unexpected if message[0] == "COMPUTE_DONE"
+        ]
         all_submitted = submitted + second_wave_submitted
         if errors:
             log(f"RUNTIME FAILED with {len(errors)} worker error(s)")
             for message in errors:
                 log(f"{message[1]} rank {message[2]} error:\n{message[4]}")
-            print_collective_state(all_submitted, done)
+            print_collective_state(all_submitted, done, compute_started, compute_done)
             print_process_snapshot(processes)
             dump_live_process_stacks(processes)
             log("RESULT=RUNTIME_FAILED exit_code=2")
             return 2
         if len(done) == len(processes):
             log("NO DEADLOCK: all 16 ranks completed both TP=8 all-reduces")
-            print_collective_state(all_submitted, done)
+            print_collective_state(all_submitted, done, compute_started, compute_done)
             log("RESULT=NO_DEADLOCK exit_code=1")
             return 1
 
@@ -432,7 +486,7 @@ def main() -> int:
             f"DEADLOCK REPRODUCED: only {len(done)}/16 ranks completed within "
             f"{args.hang_timeout:.1f}s; completed={completed}"
         )
-        print_collective_state(all_submitted, done)
+        print_collective_state(all_submitted, done, compute_started, compute_done)
         print_process_snapshot(processes)
         dump_live_process_stacks(processes)
         log("RESULT=DEADLOCK_REPRODUCED exit_code=0")
