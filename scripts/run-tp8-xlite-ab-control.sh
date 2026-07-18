@@ -16,7 +16,9 @@ esac
   printf 'ERROR: cannot create result file: %s\n' "$output_file" >&2
   exit 2
 }
-exec > >(tee -a "$output_file") 2>&1
+exec 3>&1
+printf 'Writing complete experiment output to: %s\n' "$output_file" >&3
+exec >>"$output_file" 2>&1
 
 unset HCCL_DETERMINISTIC
 unset HCCL_OP_EXPANSION_MODE
@@ -56,6 +58,9 @@ printf 'aligned_exit_code=%d\n' "$aligned_rc"
 printf 'crossed_exit_code=%d\n' "$crossed_rc"
 printf 'finished_at=%s\n' "$(date --iso-8601=seconds)"
 printf 'result_file=%s\n' "$output_file"
+printf \
+  'Experiment finished: aligned_exit_code=%d crossed_exit_code=%d file=%s\n' \
+  "$aligned_rc" "$crossed_rc" "$output_file" >&3
 
 if ((aligned_rc == 2 || crossed_rc == 2)); then
   exit 2
