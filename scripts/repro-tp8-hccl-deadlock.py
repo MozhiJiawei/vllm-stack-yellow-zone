@@ -13,12 +13,14 @@ script creates this order:
     NPU 0..3: A all-reduce first, B all-reduce second
     NPU 4..7: B all-reduce first, A all-reduce second
 
-Each rank captures a minimal ACL graph containing an FP16 Vector Core operation
-followed by its TP=8 all-reduce. Thus the first wave contains four graph replays
-from each model. If an incomplete AIV HCCL operation monopolizes device
-execution resources, the opposite model's second-wave graph cannot pass its
-compute operator to submit the missing all-reduce rank. This creates the
-intended hold-and-wait cycle without model parameters.
+Each rank captures a minimal full-decode ACL graph. Every synthetic layer has
+an in-place FP16 Vector Core operation followed by a TP=8 all-reduce, matching
+vLLM's FULL_DECODE_ONLY property that the entire multi-layer decode is replayed
+as one graph. Thus the first wave contains four graph replays from each model.
+If an incomplete AIV HCCL operation monopolizes device execution resources,
+the opposite model's second-wave graph cannot pass its compute operator to
+submit the missing all-reduce rank. This creates the intended hold-and-wait
+cycle without model parameters.
 
 Exit status is 0 when a hang is observed (hypothesis reproduced), 1 when all
 collectives complete, and 2 when setup or launch fails.
@@ -76,6 +78,7 @@ def worker(
     master_port: int,
     tensor_mib: int,
     compute_mib: int,
+    decode_layers: int,
     execution_mode: str,
     phase_barrier: Any,
     race_start: Any,
@@ -163,8 +166,10 @@ def worker(
                 log(f"ACL GRAPH capture begin: {label}")
                 assert compute_input is not None
                 with torch.npu.graph(aclgraph):
-                    graph_output = torch.sigmoid(compute_input)
-                    dist.all_reduce(tensor)
+                    for _ in range(decode_layers):
+                        compute_input.sigmoid_()
+                        dist.all_reduce(tensor)
+                    graph_output = compute_input
                 log(f"ACL GRAPH capture done: {label}")
             phase_barrier.wait()
 
@@ -172,8 +177,10 @@ def worker(
                 log(f"ACL GRAPH capture begin: {label}")
                 assert compute_input is not None
                 with torch.npu.graph(aclgraph):
-                    graph_output = torch.sigmoid(compute_input)
-                    dist.all_reduce(tensor)
+                    for _ in range(decode_layers):
+                        compute_input.sigmoid_()
+                        dist.all_reduce(tensor)
+                    graph_output = compute_input
                 log(f"ACL GRAPH capture done: {label}")
             phase_barrier.wait()
 
@@ -214,7 +221,10 @@ def worker(
             log(f"RETURN synchronous all_reduce ({wave} wave): {label}")
 
         value = float(tensor[0].cpu().item())
-        expected = float(TP_SIZE * (TP_SIZE + 1) // 2)
+        collective_count = decode_layers if execution_mode == "aclgraph" else 1
+        expected = float(
+            (TP_SIZE * (TP_SIZE + 1) // 2) * TP_SIZE ** (collective_count - 1)
+        )
         if value != expected:
             raise RuntimeError(
                 f"wrong all-reduce result: got {value}, expected {expected}"
@@ -234,6 +244,12 @@ def worker(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--decode-layers",
+        type=int,
+        default=32,
+        help="synthetic compute+all-reduce layers in the full decode graph (default: 32)",
+    )
     parser.add_argument(
         "--execution-mode",
         choices=("aclgraph", "eager"),
@@ -287,6 +303,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--tensor-mib must be positive")
     if args.compute_mib <= 0:
         parser.error("--compute-mib must be positive")
+    if args.decode_layers <= 0:
+        parser.error("--decode-layers must be positive")
     if (
         min(
             args.stagger_seconds,
@@ -437,7 +455,8 @@ def main() -> int:
     log(
         "CONFIG: "
         f"tp={TP_SIZE} execution_mode={args.execution_mode} "
-        f"tensor_mib={args.tensor_mib} compute_mib={args.compute_mib} "
+        f"decode_layers={args.decode_layers} tensor_mib={args.tensor_mib} "
+        f"compute_mib={args.compute_mib} "
         f"stagger_seconds={args.stagger_seconds} "
         f"hang_timeout={args.hang_timeout} hccl_timeout={args.hccl_timeout} "
         f"ports={ports}"
@@ -462,6 +481,7 @@ def main() -> int:
                         ports[model],
                         args.tensor_mib,
                         args.compute_mib,
+                        args.decode_layers,
                         args.execution_mode,
                         phase_barrier,
                         race_start,
