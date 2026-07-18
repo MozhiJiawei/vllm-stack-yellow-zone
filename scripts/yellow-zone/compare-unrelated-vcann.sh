@@ -20,21 +20,34 @@ old_dir="$2"
 [[ -d "$new_dir" ]] || fail "new code directory not found: $new_dir"
 [[ -d "$old_dir" ]] || fail "old code directory not found: $old_dir"
 
-old_root="$(git -C "$old_dir" rev-parse --show-toplevel)" || fail "old code is not in a Git repository"
-old_prefix="$(git -C "$old_dir" rev-parse --show-prefix)"
+detect_source() {
+  local side="$1"
+  local directory="$2"
+  local source root prefix revision
 
-if new_root="$(git -C "$new_dir" rev-parse --show-toplevel 2>/dev/null)"; then
-  new_source=git
-  new_prefix="$(git -C "$new_dir" rev-parse --show-prefix)"
-  new_revision="$(git -C "$new_root" rev-parse HEAD)"
-else
-  new_source=filesystem
-  new_root="$(cd -- "$new_dir" && pwd -P)"
-  new_prefix=
-  new_revision=filesystem
-fi
+  if root="$(git -C "$directory" rev-parse --show-toplevel 2>/dev/null)"; then
+    source=git
+    prefix="$(git -C "$directory" rev-parse --show-prefix)"
+    revision="$(git -C "$root" rev-parse HEAD)"
+  else
+    source=filesystem
+    root="$(cd -- "$directory" && pwd -P)"
+    prefix=
+    revision=filesystem
+  fi
 
-readonly new_dir old_dir new_source new_root old_root new_prefix old_prefix new_revision
+  printf -v "${side}_source" '%s' "$source"
+  printf -v "${side}_root" '%s' "$root"
+  printf -v "${side}_prefix" '%s' "$prefix"
+  printf -v "${side}_revision" '%s' "$revision"
+}
+
+detect_source new "$new_dir"
+detect_source old "$old_dir"
+
+readonly new_dir old_dir
+readonly new_source new_root new_prefix new_revision
+readonly old_source old_root old_prefix old_revision
 
 pathspec_for() {
   local prefix="$1"
@@ -58,35 +71,51 @@ require_clean_path() {
   fi
 }
 
-require_clean_path "old code directory" "$old_root" "$old_prefix"
 if [[ "$new_source" == git ]]; then
   require_clean_path "new code directory" "$new_root" "$new_prefix"
 fi
+if [[ "$old_source" == git ]]; then
+  require_clean_path "old code directory" "$old_root" "$old_prefix"
+fi
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+report_name="${REPORT_NAME:-}"
+[[ -z "$report_name" || "$report_name" =~ ^[A-Za-z0-9._-]+$ ]] \
+  || fail "REPORT_NAME may contain only letters, digits, dot, underscore, and dash"
+
 output_dir="$script_dir/.vcann-sync"
+[[ -z "$report_name" ]] || output_dir="$output_dir/$report_name"
 object_repo="$output_dir/objects.git"
-new_index="$output_dir/new.index"
 
 rm -rf "$output_dir"
 mkdir -p "$output_dir"
 
 git init --quiet --bare "$object_repo"
-git -C "$object_repo" fetch --quiet --no-tags "$old_root" HEAD:refs/heads/old
+git -C "$object_repo" config core.autocrlf input
 
-old_tree="refs/heads/old^{tree}"
-[[ -z "$old_prefix" ]] || old_tree="refs/heads/old:${old_prefix%/}"
+prepare_tree() {
+  local side="$1"
+  local source="$2"
+  local root="$3"
+  local prefix="$4"
+  local index tree
 
-if [[ "$new_source" == git ]]; then
-  git -C "$object_repo" fetch --quiet --no-tags "$new_root" HEAD:refs/heads/new
-  new_tree="refs/heads/new^{tree}"
-  [[ -z "$new_prefix" ]] || new_tree="refs/heads/new:${new_prefix%/}"
-else
-  git -C "$object_repo" config core.autocrlf false
-  GIT_INDEX_FILE="$new_index" git --git-dir="$object_repo" --work-tree="$new_root" read-tree --empty
-  GIT_INDEX_FILE="$new_index" git --git-dir="$object_repo" --work-tree="$new_root" add --all -- .
-  new_tree="$(GIT_INDEX_FILE="$new_index" git --git-dir="$object_repo" write-tree)"
-fi
+  if [[ "$source" == git ]]; then
+    git -C "$object_repo" fetch --quiet --no-tags "$root" "HEAD:refs/heads/$side"
+    tree="refs/heads/$side^{tree}"
+    [[ -z "$prefix" ]] || tree="refs/heads/$side:${prefix%/}"
+    printf '%s\n' "$tree"
+    return
+  fi
+
+  index="$output_dir/$side.index"
+  GIT_INDEX_FILE="$index" git --git-dir="$object_repo" --work-tree="$root" read-tree --empty
+  GIT_INDEX_FILE="$index" git --git-dir="$object_repo" --work-tree="$root" add --all -- .
+  GIT_INDEX_FILE="$index" git --git-dir="$object_repo" write-tree
+}
+
+old_tree="$(prepare_tree old "$old_source" "$old_root" "$old_prefix")"
+new_tree="$(prepare_tree new "$new_source" "$new_root" "$new_prefix")"
 
 diff_status=0
 git -C "$object_repo" diff --quiet "$old_tree" "$new_tree" || diff_status=$?
@@ -108,12 +137,14 @@ git -C "$object_repo" diff --name-status --no-renames \
   printf 'new_prefix=%s\n' "$new_prefix"
   printf 'new_revision=%s\n' "$new_revision"
   printf 'old_root=%s\n' "$old_root"
+  printf 'old_source=%s\n' "$old_source"
   printf 'old_prefix=%s\n' "$old_prefix"
-  printf 'old_head=%s\n' "$(git -C "$old_root" rev-parse HEAD)"
+  printf 'old_revision=%s\n' "$old_revision"
   printf 'different=%s\n' "$([[ $diff_status -eq 1 ]] && printf yes || printf no)"
 } >"$output_dir/metadata.txt"
 
 rm -rf "$object_repo"
+rm -f "$output_dir/new.index" "$output_dir/old.index"
 
 cat "$output_dir/metadata.txt"
 printf '\n===== DIFF STAT =====\n'
