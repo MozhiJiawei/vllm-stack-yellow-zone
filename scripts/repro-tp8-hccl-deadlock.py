@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproduce a possible two-model TP=8 HCCL scheduling deadlock.
+"""Test the xLite deadlock resource pattern with ACLGraph and standard HCCL.
 
 The only non-stdlib runtime dependencies are torch and torch_npu.  Run this
 inside a Linux Ascend container exposing exactly (or at least) NPUs 0..7:
@@ -13,14 +13,12 @@ script creates this order:
     NPU 0..3: A all-reduce first, B all-reduce second
     NPU 4..7: B all-reduce first, A all-reduce second
 
-Each rank captures a minimal full-decode ACL graph. Every synthetic layer has
-an in-place FP16 Vector Core operation followed by a TP=8 all-reduce, matching
-vLLM's FULL_DECODE_ONLY property that the entire multi-layer decode is replayed
-as one graph. Thus the first wave contains four graph replays from each model.
-If an incomplete AIV HCCL operation monopolizes device execution resources,
-the opposite model's second-wave graph cannot pass its compute operator to
-submit the missing all-reduce rank. This creates the intended hold-and-wait
-cycle without model parameters.
+Each rank captures a Qwen3-32B-shaped 64-layer decode graph. Every synthetic
+layer has the same BF16 [decode_tokens, 5120] AddRmsNorm operator used by vLLM,
+followed by a TP=8 all-reduce. HCCL runs in AIV expansion mode. This is a
+counterfactual control for the xLite native-XCCL reproducer: the resource shape
+and compute operator are aligned while the communication implementation is
+standard HCCL inside ACLGraph.
 
 Exit status is 0 when a hang is observed (hypothesis reproduced), 1 when all
 collectives complete, and 2 when setup or launch fails.
@@ -29,6 +27,8 @@ collectives complete, and 2 when setup or launch fails.
 from __future__ import annotations
 
 import argparse
+import ctypes
+import ctypes.util
 import faulthandler
 import multiprocessing as mp
 import os
@@ -46,6 +46,42 @@ from typing import Any
 TP_SIZE = 8
 MODEL_NAMES = ("A", "B")
 FIRST_WAVE_SIZE = TP_SIZE
+
+
+def query_device_cores(device: int) -> tuple[int, int, int]:
+    """Return physical AIC/AIV and current-thread allocated AIV counts."""
+    library_name = ctypes.util.find_library("ascendcl") or "libascendcl.so"
+    acl = ctypes.CDLL(library_name)
+    capability = acl.aclGetDeviceCapability
+    capability.argtypes = [
+        ctypes.c_uint32,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int64),
+    ]
+    capability.restype = ctypes.c_int
+
+    physical: list[int] = []
+    for info_type in (0, 1):
+        value = ctypes.c_int64()
+        result = capability(device, info_type, ctypes.byref(value))
+        if result != 0:
+            raise RuntimeError(
+                f"aclGetDeviceCapability(device={device}, type={info_type}) "
+                f"failed with ACL error {result}"
+            )
+        physical.append(int(value.value))
+
+    allocated_aiv = ctypes.c_uint32()
+    get_resource = acl.aclrtGetResInCurrentThread
+    get_resource.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_uint32)]
+    get_resource.restype = ctypes.c_int
+    result = get_resource(1, ctypes.byref(allocated_aiv))
+    if result != 0:
+        raise RuntimeError(
+            "aclrtGetResInCurrentThread(ACL_RT_DEV_RES_VECTOR_CORE) "
+            f"failed with ACL error {result}"
+        )
+    return physical[0], physical[1], int(allocated_aiv.value)
 
 
 def log(message: str) -> None:
@@ -76,8 +112,9 @@ def worker(
     model: str,
     rank: int,
     master_port: int,
-    tensor_kib: int,
-    compute_mib: int,
+    decode_tokens: int,
+    hidden_size: int,
+    dtype_name: str,
     decode_layers: int,
     execution_mode: str,
     phase_barrier: Any,
@@ -89,7 +126,7 @@ def worker(
     # Import in spawned children so the parent does not initialize the NPU.
     import torch
     import torch.distributed as dist
-    import torch_npu  # noqa: F401 - registers the NPU device and HCCL backend
+    import torch_npu  # registers the NPU device, HCCL, and AddRmsNorm
 
     device = rank
     label = f"model={model} rank={rank} npu={device}"
@@ -105,6 +142,15 @@ def worker(
                 f"visible_npus={torch.npu.device_count()}"
             )
         torch.npu.set_device(device)
+        aic_count, aiv_count, allocated_aiv = query_device_cores(device)
+        if model == "A" and rank == 0:
+            log(
+                "CORE PLAN "
+                f"hardware_aic={aic_count} hardware_aiv={aiv_count} "
+                f"thread_allocated_aiv={allocated_aiv} "
+                "hccl_allreduce_aiv=HCCL_SELECTED_AT_RUNTIME "
+                f"add_rms_norm_available_aiv={allocated_aiv}"
+            )
         log(f"DEVICE selected: {label}")
         dist.init_process_group(
             backend="hccl",
@@ -115,22 +161,22 @@ def worker(
         )
         log(f"HCCL group ready: {label}")
 
-        # A decode TP all-reduce is typically only tens to hundreds of KiB
-        # (decode tokens x hidden size) and uses a 16-bit model dtype.
+        dtype = torch.bfloat16 if dtype_name == "bf16" else torch.float16
+        # Match the unsharded hidden-state result reduced by Qwen3-32B TP.
         tensor = torch.full(
-            (tensor_kib * 512,),
+            (decode_tokens, hidden_size),
             float(rank + 1),
-            dtype=torch.float16,
+            dtype=dtype,
             device=f"npu:{device}",
         )
-        compute_input = None
-        if execution_mode == "aclgraph" or wave == "second":
-            compute_input = torch.randn(
-                (compute_mib * 524_288,),
-                dtype=torch.float16,
-                device=f"npu:{device}",
-            )
-            torch.npu.synchronize()
+        compute_input = torch.randn(
+            (decode_tokens, hidden_size),
+            dtype=dtype,
+            device=f"npu:{device}",
+        )
+        residual = torch.randn_like(compute_input)
+        norm_weight = torch.ones((hidden_size,), dtype=dtype, device=f"npu:{device}")
+        torch.npu.synchronize()
 
         # Finish group creation in both models before warm-up.
         phase_barrier.wait()
@@ -139,6 +185,10 @@ def worker(
         # setup concern rather than part of the deadlock being tested.
         if model == "A":
             log(f"WARMUP begin: {label}")
+            assert compute_input is not None
+            assert residual is not None
+            assert norm_weight is not None
+            torch_npu.npu_add_rms_norm(compute_input, residual, norm_weight, 1e-6)
             dist.all_reduce(tensor)
             torch.npu.synchronize()
             log(f"WARMUP done: {label}")
@@ -147,6 +197,10 @@ def worker(
         tensor.fill_(float(rank + 1))
         if model == "B":
             log(f"WARMUP begin: {label}")
+            assert compute_input is not None
+            assert residual is not None
+            assert norm_weight is not None
+            torch_npu.npu_add_rms_norm(compute_input, residual, norm_weight, 1e-6)
             dist.all_reduce(tensor)
             torch.npu.synchronize()
             log(f"WARMUP done: {label}")
@@ -164,25 +218,31 @@ def worker(
             aclgraph = torch.npu.NPUGraph()
             if model == "A":
                 log(f"ACL GRAPH capture begin: {label}")
-                assert compute_input is not None
                 with torch.npu.graph(aclgraph):
+                    layer_input = compute_input
+                    layer_residual = residual
                     for _ in range(decode_layers):
-                        compute_input.sigmoid_()
+                        layer_input, _, layer_residual = torch_npu.npu_add_rms_norm(
+                            layer_input, layer_residual, norm_weight, 1e-6
+                        )
                         dist.all_reduce(tensor)
                         tensor.mul_(1.0 / TP_SIZE)
-                    graph_output = compute_input
+                    graph_output = layer_input
                 log(f"ACL GRAPH capture done: {label}")
             phase_barrier.wait()
 
             if model == "B":
                 log(f"ACL GRAPH capture begin: {label}")
-                assert compute_input is not None
                 with torch.npu.graph(aclgraph):
+                    layer_input = compute_input
+                    layer_residual = residual
                     for _ in range(decode_layers):
-                        compute_input.sigmoid_()
+                        layer_input, _, layer_residual = torch_npu.npu_add_rms_norm(
+                            layer_input, layer_residual, norm_weight, 1e-6
+                        )
                         dist.all_reduce(tensor)
                         tensor.mul_(1.0 / TP_SIZE)
-                    graph_output = compute_input
+                    graph_output = layer_input
                 log(f"ACL GRAPH capture done: {label}")
             phase_barrier.wait()
 
@@ -207,14 +267,15 @@ def worker(
         else:
             if wave == "second":
                 second_wave_start.wait()
-                log(f"ENTER Vector Core compute before all_reduce: {label}")
+                log(f"ENTER vLLM AddRmsNorm before all_reduce: {label}")
                 status_queue.put(("COMPUTE_STARTED", model, rank, device, wave))
-                assert compute_input is not None
-                compute_output = torch.sigmoid(compute_input)
+                compute_output, _, residual_output = torch_npu.npu_add_rms_norm(
+                    compute_input, residual, norm_weight, 1e-6
+                )
                 torch.npu.synchronize()
-                del compute_output
+                del compute_output, residual_output
                 status_queue.put(("COMPUTE_DONE", model, rank, device, wave))
-                log(f"DONE Vector Core compute before all_reduce: {label}")
+                log(f"DONE vLLM AddRmsNorm before all_reduce: {label}")
 
             status_queue.put(("OP_ENTERED", model, rank, device, wave))
             log(f"ENTER synchronous all_reduce ({wave} wave): {label}")
@@ -222,7 +283,7 @@ def worker(
             torch.npu.synchronize()
             log(f"RETURN synchronous all_reduce ({wave} wave): {label}")
 
-        value = float(tensor[0].cpu().item())
+        value = float(tensor[0, 0].cpu().item())
         expected = float(
             (TP_SIZE * (TP_SIZE + 1) // 2) / TP_SIZE
             if execution_mode == "aclgraph"
@@ -250,8 +311,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--decode-layers",
         type=int,
-        default=32,
-        help="synthetic compute+all-reduce layers in the full decode graph (default: 32)",
+        default=64,
+        help="Qwen3-32B compute+all-reduce layers in the decode graph (default: 64)",
     )
     parser.add_argument(
         "--execution-mode",
@@ -260,16 +321,22 @@ def parse_args() -> argparse.Namespace:
         help="run a captured compute+all-reduce graph or the eager control (default: aclgraph)",
     )
     parser.add_argument(
-        "--tensor-kib",
+        "--decode-tokens",
         type=int,
         default=256,
-        help="FP16 decode all-reduce tensor size per rank in KiB (default: 256)",
+        help="Qwen3 decode batch; vLLM server default max-num-seqs is 256 (default: 256)",
     )
     parser.add_argument(
-        "--compute-mib",
+        "--hidden-size",
         type=int,
-        default=64,
-        help="FP16 Vector Core input size per second-wave rank in MiB (default: 64)",
+        default=5120,
+        help="Qwen3-32B hidden dimension (default: 5120)",
+    )
+    parser.add_argument(
+        "--dtype",
+        choices=("bf16", "fp16"),
+        default="bf16",
+        help="Qwen3-32B model dtype (default: bf16)",
     )
     parser.add_argument(
         "--stagger-seconds",
@@ -302,10 +369,10 @@ def parse_args() -> argparse.Namespace:
         help="torch.distributed HCCL timeout; keep above hang-timeout",
     )
     args = parser.parse_args()
-    if args.tensor_kib <= 0:
-        parser.error("--tensor-kib must be positive")
-    if args.compute_mib <= 0:
-        parser.error("--compute-mib must be positive")
+    if args.decode_tokens <= 0:
+        parser.error("--decode-tokens must be positive")
+    if args.hidden_size <= 0:
+        parser.error("--hidden-size must be positive")
     if args.decode_layers <= 0:
         parser.error("--decode-layers must be positive")
     if (
@@ -443,6 +510,7 @@ def main() -> int:
     os.environ.setdefault("ASCEND_GLOBAL_LOG_LEVEL", "3")
     # This reproducer specifically targets contention between AIV-expanded
     # HCCL collectives and model Vector Core operators.
+    os.environ.pop("HCCL_DETERMINISTIC", None)
     os.environ["HCCL_OP_EXPANSION_MODE"] = "AIV"
 
     ctx = mp.get_context("spawn")
@@ -457,9 +525,10 @@ def main() -> int:
     log(f"COMMAND: {shlex.join(sys.argv)}")
     log(
         "CONFIG: "
-        f"tp={TP_SIZE} execution_mode={args.execution_mode} "
-        f"decode_layers={args.decode_layers} tensor_kib={args.tensor_kib} "
-        f"compute_mib={args.compute_mib} "
+        f"tp={TP_SIZE} execution_mode={args.execution_mode} model=Qwen3-32B "
+        f"decode_layers={args.decode_layers} dtype={args.dtype} "
+        f"op_shape=({args.decode_tokens},{args.hidden_size}) "
+        f"tensor_kib={args.decode_tokens * args.hidden_size * 2 // 1024} "
         f"stagger_seconds={args.stagger_seconds} "
         f"hang_timeout={args.hang_timeout} hccl_timeout={args.hccl_timeout} "
         f"ports={ports}"
@@ -482,8 +551,9 @@ def main() -> int:
                         model,
                         rank,
                         ports[model],
-                        args.tensor_kib,
-                        args.compute_mib,
+                        args.decode_tokens,
+                        args.hidden_size,
+                        args.dtype,
                         args.decode_layers,
                         args.execution_mode,
                         phase_barrier,
