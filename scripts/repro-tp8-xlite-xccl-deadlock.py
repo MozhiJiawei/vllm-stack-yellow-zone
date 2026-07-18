@@ -242,7 +242,7 @@ def worker(
         phase_barrier.wait()
 
         expected = float(TP_SIZE * (TP_SIZE + 1) // 2)
-        value = float(comm_output[0].cpu().item())
+        value = float(comm_output[0, 0].cpu().item())
         if value != expected:
             raise RuntimeError(
                 f"warm-up all-reduce result mismatch: got {value}, expected {expected}"
@@ -270,7 +270,7 @@ def worker(
         all_reduce(runtime, comm_output, comm_input)
         log(f"RETURN xLite AllReduce ({wave} wave): {label}")
 
-        value = float(comm_output[0].cpu().item())
+        value = float(comm_output[0, 0].cpu().item())
         if value != expected:
             raise RuntimeError(
                 f"race all-reduce result mismatch: got {value}, expected {expected}"
