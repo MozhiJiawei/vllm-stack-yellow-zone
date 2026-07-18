@@ -107,4 +107,3 @@ cat "$output_dir/metadata.txt"
 printf '\n===== DIFF STAT =====\n'
 cat "$output_dir/stat.txt"
 printf '\nReports written to %s\n' "$output_dir"
-
