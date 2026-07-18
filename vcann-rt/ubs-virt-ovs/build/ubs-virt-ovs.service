@@ -1,0 +1,13 @@
+[Unit]
+Description=UBS Virt OVS Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ubs-virt-ovs
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
