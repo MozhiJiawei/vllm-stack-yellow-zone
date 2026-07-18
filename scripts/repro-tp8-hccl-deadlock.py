@@ -13,12 +13,12 @@ script creates this order:
     NPU 0..3: A all-reduce first, B all-reduce second
     NPU 4..7: B all-reduce first, A all-reduce second
 
-Thus the first wave contains four ranks of each all-reduce.  If an incomplete
-HCCL operation monopolizes per-device execution resources, the opposite model
-must pass through an FP16 Vector Core operation before submitting its missing
-all-reduce rank. HCCL is forced into AIV expansion mode so communication and
-the blocked computation contend for Vector Core resources. This prevents both
-TP groups from becoming complete and creates the intended hold-and-wait cycle.
+Each rank captures a minimal ACL graph containing an FP16 Vector Core operation
+followed by its TP=8 all-reduce. Thus the first wave contains four graph replays
+from each model. If an incomplete AIV HCCL operation monopolizes device
+execution resources, the opposite model's second-wave graph cannot pass its
+compute operator to submit the missing all-reduce rank. This creates the
+intended hold-and-wait cycle without model parameters.
 
 Exit status is 0 when a hang is observed (hypothesis reproduced), 1 when all
 collectives complete, and 2 when setup or launch fails.
@@ -76,6 +76,7 @@ def worker(
     master_port: int,
     tensor_mib: int,
     compute_mib: int,
+    execution_mode: str,
     phase_barrier: Any,
     race_start: Any,
     second_wave_start: Any,
@@ -120,12 +121,7 @@ def worker(
             device=f"npu:{device}",
         )
         compute_input = None
-        if wave == "second":
-            # The missing collective ranks must first pass through a real
-            # Vector Core operation. HCCL_OP_EXPANSION_MODE=AIV makes the
-            # opposite model's collective use the same execution resource. If
-            # it monopolizes this NPU, synchronize() below cannot finish and
-            # this rank never reaches its own all-reduce.
+        if execution_mode == "aclgraph" or wave == "second":
             compute_input = torch.randn(
                 (compute_mib * 524_288,),
                 dtype=torch.float16,
@@ -155,30 +151,67 @@ def worker(
 
         tensor.fill_(float(rank + 1))
         torch.npu.synchronize()
+
+        aclgraph = None
+        graph_output = None
+        if execution_mode == "aclgraph":
+            # vLLM-Ascend captures model computation and AIV-expanded HCCL in
+            # an NPUGraph. Capture one model at a time with all eight ranks so
+            # capture itself completes before the crossed replay begins.
+            aclgraph = torch.npu.NPUGraph()
+            if model == "A":
+                log(f"ACL GRAPH capture begin: {label}")
+                assert compute_input is not None
+                with torch.npu.graph(aclgraph):
+                    graph_output = torch.sigmoid(compute_input)
+                    dist.all_reduce(tensor)
+                log(f"ACL GRAPH capture done: {label}")
+            phase_barrier.wait()
+
+            if model == "B":
+                log(f"ACL GRAPH capture begin: {label}")
+                assert compute_input is not None
+                with torch.npu.graph(aclgraph):
+                    graph_output = torch.sigmoid(compute_input)
+                    dist.all_reduce(tensor)
+                log(f"ACL GRAPH capture done: {label}")
+            phase_barrier.wait()
+
+            assert graph_output is not None
+            tensor.fill_(float(rank + 1))
+            torch.npu.synchronize()
+
         status_queue.put(("ARMED", model, rank, device, ""))
         log(f"ARMED: {label}")
         race_start.wait()
 
-        if wave == "second":
-            second_wave_start.wait()
-            log(f"ENTER Vector Core compute before all_reduce: {label}")
-            status_queue.put(("COMPUTE_STARTED", model, rank, device, wave))
-            assert compute_input is not None
-            compute_output = torch.sigmoid(compute_input)
+        if execution_mode == "aclgraph":
+            if wave == "second":
+                second_wave_start.wait()
+            status_queue.put(("OP_ENTERED", model, rank, device, wave))
+            log(f"ENTER ACL graph replay ({wave} wave): {label}")
+            assert aclgraph is not None
+            aclgraph.replay()
+            log(f"ACL graph replay returned; synchronizing ({wave} wave): {label}")
             torch.npu.synchronize()
-            del compute_output
-            status_queue.put(("COMPUTE_DONE", model, rank, device, wave))
-            log(f"DONE Vector Core compute before all_reduce: {label}")
+            log(f"DONE ACL graph replay ({wave} wave): {label}")
+        else:
+            if wave == "second":
+                second_wave_start.wait()
+                log(f"ENTER Vector Core compute before all_reduce: {label}")
+                status_queue.put(("COMPUTE_STARTED", model, rank, device, wave))
+                assert compute_input is not None
+                compute_output = torch.sigmoid(compute_input)
+                torch.npu.synchronize()
+                del compute_output
+                status_queue.put(("COMPUTE_DONE", model, rank, device, wave))
+                log(f"DONE Vector Core compute before all_reduce: {label}")
 
-        # Match vLLM's DeviceCommunicatorBase.all_reduce exactly: it calls the
-        # synchronous torch.distributed API rather than async_op=True followed
-        # by Work.wait().  The distinction matters on HCCL because it changes
-        # the host/stream ordering used to enqueue and wait for the device op.
-        status_queue.put(("COLLECTIVE_ENTERED", model, rank, device, wave))
-        log(f"ENTER synchronous all_reduce ({wave} wave): {label}")
-        dist.all_reduce(tensor)
-        torch.npu.synchronize()
-        log(f"RETURN synchronous all_reduce ({wave} wave): {label}")
+            status_queue.put(("OP_ENTERED", model, rank, device, wave))
+            log(f"ENTER synchronous all_reduce ({wave} wave): {label}")
+            dist.all_reduce(tensor)
+            torch.npu.synchronize()
+            log(f"RETURN synchronous all_reduce ({wave} wave): {label}")
 
         value = float(tensor[0].cpu().item())
         expected = float(TP_SIZE * (TP_SIZE + 1) // 2)
@@ -202,6 +235,12 @@ def worker(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--execution-mode",
+        choices=("aclgraph", "eager"),
+        default="aclgraph",
+        help="run a captured compute+all-reduce graph or the eager control (default: aclgraph)",
+    )
+    parser.add_argument(
         "--tensor-mib",
         type=int,
         default=4,
@@ -217,7 +256,7 @@ def parse_args() -> argparse.Namespace:
         "--stagger-seconds",
         type=float,
         default=2.0,
-        help="delay after all first-wave ranks enter all_reduce before releasing the second wave",
+        help="delay after all first-wave ranks enter replay/all_reduce before releasing the second wave",
     )
     parser.add_argument(
         "--hang-timeout",
@@ -235,7 +274,7 @@ def parse_args() -> argparse.Namespace:
         "--enter-timeout",
         type=float,
         default=60.0,
-        help="seconds allowed for all first-wave ranks to enter synchronous all_reduce",
+        help="seconds allowed for all first-wave ranks to enter replay/all_reduce",
     )
     parser.add_argument(
         "--hccl-timeout",
@@ -306,6 +345,7 @@ def dump_live_process_stacks(processes: list[mp.Process]) -> None:
 def print_collective_state(
     entered: list[tuple[Any, ...]],
     done: list[tuple[Any, ...]],
+    execution_mode: str,
     compute_started: list[tuple[Any, ...]] | None = None,
     compute_done: list[tuple[Any, ...]] | None = None,
 ) -> None:
@@ -323,7 +363,11 @@ def print_collective_state(
             if key in done_keys:
                 state = "DONE"
             elif key in entered_keys:
-                state = "STUCK_IN_SYNCHRONOUS_ALL_REDUCE"
+                state = (
+                    "STUCK_IN_ACL_GRAPH_REPLAY"
+                    if execution_mode == "aclgraph"
+                    else "STUCK_IN_SYNCHRONOUS_ALL_REDUCE"
+                )
             elif key in compute_done_keys:
                 state = "STUCK_AFTER_COMPUTE_BEFORE_ALL_REDUCE_SUBMIT"
             elif key in compute_started_keys:
@@ -392,7 +436,8 @@ def main() -> int:
     log(f"COMMAND: {shlex.join(sys.argv)}")
     log(
         "CONFIG: "
-        f"tp={TP_SIZE} tensor_mib={args.tensor_mib} compute_mib={args.compute_mib} "
+        f"tp={TP_SIZE} execution_mode={args.execution_mode} "
+        f"tensor_mib={args.tensor_mib} compute_mib={args.compute_mib} "
         f"stagger_seconds={args.stagger_seconds} "
         f"hang_timeout={args.hang_timeout} hccl_timeout={args.hccl_timeout} "
         f"ports={ports}"
@@ -417,6 +462,7 @@ def main() -> int:
                         ports[model],
                         args.tensor_mib,
                         args.compute_mib,
+                        args.execution_mode,
                         phase_barrier,
                         race_start,
                         second_wave_start,
@@ -444,21 +490,21 @@ def main() -> int:
         log("both HCCL groups warmed up; releasing the crossed first wave")
         race_start.set()
         entered, unexpected = receive_until(
-            status_queue, "COLLECTIVE_ENTERED", FIRST_WAVE_SIZE, args.enter_timeout
+            status_queue, "OP_ENTERED", FIRST_WAVE_SIZE, args.enter_timeout
         )
         errors = [message for message in unexpected if message[0] == "ERROR"]
         if errors or len(entered) != FIRST_WAVE_SIZE:
             log(f"LAUNCH FAILED: first wave entered {len(entered)}/{FIRST_WAVE_SIZE}")
             for message in errors:
                 log(f"{message[1]} rank {message[2]} error:\n{message[4]}")
-            print_collective_state(entered, [])
+            print_collective_state(entered, [], args.execution_mode)
             print_process_snapshot(processes)
             dump_live_process_stacks(processes)
             log("RESULT=FIRST_WAVE_LAUNCH_FAILED exit_code=2")
             return 2
 
         first_wave = sorted((message[1], message[2], message[3]) for message in entered)
-        log(f"first wave entered synchronous all_reduce: {first_wave}")
+        log(f"first wave entered {args.execution_mode}: {first_wave}")
         time.sleep(args.stagger_seconds)
         log("releasing the crossed second wave")
         second_wave_start.set()
@@ -466,10 +512,10 @@ def main() -> int:
         done, unexpected = receive_until(
             status_queue, "DONE", len(processes), args.hang_timeout
         )
-        # COLLECTIVE_ENTERED messages from the second wave are expected here.
+        # OP_ENTERED messages from the second wave are expected here.
         errors = [message for message in unexpected if message[0] == "ERROR"]
         second_wave_entered = [
-            message for message in unexpected if message[0] == "COLLECTIVE_ENTERED"
+            message for message in unexpected if message[0] == "OP_ENTERED"
         ]
         compute_started = [
             message for message in unexpected if message[0] == "COMPUTE_STARTED"
@@ -482,14 +528,18 @@ def main() -> int:
             log(f"RUNTIME FAILED with {len(errors)} worker error(s)")
             for message in errors:
                 log(f"{message[1]} rank {message[2]} error:\n{message[4]}")
-            print_collective_state(all_entered, done, compute_started, compute_done)
+            print_collective_state(
+                all_entered, done, args.execution_mode, compute_started, compute_done
+            )
             print_process_snapshot(processes)
             dump_live_process_stacks(processes)
             log("RESULT=RUNTIME_FAILED exit_code=2")
             return 2
         if len(done) == len(processes):
             log("NO DEADLOCK: all 16 ranks completed both TP=8 all-reduces")
-            print_collective_state(all_entered, done, compute_started, compute_done)
+            print_collective_state(
+                all_entered, done, args.execution_mode, compute_started, compute_done
+            )
             log("RESULT=NO_DEADLOCK exit_code=1")
             return 1
 
@@ -498,7 +548,9 @@ def main() -> int:
             f"DEADLOCK REPRODUCED: only {len(done)}/16 ranks completed within "
             f"{args.hang_timeout:.1f}s; completed={completed}"
         )
-        print_collective_state(all_entered, done, compute_started, compute_done)
+        print_collective_state(
+            all_entered, done, args.execution_mode, compute_started, compute_done
+        )
         print_process_snapshot(processes)
         dump_live_process_stacks(processes)
         log("RESULT=DEADLOCK_REPRODUCED exit_code=0")
