@@ -20,12 +20,21 @@ old_dir="$2"
 [[ -d "$new_dir" ]] || fail "new code directory not found: $new_dir"
 [[ -d "$old_dir" ]] || fail "old code directory not found: $old_dir"
 
-new_root="$(git -C "$new_dir" rev-parse --show-toplevel)" || fail "new code is not in a Git repository"
 old_root="$(git -C "$old_dir" rev-parse --show-toplevel)" || fail "old code is not in a Git repository"
-new_prefix="$(git -C "$new_dir" rev-parse --show-prefix)"
 old_prefix="$(git -C "$old_dir" rev-parse --show-prefix)"
 
-readonly new_dir old_dir new_root old_root new_prefix old_prefix
+if new_root="$(git -C "$new_dir" rev-parse --show-toplevel 2>/dev/null)"; then
+  new_source=git
+  new_prefix="$(git -C "$new_dir" rev-parse --show-prefix)"
+  new_revision="$(git -C "$new_root" rev-parse HEAD)"
+else
+  new_source=filesystem
+  new_root="$(cd -- "$new_dir" && pwd -P)"
+  new_prefix=
+  new_revision=filesystem
+fi
+
+readonly new_dir old_dir new_source new_root old_root new_prefix old_prefix new_revision
 
 pathspec_for() {
   local prefix="$1"
@@ -49,24 +58,35 @@ require_clean_path() {
   fi
 }
 
-require_clean_path "new code directory" "$new_root" "$new_prefix"
 require_clean_path "old code directory" "$old_root" "$old_prefix"
+if [[ "$new_source" == git ]]; then
+  require_clean_path "new code directory" "$new_root" "$new_prefix"
+fi
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 output_dir="$script_dir/.vcann-sync"
 object_repo="$output_dir/objects.git"
+new_index="$output_dir/new.index"
 
 rm -rf "$output_dir"
 mkdir -p "$output_dir"
 
 git init --quiet --bare "$object_repo"
 git -C "$object_repo" fetch --quiet --no-tags "$old_root" HEAD:refs/heads/old
-git -C "$object_repo" fetch --quiet --no-tags "$new_root" HEAD:refs/heads/new
 
 old_tree="refs/heads/old^{tree}"
-new_tree="refs/heads/new^{tree}"
 [[ -z "$old_prefix" ]] || old_tree="refs/heads/old:${old_prefix%/}"
-[[ -z "$new_prefix" ]] || new_tree="refs/heads/new:${new_prefix%/}"
+
+if [[ "$new_source" == git ]]; then
+  git -C "$object_repo" fetch --quiet --no-tags "$new_root" HEAD:refs/heads/new
+  new_tree="refs/heads/new^{tree}"
+  [[ -z "$new_prefix" ]] || new_tree="refs/heads/new:${new_prefix%/}"
+else
+  git -C "$object_repo" config core.autocrlf false
+  GIT_INDEX_FILE="$new_index" git --git-dir="$object_repo" --work-tree="$new_root" read-tree --empty
+  GIT_INDEX_FILE="$new_index" git --git-dir="$object_repo" --work-tree="$new_root" add --all -- .
+  new_tree="$(GIT_INDEX_FILE="$new_index" git --git-dir="$object_repo" write-tree)"
+fi
 
 diff_status=0
 git -C "$object_repo" diff --quiet "$old_tree" "$new_tree" || diff_status=$?
@@ -84,8 +104,9 @@ git -C "$object_repo" diff --name-status --no-renames \
 
 {
   printf 'new_root=%s\n' "$new_root"
+  printf 'new_source=%s\n' "$new_source"
   printf 'new_prefix=%s\n' "$new_prefix"
-  printf 'new_head=%s\n' "$(git -C "$new_root" rev-parse HEAD)"
+  printf 'new_revision=%s\n' "$new_revision"
   printf 'old_root=%s\n' "$old_root"
   printf 'old_prefix=%s\n' "$old_prefix"
   printf 'old_head=%s\n' "$(git -C "$old_root" rev-parse HEAD)"
