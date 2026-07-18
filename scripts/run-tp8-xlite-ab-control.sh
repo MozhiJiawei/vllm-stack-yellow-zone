@@ -35,11 +35,10 @@ run_case() {
 
   printf '\n===== CASE=%s =====\n' "$case_name"
   python3 "$script_dir/repro-tp8-xlite-xccl-deadlock.py" \
-    --decode-tokens 256 \
+    --batch 16 \
     --hidden-size 5120 \
     --dtype bf16 \
-    --compute-kernel flash-attention \
-    --attention-cached-tokens 9216 \
+    --cached-tokens 9216 \
     --init-stagger-seconds 10 \
     --stagger-seconds 5 \
     --hang-timeout 30 \
@@ -70,4 +69,4 @@ fi
 if ((aligned_rc != 0)); then
   exit 1
 fi
-exit 0
+exit "$crossed_rc"
