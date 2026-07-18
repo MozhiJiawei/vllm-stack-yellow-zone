@@ -128,6 +128,7 @@ def worker(
     hidden_size: int,
     dtype_name: str,
     disable_xccl: bool,
+    model_a_runtime_ready: Any,
     phase_barrier: Any,
     race_start: Any,
     second_wave_start: Any,
@@ -168,6 +169,13 @@ def worker(
                 f"xlite={xlite_version} xlite_module={xlite.__file__} "
                 f"visible_npus={torch.npu.device_count()}"
             )
+
+        # Real dual-vLLM deployments bring the two engines up independently.
+        # Serializing communicator initialization avoids testing concurrent
+        # HcclCommInitRootInfo setup instead of the intended runtime deadlock.
+        if model == "B":
+            log(f"INIT waiting for model A runtime group: {label}")
+            model_a_runtime_ready.wait()
 
         # This order matches xLite's own kernel tests. Runtime owns a private
         # ACL stream and size>0 creates the tensor pool required by XCCL.
@@ -212,6 +220,8 @@ def worker(
         compute_output = torch.empty_like(compute_input)
         torch.npu.synchronize()
         log(f"RUNTIME ready: {label} aic={aic_count} aiv={aiv_count}")
+        if model == "A":
+            status_queue.put(("RUNTIME_READY", model, rank, device, ""))
 
         # Warm up compute and communication one model at a time. This proves
         # both full TP groups work before deliberately launching partial ones.
@@ -287,8 +297,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--decode-tokens",
         type=int,
-        default=64,
-        help="Qwen3 decode token/batch dimension (default: 64)",
+        default=256,
+        help="Qwen3 decode batch; vLLM server default max-num-seqs is 256 (default: 256)",
     )
     parser.add_argument(
         "--hidden-size",
@@ -306,6 +316,12 @@ def parse_args() -> argparse.Namespace:
         "--disable-xccl",
         action="store_true",
         help="control run: force xLite onto its HCCL fallback instead of custom XCCL",
+    )
+    parser.add_argument(
+        "--init-stagger-seconds",
+        type=float,
+        default=5.0,
+        help="gap between model A and B communicator initialization (default: 5)",
     )
     parser.add_argument(
         "--stagger-seconds",
@@ -337,6 +353,7 @@ def parse_args() -> argparse.Namespace:
             parser.error(f"--{name.replace('_', '-')} must be positive")
     for name in (
         "stagger_seconds",
+        "init_stagger_seconds",
         "hang_timeout",
         "startup_timeout",
         "enter_timeout",
@@ -459,6 +476,7 @@ def main() -> int:
 
     ctx = mp.get_context("spawn")
     phase_barrier = ctx.Barrier(WORKER_COUNT)
+    model_a_runtime_ready = ctx.Event()
     race_start = ctx.Event()
     second_wave_start = ctx.Event()
     status_queue = ctx.Queue()
@@ -476,6 +494,7 @@ def main() -> int:
         f"op_shape=({args.decode_tokens},{args.hidden_size}) "
         f"tensor_kib={tensor_bytes // 1024} "
         f"xccl_allreduce_aiv_cap={expected_xccl_cap} ports={ports} "
+        f"init_stagger_seconds={args.init_stagger_seconds} "
         f"stagger_seconds={args.stagger_seconds} hang_timeout={args.hang_timeout}"
     )
     log(
@@ -504,6 +523,7 @@ def main() -> int:
                         args.hidden_size,
                         args.dtype,
                         args.disable_xccl,
+                        model_a_runtime_ready,
                         phase_barrier,
                         race_start,
                         second_wave_start,
@@ -513,7 +533,27 @@ def main() -> int:
                 process.start()
                 processes.append(process)
 
-        log("started 16 processes: two independent xLite TP=8 worlds on NPUs 0..7")
+        log("started 16 processes: initializing model A xLite TP=8 runtime first")
+        runtime_ready, unexpected = receive_until(
+            status_queue, "RUNTIME_READY", TP_SIZE, args.startup_timeout
+        )
+        errors = [message for message in unexpected if message[0] == "ERROR"]
+        if errors or len(runtime_ready) != TP_SIZE:
+            log(f"MODEL A INIT FAILED: ready {len(runtime_ready)}/{TP_SIZE} runtimes")
+            for message in errors:
+                log(f"{message[1]} rank {message[2]} error:\n{message[4]}")
+            print_process_snapshot(processes)
+            dump_live_process_stacks(processes)
+            log("RESULT=SETUP_FAILED exit_code=2")
+            return 2
+
+        log(
+            f"model A runtime group ready; waiting {args.init_stagger_seconds:.1f}s "
+            "before model B communicator initialization"
+        )
+        time.sleep(args.init_stagger_seconds)
+        log("allowing model B communicator initialization")
+        model_a_runtime_ready.set()
         armed, unexpected = receive_until(
             status_queue, "ARMED", WORKER_COUNT, args.startup_timeout
         )
@@ -588,6 +628,7 @@ def main() -> int:
         log("RESULT=DEADLOCK_REPRODUCED exit_code=0")
         return 0
     finally:
+        model_a_runtime_ready.set()
         race_start.set()
         second_wave_start.set()
         stop_processes(processes)
