@@ -8,18 +8,20 @@ Run inside a Linux Ascend container with NPUs 0..7 and an installed xLite:
 Model A rank N and model B rank N share NPU N.  The first wave launches only
 A ranks 0..3 and B ranks 4..7 into xLite's native TP AllReduce.  Those custom
 XCCL kernels busy-wait on the missing peers while retaining AIV cores.  The
-crossed second wave executes xLite RMSNorm, which requests every AIV reported
-by the device, before it can launch the missing AllReduce ranks:
+crossed second wave executes xLite's Qwen3 FlashAttention mixed kernel, which
+requests all 20 AIC and their paired 40 AIV on a 910B4, before it can launch
+the missing AllReduce ranks:
 
-    NPU 0..3: A AllReduce holds AIV -> B RMSNorm waits -> B AllReduce missing
-    NPU 4..7: B AllReduce holds AIV -> A RMSNorm waits -> A AllReduce missing
+    NPU 0..3: A AllReduce holds AIV -> B mixed compute waits -> B AR missing
+    NPU 4..7: B AllReduce holds AIV -> A mixed compute waits -> A AR missing
 
 This intentionally uses xLite's private runtime stream and native kernels; it
 does not construct model parameters.  ``--schedule aligned`` is the normal
-control: both models run RMSNorm and then enter AllReduce with all eight TP
-ranks.  Its exit status is 0 on completion and 1 on an unexpected hang.  For
-the default crossed schedule, exit status is 0 when the hang is observed and 1
-when all operations complete.  Setup/runtime failures always return 2.
+control: both models run the selected compute kernel and then enter AllReduce
+with all eight TP ranks.  Its exit status is 0 on completion and 1 on an
+unexpected hang.  For the default crossed schedule, exit status is 0 when the
+hang is observed and 1 when all operations complete.  Setup/runtime failures
+always return 2.
 """
 
 from __future__ import annotations
@@ -48,6 +50,11 @@ MODEL_NAMES = ("A", "B")
 WORKER_COUNT = TP_SIZE * len(MODEL_NAMES)
 FIRST_WAVE_SIZE = TP_SIZE
 XCCL_LARGE_MESSAGE_BYTES_PER_RANK = 327_680
+QWEN3_LOCAL_Q_HEADS_TP8 = 8
+QWEN3_LOCAL_KV_HEADS_TP8 = 1
+QWEN3_HEAD_DIM = 128
+XLITE_KV_BLOCK_SIZE = 128
+XLITE_FLASH_ATTENTION_TILE = 8192
 
 
 def log(message: str) -> None:
@@ -132,6 +139,8 @@ def worker(
     hidden_size: int,
     dtype_name: str,
     disable_xccl: bool,
+    compute_kernel: str,
+    attention_cached_tokens: int,
     schedule: str,
     model_a_runtime_ready: Any,
     phase_barrier: Any,
@@ -154,7 +163,7 @@ def worker(
     import torch
     import torch_npu
     import xlite
-    from xlite._C import Runtime, all_reduce, rmsnorm
+    from xlite._C import Runtime, all_reduce, attention, rmsnorm
 
     device = rank
     label = f"model={model} rank={rank} npu={device}"
@@ -210,7 +219,9 @@ def worker(
                 "CORE PLAN "
                 f"hardware_aic={aic_count} hardware_aiv={aiv_count} "
                 f"xccl_allreduce_aiv={allreduce_aiv} "
-                f"xlite_rmsnorm_aiv={aiv_count} "
+                f"compute_kernel={compute_kernel} "
+                f"compute_aic={aic_count if compute_kernel == 'flash-attention' else 0} "
+                f"compute_aiv={aiv_count} "
                 f"bytes_per_tp_rank={bytes_per_rank}"
             )
 
@@ -228,6 +239,77 @@ def worker(
         )
         norm_weight = torch.ones((hidden_size,), dtype=dtype, device=f"npu:{device}")
         compute_output = torch.empty_like(compute_input)
+
+        attention_args: tuple[Any, ...] | None = None
+        if compute_kernel == "flash-attention":
+            query_tokens = 1
+            max_num_blocks = (
+                attention_cached_tokens + query_tokens + XLITE_KV_BLOCK_SIZE - 1
+            ) // XLITE_KV_BLOCK_SIZE
+            qkv = torch.randn(
+                (
+                    query_tokens,
+                    (QWEN3_LOCAL_Q_HEADS_TP8 + 2 * QWEN3_LOCAL_KV_HEADS_TP8)
+                    * QWEN3_HEAD_DIM,
+                ),
+                dtype=dtype,
+                device=f"npu:{device}",
+            )
+            k_cache = torch.randn(
+                (
+                    max_num_blocks,
+                    XLITE_KV_BLOCK_SIZE,
+                    QWEN3_LOCAL_KV_HEADS_TP8,
+                    QWEN3_HEAD_DIM,
+                ),
+                dtype=dtype,
+                device=f"npu:{device}",
+            )
+            v_cache = torch.randn_like(k_cache)
+            attention_output = torch.empty(
+                (query_tokens, QWEN3_LOCAL_Q_HEADS_TP8 * QWEN3_HEAD_DIM),
+                dtype=dtype,
+                device=f"npu:{device}",
+            )
+            query_start_loc = torch.tensor(
+                [0], dtype=torch.int32, device=f"npu:{device}"
+            )
+            query_lens = torch.tensor(
+                [query_tokens], dtype=torch.int32, device=f"npu:{device}"
+            )
+            cached_lens = torch.tensor(
+                [attention_cached_tokens], dtype=torch.int32, device=f"npu:{device}"
+            )
+            block_tables = torch.arange(
+                max_num_blocks, dtype=torch.int32, device=f"npu:{device}"
+            )
+            attention_args = (
+                runtime,
+                qkv,
+                k_cache,
+                v_cache,
+                attention_output,
+                query_start_loc,
+                query_lens,
+                cached_lens,
+                block_tables,
+                QWEN3_LOCAL_Q_HEADS_TP8,
+                QWEN3_LOCAL_KV_HEADS_TP8,
+                QWEN3_HEAD_DIM,
+                XLITE_KV_BLOCK_SIZE,
+                1,
+                max_num_blocks,
+                True,
+                XLITE_FLASH_ATTENTION_TILE,
+            )
+
+        def run_compute() -> None:
+            if compute_kernel == "flash-attention":
+                assert attention_args is not None
+                attention(*attention_args)
+            else:
+                rmsnorm(runtime, compute_input, norm_weight, compute_output, 1e-6)
+
         torch.npu.synchronize()
         log(f"RUNTIME ready: {label} aic={aic_count} aiv={aiv_count}")
         if model == "A":
@@ -238,14 +320,14 @@ def worker(
         phase_barrier.wait()
         if model == "A":
             log(f"WARMUP begin: {label}")
-            rmsnorm(runtime, compute_input, norm_weight, compute_output, 1e-6)
+            run_compute()
             all_reduce(runtime, comm_output, comm_input)
             torch.npu.synchronize()
             log(f"WARMUP done: {label}")
         phase_barrier.wait()
         if model == "B":
             log(f"WARMUP begin: {label}")
-            rmsnorm(runtime, compute_input, norm_weight, compute_output, 1e-6)
+            run_compute()
             all_reduce(runtime, comm_output, comm_input)
             torch.npu.synchronize()
             log(f"WARMUP done: {label}")
@@ -265,13 +347,20 @@ def worker(
             if wave == "second":
                 second_wave_start.wait()
             status_queue.put(("COMPUTE_STARTED", model, rank, device, wave))
-            log(
-                f"ENTER xLite RMSNorm ({aiv_count} AIV requested) before "
-                f"AllReduce: {label}"
-            )
-            rmsnorm(runtime, compute_input, norm_weight, compute_output, 1e-6)
+            if compute_kernel == "flash-attention":
+                log(
+                    "ENTER xLite Qwen3 FlashAttention mixed kernel "
+                    f"({aic_count} AIC + {aiv_count} AIV requested) before "
+                    f"AllReduce: {label}"
+                )
+            else:
+                log(
+                    f"ENTER xLite RMSNorm ({aiv_count} AIV requested) before "
+                    f"AllReduce: {label}"
+                )
+            run_compute()
             status_queue.put(("COMPUTE_DONE", model, rank, device, wave))
-            log(f"RETURN xLite RMSNorm: {label}")
+            log(f"RETURN xLite {compute_kernel}: {label}")
 
         if wave == "first":
             # multiprocessing.Queue.put() uses a feeder thread. xLite's pybind
@@ -338,6 +427,25 @@ def parse_args() -> argparse.Namespace:
         help="control run: force xLite onto its HCCL fallback instead of custom XCCL",
     )
     parser.add_argument(
+        "--compute-kernel",
+        choices=("flash-attention", "rmsnorm"),
+        default="flash-attention",
+        help=(
+            "compute placed before missing AllReduce ranks; Qwen3 FlashAttention is "
+            "the mixed AIC/AIV reproducer, RMSNorm is the pure-AIV control "
+            "(default: flash-attention)"
+        ),
+    )
+    parser.add_argument(
+        "--attention-cached-tokens",
+        type=int,
+        default=9216,
+        help=(
+            "cached sequence length for Qwen3 FlashAttention; must exceed xLite's "
+            "8192-token tile to select its mixed flash kernel (default: 9216)"
+        ),
+    )
+    parser.add_argument(
         "--schedule",
         choices=("crossed", "aligned"),
         default="crossed",
@@ -353,7 +461,7 @@ def parse_args() -> argparse.Namespace:
         "--stagger-seconds",
         type=float,
         default=5.0,
-        help="delay after partial AllReduce entry before releasing RMSNorm (default: 5)",
+        help="delay after partial AllReduce entry before releasing compute (default: 5)",
     )
     parser.add_argument(
         "--hang-timeout",
@@ -374,9 +482,22 @@ def parse_args() -> argparse.Namespace:
         help="seconds allowed for all first-wave ranks to enter AllReduce (default: 60)",
     )
     args = parser.parse_args()
-    for name in ("pool_mib", "decode_tokens", "hidden_size"):
+    for name in (
+        "pool_mib",
+        "decode_tokens",
+        "hidden_size",
+        "attention_cached_tokens",
+    ):
         if getattr(args, name) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
+    if (
+        args.compute_kernel == "flash-attention"
+        and args.attention_cached_tokens <= XLITE_FLASH_ATTENTION_TILE
+    ):
+        parser.error(
+            "--attention-cached-tokens must exceed 8192 for the mixed "
+            "FlashAttention path"
+        )
     for name in (
         "stagger_seconds",
         "init_stagger_seconds",
@@ -478,9 +599,9 @@ def print_operation_state(
             elif key in entered_keys:
                 state = "STUCK_IN_XLITE_ALL_REDUCE"
             elif key in compute_started_keys and key not in compute_done_keys:
-                state = "STUCK_IN_XLITE_RMSNORM"
+                state = "STUCK_IN_XLITE_COMPUTE"
             elif key in compute_done_keys:
-                state = "BETWEEN_RMSNORM_AND_ALL_REDUCE"
+                state = "BETWEEN_COMPUTE_AND_ALL_REDUCE"
             else:
                 state = "NOT_RELEASED_OR_FAILED"
             log(f"  model={model} rank={rank} npu={rank} wave={wave} state={state}")
@@ -525,6 +646,8 @@ def main() -> int:
         f"schedule={args.schedule} "
         f"model=Qwen3-32B pool_mib={args.pool_mib} dtype={args.dtype} "
         f"op_shape=({args.decode_tokens},{args.hidden_size}) "
+        f"compute_kernel={args.compute_kernel} "
+        f"attention_cached_tokens={args.attention_cached_tokens} "
         f"tensor_kib={tensor_bytes // 1024} "
         f"xccl_allreduce_aiv_cap={expected_xccl_cap} ports={ports} "
         f"init_stagger_seconds={args.init_stagger_seconds} "
@@ -556,6 +679,8 @@ def main() -> int:
                         args.hidden_size,
                         args.dtype,
                         args.disable_xccl,
+                        args.compute_kernel,
+                        args.attention_cached_tokens,
                         args.schedule,
                         model_a_runtime_ready,
                         phase_barrier,
@@ -605,7 +730,7 @@ def main() -> int:
         if args.schedule == "aligned":
             log(
                 "NORMAL CONTROL: both xLite TP groups warmed up; releasing "
-                "all 16 workers into RMSNorm followed by complete TP8 AllReduce"
+                "all 16 workers into compute followed by complete TP8 AllReduce"
             )
             race_start.set()
             done, unexpected = receive_until(
@@ -688,7 +813,7 @@ def main() -> int:
         first_wave = sorted((message[1], message[2], message[3]) for message in entered)
         log(f"partial AllReduce first wave synchronously released: {first_wave}")
         time.sleep(args.stagger_seconds)
-        log("releasing crossed second wave into all-AIV xLite RMSNorm")
+        log(f"releasing crossed second wave into xLite {args.compute_kernel}")
         second_wave_start.set()
 
         done, unexpected = receive_until(

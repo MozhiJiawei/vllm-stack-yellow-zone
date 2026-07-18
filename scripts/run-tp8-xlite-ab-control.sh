@@ -38,6 +38,8 @@ run_case() {
     --decode-tokens 256 \
     --hidden-size 5120 \
     --dtype bf16 \
+    --compute-kernel flash-attention \
+    --attention-cached-tokens 9216 \
     --init-stagger-seconds 10 \
     --stagger-seconds 5 \
     --hang-timeout 30 \
