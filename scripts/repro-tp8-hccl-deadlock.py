@@ -59,6 +59,14 @@ def is_first_wave(model: str, rank: int) -> bool:
     )
 
 
+def close_worker_queue(status_queue: Any) -> None:
+    try:
+        status_queue.close()
+        status_queue.join_thread()
+    except BaseException as error:
+        log(f"WARNING: failed to flush worker status queue: {error}")
+
+
 def worker(
     model: str,
     rank: int,
@@ -152,11 +160,13 @@ def worker(
 
         dist.destroy_process_group()
         status_queue.put(("DONE", model, rank, device, wave))
+        close_worker_queue(status_queue)
         log(f"DONE all_reduce ({wave} wave): {label}")
     except BaseException:
         error = traceback.format_exc()
         log(f"WORKER ERROR: {label}\n{error}")
         status_queue.put(("ERROR", model, rank, device, error))
+        close_worker_queue(status_queue)
         raise
 
 
@@ -305,10 +315,12 @@ def main() -> int:
     for name in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"):
         os.environ.pop(name, None)
 
-    # Keep diagnostics in the CLI. Respect explicit caller settings while
-    # making CANN runtime logs visible by default.
-    os.environ.setdefault("ASCEND_SLOG_PRINT_TO_STDOUT", "1")
-    os.environ.setdefault("ASCEND_GLOBAL_LOG_LEVEL", "1")
+    # Keep the CLI readable: GE/CANN INFO and WARNING logs are extremely noisy
+    # with 16 workers. Python status lines, tracebacks, RESULT lines, and
+    # faulthandler dumps remain visible. Callers can still opt into verbose
+    # CANN logging by setting these variables before launch.
+    os.environ.setdefault("ASCEND_SLOG_PRINT_TO_STDOUT", "0")
+    os.environ.setdefault("ASCEND_GLOBAL_LOG_LEVEL", "3")
 
     ctx = mp.get_context("spawn")
     phase_barrier = ctx.Barrier(TP_SIZE * len(MODEL_NAMES))
