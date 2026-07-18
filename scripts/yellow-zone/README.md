@@ -36,3 +36,18 @@ tensor allocation.
 ```bash
 bash scripts/yellow-zone/diagnose-native-ascend.sh
 ```
+
+## Two-model TP8 HCCL deadlock reproducer
+
+`run-tp8-hccl-deadlock-repro.sh` exposes physical NPUs 0 through 7 to the
+official image, performs a minimal torch-npu ACL/tensor precheck, and then runs
+two independent TP=8 HCCL groups with crossed first-wave scheduling. It writes
+the complete container stdout/stderr to a timestamped file under `/tmp`.
+
+```bash
+bash scripts/yellow-zone/run-tp8-hccl-deadlock-repro.sh
+```
+
+The precheck prevents an ACL initialization regression from being mistaken for
+an HCCL deadlock. When it passes, the same command proceeds directly to the
+deadlock reproducer.
