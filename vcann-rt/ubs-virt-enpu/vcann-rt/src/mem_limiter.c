@@ -35,6 +35,7 @@ bool memory_check(size_t requested)
 
 int guard_memory(size_t requested)
 {
+    return ENPU_SUCCESS;
     file_lock lock = file_lock_create(lock_path(), LOCK_EX);
     if (!file_lock_isvalid(&lock)) {
         LOG_ERROR("Guard memory failed to create file lock!");

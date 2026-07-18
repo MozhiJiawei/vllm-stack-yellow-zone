@@ -39,6 +39,9 @@ uint64_t ns_now(void)
 /// The input must be less than 1000000000.
 void ns_sleep(uint64_t ns)
 {
+    if (ns == 0) {
+        return;
+    }
     struct timespec req;
     struct timespec rem;
     req.tv_sec = 0;
@@ -213,9 +216,9 @@ void synchronize_and_clear_streams(void)
             g_cache_streams.streams[remaining_count++] = stm;
             continue;
         }
-        int32_t devID = 0;
-        aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtGetDevice, &devID);
-        LOG_DEBUG("Get current Device %d returned with error code %d", devID, ret);
+        // int32_t devID = 0;
+        // aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtGetDevice, &devID);
+        // LOG_DEBUG("Get current Device %d returned with error code %d", devID, ret);
         LOG_DEBUG("Stream %p is being synchronized.", (void*)stm);
         RUNTIME_HOOK_CALL(rt_library_entry, rtStreamSynchronize, stm);
         LOG_DEBUG("Stream synchronization end.");
@@ -382,20 +385,13 @@ bool slide_window_check(int owner)
 void check_and_borrow_timeslice(int owner)
 {
     if (owner == g_vnpu_id) {
-        // Check and update slide_window_len, no borrow here
-        if (!check_timeout(&g_vnpu_sched_context->last_slide_window_time_ns, WATTING_SLIDE_WINDOW_TIMEOUT_PERIOD)) {
-            pthread_t thread;
-            int rc = pthread_create(&thread, NULL, npu_utilization_monitor_thread, NULL);
-            CHECK_ERROR_CODE(rc, "Failed to create npu_utilization_monitor_thread.");
-            pthread_detach(thread);
-        }
-    } else if (slide_window_check(owner)) { // Check and borrow timeslice
-        pthread_mutex_unlock(&g_sched_mutex);
-        ns_sleep(BORROW_TIMESLICE_LENGTH); // borrow BORROW_TIMESLICE_LENGTH ns every time
-        atomic_store(&g_sched_locking, true);
-        pthread_mutex_lock(&g_sched_mutex);
-        atomic_store(&g_sched_locking, false);
+        return;
     }
+    pthread_mutex_unlock(&g_sched_mutex);
+    ns_sleep(BORROW_TIMESLICE_LENGTH); // borrow BORROW_TIMESLICE_LENGTH ns every time
+    atomic_store(&g_sched_locking, true);
+    pthread_mutex_lock(&g_sched_mutex);
+    atomic_store(&g_sched_locking, false);
 }
 
 // Scheduling main thread
@@ -518,15 +514,17 @@ int vnpu_scheduler_init(vnpu_time_slice_sched_t *vnpu_sched_shm)
 
     LOG_INFO("aicore_limit_percent %d aicore_cur_timesilice %d", aicore_limit_percent, aicore_cur_timesilice);
 
-    pthread_t vnpu_scheduler_tid;
-    int rc = pthread_create(&vnpu_scheduler_tid, NULL, vnpu_scheduler_thread, NULL);
-    CHECK_COND_RETURN_ERROR_CODE(rc != 0, "Failed to create vnpu scheduler thread.");
+    if (is_core_limit()) {
+        pthread_t vnpu_scheduler_tid;
+        int rc = pthread_create(&vnpu_scheduler_tid, NULL, vnpu_scheduler_thread, NULL);
+        CHECK_COND_RETURN_ERROR_CODE(rc != 0, "Failed to create vnpu scheduler thread.");
 
-    pthread_t vnpu_alive_tid;
-    rc = pthread_create(&vnpu_alive_tid, NULL, vnpu_scheduler_flush_thread, NULL);
-    CHECK_COND_RETURN_ERROR_CODE(rc != 0, "Failed to create vnpu alive thread.");
-    pthread_detach(vnpu_scheduler_tid);
-    pthread_detach(vnpu_alive_tid);
+        pthread_t vnpu_alive_tid;
+        rc = pthread_create(&vnpu_alive_tid, NULL, vnpu_scheduler_flush_thread, NULL);
+        CHECK_COND_RETURN_ERROR_CODE(rc != 0, "Failed to create vnpu alive thread.");
+        pthread_detach(vnpu_scheduler_tid);
+        pthread_detach(vnpu_alive_tid);
+    }
     return ENPU_SUCCESS;
 }
 
