@@ -49,47 +49,38 @@ require_clean_path() {
   fi
 }
 
-snapshot_head() {
-  local root="$1"
-  local prefix="$2"
-  local destination="$3"
-  local component_count
-
-  mkdir -p "$destination"
-  if [[ -z "$prefix" ]]; then
-    git -C "$root" archive --format=tar HEAD | tar -xf - -C "$destination"
-    return
-  fi
-
-  component_count="$(awk -F/ '{ print NF }' <<<"${prefix%/}")"
-  git -C "$root" archive --format=tar HEAD "${prefix%/}" \
-    | tar -xf - -C "$destination" --strip-components="$component_count"
-}
-
 require_clean_path "new code directory" "$new_root" "$new_prefix"
 require_clean_path "old code directory" "$old_root" "$old_prefix"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 output_dir="$script_dir/.vcann-sync"
-old_snapshot="$output_dir/old"
-new_snapshot="$output_dir/new"
+object_repo="$output_dir/objects.git"
 
 rm -rf "$output_dir"
-mkdir -p "$old_snapshot" "$new_snapshot"
+mkdir -p "$output_dir"
 
-snapshot_head "$old_root" "$old_prefix" "$old_snapshot"
-snapshot_head "$new_root" "$new_prefix" "$new_snapshot"
+git init --quiet --bare "$object_repo"
+git -C "$object_repo" fetch --quiet --no-tags "$old_root" HEAD:refs/heads/old
+git -C "$object_repo" fetch --quiet --no-tags "$new_root" HEAD:refs/heads/new
+
+old_tree="refs/heads/old^{tree}"
+new_tree="refs/heads/new^{tree}"
+[[ -z "$old_prefix" ]] || old_tree="refs/heads/old:${old_prefix%/}"
+[[ -z "$new_prefix" ]] || new_tree="refs/heads/new:${new_prefix%/}"
 
 diff_status=0
-git diff --no-index --binary --no-renames \
-  --src-prefix=a/vcann-rt/ --dst-prefix=b/vcann-rt/ \
-  "$old_snapshot" "$new_snapshot" >"$output_dir/full.patch" || diff_status=$?
+git -C "$object_repo" diff --quiet "$old_tree" "$new_tree" || diff_status=$?
 [[ $diff_status -le 1 ]] || fail "git diff failed with status $diff_status"
 
-git diff --no-index --stat --no-renames \
-  "$old_snapshot" "$new_snapshot" >"$output_dir/stat.txt" || true
-git diff --no-index --name-status --no-renames \
-  "$old_snapshot" "$new_snapshot" >"$output_dir/name-status.txt" || true
+git -C "$object_repo" diff --binary --no-renames \
+  --src-prefix=a/vcann-rt/ --dst-prefix=b/vcann-rt/ \
+  "$old_tree" "$new_tree" \
+  >"$output_dir/full.patch"
+
+git -C "$object_repo" diff --stat --no-renames \
+  "$old_tree" "$new_tree" >"$output_dir/stat.txt"
+git -C "$object_repo" diff --name-status --no-renames \
+  "$old_tree" "$new_tree" >"$output_dir/name-status.txt"
 
 {
   printf 'new_root=%s\n' "$new_root"
@@ -101,7 +92,7 @@ git diff --no-index --name-status --no-renames \
   printf 'different=%s\n' "$([[ $diff_status -eq 1 ]] && printf yes || printf no)"
 } >"$output_dir/metadata.txt"
 
-rm -rf "$old_snapshot" "$new_snapshot"
+rm -rf "$object_repo"
 
 cat "$output_dir/metadata.txt"
 printf '\n===== DIFF STAT =====\n'
