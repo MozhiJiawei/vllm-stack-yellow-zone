@@ -170,18 +170,22 @@ def worker(
             status_queue.put(("COMPUTE_DONE", model, rank, device, wave))
             log(f"DONE Vector Core compute before all_reduce: {label}")
 
-        log(f"ENTER all_reduce ({wave} wave): {label}")
-        work = dist.all_reduce(tensor, async_op=True)
-        status_queue.put(("SUBMITTED", model, rank, device, wave))
-        log(f"SUBMITTED all_reduce ({wave} wave), waiting: {label}")
-        work.wait()
+        # Match vLLM's DeviceCommunicatorBase.all_reduce exactly: it calls the
+        # synchronous torch.distributed API rather than async_op=True followed
+        # by Work.wait().  The distinction matters on HCCL because it changes
+        # the host/stream ordering used to enqueue and wait for the device op.
+        status_queue.put(("COLLECTIVE_ENTERED", model, rank, device, wave))
+        log(f"ENTER synchronous all_reduce ({wave} wave): {label}")
+        dist.all_reduce(tensor)
         torch.npu.synchronize()
-        log(f"HCCL work completed ({wave} wave): {label}")
+        log(f"RETURN synchronous all_reduce ({wave} wave): {label}")
 
         value = float(tensor[0].cpu().item())
         expected = float(TP_SIZE * (TP_SIZE + 1) // 2)
         if value != expected:
-            raise RuntimeError(f"wrong all-reduce result: got {value}, expected {expected}")
+            raise RuntimeError(
+                f"wrong all-reduce result: got {value}, expected {expected}"
+            )
 
         dist.destroy_process_group()
         status_queue.put(("DONE", model, rank, device, wave))
@@ -213,7 +217,7 @@ def parse_args() -> argparse.Namespace:
         "--stagger-seconds",
         type=float,
         default=2.0,
-        help="delay after all first-wave submissions before releasing the second wave",
+        help="delay after all first-wave ranks enter all_reduce before releasing the second wave",
     )
     parser.add_argument(
         "--hang-timeout",
@@ -228,10 +232,10 @@ def parse_args() -> argparse.Namespace:
         help="seconds allowed for HCCL initialization and sequential warm-ups",
     )
     parser.add_argument(
-        "--submit-timeout",
+        "--enter-timeout",
         type=float,
         default=60.0,
-        help="seconds allowed for all first-wave async submissions",
+        help="seconds allowed for all first-wave ranks to enter synchronous all_reduce",
     )
     parser.add_argument(
         "--hccl-timeout",
@@ -244,7 +248,15 @@ def parse_args() -> argparse.Namespace:
         parser.error("--tensor-mib must be positive")
     if args.compute_mib <= 0:
         parser.error("--compute-mib must be positive")
-    if min(args.stagger_seconds, args.hang_timeout, args.startup_timeout, args.submit_timeout) <= 0:
+    if (
+        min(
+            args.stagger_seconds,
+            args.hang_timeout,
+            args.startup_timeout,
+            args.enter_timeout,
+        )
+        <= 0
+    ):
         parser.error("all timeout/delay values must be positive")
     if args.hccl_timeout <= args.hang_timeout:
         parser.error("--hccl-timeout must be greater than --hang-timeout")
@@ -292,12 +304,12 @@ def dump_live_process_stacks(processes: list[mp.Process]) -> None:
 
 
 def print_collective_state(
-    submitted: list[tuple[Any, ...]],
+    entered: list[tuple[Any, ...]],
     done: list[tuple[Any, ...]],
     compute_started: list[tuple[Any, ...]] | None = None,
     compute_done: list[tuple[Any, ...]] | None = None,
 ) -> None:
-    submitted_keys = {(message[1], message[2]) for message in submitted}
+    entered_keys = {(message[1], message[2]) for message in entered}
     done_keys = {(message[1], message[2]) for message in done}
     compute_started_keys = {
         (message[1], message[2]) for message in (compute_started or [])
@@ -310,8 +322,8 @@ def print_collective_state(
             wave = "first" if is_first_wave(model, rank) else "second"
             if key in done_keys:
                 state = "DONE"
-            elif key in submitted_keys:
-                state = "STUCK_AFTER_ALL_REDUCE_SUBMIT"
+            elif key in entered_keys:
+                state = "STUCK_IN_SYNCHRONOUS_ALL_REDUCE"
             elif key in compute_done_keys:
                 state = "STUCK_AFTER_COMPUTE_BEFORE_ALL_REDUCE_SUBMIT"
             elif key in compute_started_keys:
@@ -431,22 +443,22 @@ def main() -> int:
 
         log("both HCCL groups warmed up; releasing the crossed first wave")
         race_start.set()
-        submitted, unexpected = receive_until(
-            status_queue, "SUBMITTED", FIRST_WAVE_SIZE, args.submit_timeout
+        entered, unexpected = receive_until(
+            status_queue, "COLLECTIVE_ENTERED", FIRST_WAVE_SIZE, args.enter_timeout
         )
         errors = [message for message in unexpected if message[0] == "ERROR"]
-        if errors or len(submitted) != FIRST_WAVE_SIZE:
-            log(f"LAUNCH FAILED: first wave submitted {len(submitted)}/{FIRST_WAVE_SIZE}")
+        if errors or len(entered) != FIRST_WAVE_SIZE:
+            log(f"LAUNCH FAILED: first wave entered {len(entered)}/{FIRST_WAVE_SIZE}")
             for message in errors:
                 log(f"{message[1]} rank {message[2]} error:\n{message[4]}")
-            print_collective_state(submitted, [])
+            print_collective_state(entered, [])
             print_process_snapshot(processes)
             dump_live_process_stacks(processes)
             log("RESULT=FIRST_WAVE_LAUNCH_FAILED exit_code=2")
             return 2
 
-        first_wave = sorted((message[1], message[2], message[3]) for message in submitted)
-        log(f"first wave submitted: {first_wave}")
+        first_wave = sorted((message[1], message[2], message[3]) for message in entered)
+        log(f"first wave entered synchronous all_reduce: {first_wave}")
         time.sleep(args.stagger_seconds)
         log("releasing the crossed second wave")
         second_wave_start.set()
@@ -454,10 +466,10 @@ def main() -> int:
         done, unexpected = receive_until(
             status_queue, "DONE", len(processes), args.hang_timeout
         )
-        # SUBMITTED messages from the second wave are expected and ignored.
+        # COLLECTIVE_ENTERED messages from the second wave are expected here.
         errors = [message for message in unexpected if message[0] == "ERROR"]
-        second_wave_submitted = [
-            message for message in unexpected if message[0] == "SUBMITTED"
+        second_wave_entered = [
+            message for message in unexpected if message[0] == "COLLECTIVE_ENTERED"
         ]
         compute_started = [
             message for message in unexpected if message[0] == "COMPUTE_STARTED"
@@ -465,19 +477,19 @@ def main() -> int:
         compute_done = [
             message for message in unexpected if message[0] == "COMPUTE_DONE"
         ]
-        all_submitted = submitted + second_wave_submitted
+        all_entered = entered + second_wave_entered
         if errors:
             log(f"RUNTIME FAILED with {len(errors)} worker error(s)")
             for message in errors:
                 log(f"{message[1]} rank {message[2]} error:\n{message[4]}")
-            print_collective_state(all_submitted, done, compute_started, compute_done)
+            print_collective_state(all_entered, done, compute_started, compute_done)
             print_process_snapshot(processes)
             dump_live_process_stacks(processes)
             log("RESULT=RUNTIME_FAILED exit_code=2")
             return 2
         if len(done) == len(processes):
             log("NO DEADLOCK: all 16 ranks completed both TP=8 all-reduces")
-            print_collective_state(all_submitted, done, compute_started, compute_done)
+            print_collective_state(all_entered, done, compute_started, compute_done)
             log("RESULT=NO_DEADLOCK exit_code=1")
             return 1
 
@@ -486,7 +498,7 @@ def main() -> int:
             f"DEADLOCK REPRODUCED: only {len(done)}/16 ranks completed within "
             f"{args.hang_timeout:.1f}s; completed={completed}"
         )
-        print_collective_state(all_submitted, done, compute_started, compute_done)
+        print_collective_state(all_entered, done, compute_started, compute_done)
         print_process_snapshot(processes)
         dump_live_process_stacks(processes)
         log("RESULT=DEADLOCK_REPRODUCED exit_code=0")
