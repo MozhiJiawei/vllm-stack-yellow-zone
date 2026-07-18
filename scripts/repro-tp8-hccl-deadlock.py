@@ -15,9 +15,10 @@ script creates this order:
 
 Thus the first wave contains four ranks of each all-reduce.  If an incomplete
 HCCL operation monopolizes per-device execution resources, the opposite model
-must pass through an FP16 matrix multiplication before submitting its missing
-all-reduce rank.  A blocked matrix multiplication then prevents both TP groups
-from becoming complete and creates the intended hold-and-wait cycle.
+must pass through an FP16 Vector Core operation before submitting its missing
+all-reduce rank. HCCL is forced into AIV expansion mode so communication and
+the blocked computation contend for Vector Core resources. This prevents both
+TP groups from becoming complete and creates the intended hold-and-wait cycle.
 
 Exit status is 0 when a hang is observed (hypothesis reproduced), 1 when all
 collectives complete, and 2 when setup or launch fails.
@@ -74,7 +75,7 @@ def worker(
     rank: int,
     master_port: int,
     tensor_mib: int,
-    compute_size: int,
+    compute_mib: int,
     phase_barrier: Any,
     race_start: Any,
     second_wave_start: Any,
@@ -118,20 +119,15 @@ def worker(
             dtype=torch.float32,
             device=f"npu:{device}",
         )
-        compute_left = None
-        compute_right = None
+        compute_input = None
         if wave == "second":
             # The missing collective ranks must first pass through a real
-            # AI-Core operation. If the opposite model's incomplete HCCL work
-            # monopolizes this NPU, synchronize() below cannot finish and this
-            # rank never reaches its own all-reduce: the intended hold-and-wait.
-            compute_left = torch.randn(
-                (compute_size, compute_size),
-                dtype=torch.float16,
-                device=f"npu:{device}",
-            )
-            compute_right = torch.randn(
-                (compute_size, compute_size),
+            # Vector Core operation. HCCL_OP_EXPANSION_MODE=AIV makes the
+            # opposite model's collective use the same execution resource. If
+            # it monopolizes this NPU, synchronize() below cannot finish and
+            # this rank never reaches its own all-reduce.
+            compute_input = torch.randn(
+                (compute_mib * 524_288,),
                 dtype=torch.float16,
                 device=f"npu:{device}",
             )
@@ -165,14 +161,14 @@ def worker(
 
         if wave == "second":
             second_wave_start.wait()
-            log(f"ENTER compute before all_reduce: {label}")
+            log(f"ENTER Vector Core compute before all_reduce: {label}")
             status_queue.put(("COMPUTE_STARTED", model, rank, device, wave))
-            assert compute_left is not None and compute_right is not None
-            compute_output = torch.mm(compute_left, compute_right)
+            assert compute_input is not None
+            compute_output = torch.sigmoid(compute_input)
             torch.npu.synchronize()
             del compute_output
             status_queue.put(("COMPUTE_DONE", model, rank, device, wave))
-            log(f"DONE compute before all_reduce: {label}")
+            log(f"DONE Vector Core compute before all_reduce: {label}")
 
         log(f"ENTER all_reduce ({wave} wave): {label}")
         work = dist.all_reduce(tensor, async_op=True)
@@ -208,10 +204,10 @@ def parse_args() -> argparse.Namespace:
         help="all-reduce tensor size per rank in MiB (default: 4)",
     )
     parser.add_argument(
-        "--compute-size",
+        "--compute-mib",
         type=int,
-        default=4096,
-        help="square FP16 matmul size for second-wave ranks (default: 4096)",
+        default=64,
+        help="FP16 Vector Core input size per second-wave rank in MiB (default: 64)",
     )
     parser.add_argument(
         "--stagger-seconds",
@@ -246,8 +242,8 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.tensor_mib <= 0:
         parser.error("--tensor-mib must be positive")
-    if args.compute_size <= 0:
-        parser.error("--compute-size must be positive")
+    if args.compute_mib <= 0:
+        parser.error("--compute-mib must be positive")
     if min(args.stagger_seconds, args.hang_timeout, args.startup_timeout, args.submit_timeout) <= 0:
         parser.error("all timeout/delay values must be positive")
     if args.hccl_timeout <= args.hang_timeout:
@@ -368,6 +364,9 @@ def main() -> int:
     # CANN logging by setting these variables before launch.
     os.environ.setdefault("ASCEND_SLOG_PRINT_TO_STDOUT", "0")
     os.environ.setdefault("ASCEND_GLOBAL_LOG_LEVEL", "3")
+    # This reproducer specifically targets contention between AIV-expanded
+    # HCCL collectives and model Vector Core operators.
+    os.environ["HCCL_OP_EXPANSION_MODE"] = "AIV"
 
     ctx = mp.get_context("spawn")
     phase_barrier = ctx.Barrier(TP_SIZE * len(MODEL_NAMES))
@@ -381,7 +380,7 @@ def main() -> int:
     log(f"COMMAND: {shlex.join(sys.argv)}")
     log(
         "CONFIG: "
-        f"tp={TP_SIZE} tensor_mib={args.tensor_mib} compute_size={args.compute_size} "
+        f"tp={TP_SIZE} tensor_mib={args.tensor_mib} compute_mib={args.compute_mib} "
         f"stagger_seconds={args.stagger_seconds} "
         f"hang_timeout={args.hang_timeout} hccl_timeout={args.hccl_timeout} "
         f"ports={ports}"
@@ -389,7 +388,8 @@ def main() -> int:
     log(
         "LOGGING: "
         f"ASCEND_SLOG_PRINT_TO_STDOUT={os.environ['ASCEND_SLOG_PRINT_TO_STDOUT']} "
-        f"ASCEND_GLOBAL_LOG_LEVEL={os.environ['ASCEND_GLOBAL_LOG_LEVEL']}"
+        f"ASCEND_GLOBAL_LOG_LEVEL={os.environ['ASCEND_GLOBAL_LOG_LEVEL']} "
+        f"HCCL_OP_EXPANSION_MODE={os.environ['HCCL_OP_EXPANSION_MODE']}"
     )
 
     processes: list[mp.Process] = []
@@ -404,7 +404,7 @@ def main() -> int:
                         rank,
                         ports[model],
                         args.tensor_mib,
-                        args.compute_size,
+                        args.compute_mib,
                         phase_barrier,
                         race_start,
                         second_wave_start,
