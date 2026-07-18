@@ -15,8 +15,11 @@ by the device, before it can launch the missing AllReduce ranks:
     NPU 4..7: B AllReduce holds AIV -> A RMSNorm waits -> A AllReduce missing
 
 This intentionally uses xLite's private runtime stream and native kernels; it
-does not construct model parameters.  Exit status is 0 when the hang is
-observed, 1 when all operations complete, and 2 on setup/runtime failure.
+does not construct model parameters.  ``--schedule aligned`` is the normal
+control: both models run RMSNorm and then enter AllReduce with all eight TP
+ranks.  Its exit status is 0 on completion and 1 on an unexpected hang.  For
+the default crossed schedule, exit status is 0 when the hang is observed and 1
+when all operations complete.  Setup/runtime failures always return 2.
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ import shlex
 import signal
 import socket
 import sys
+import threading
 import time
 import traceback
 from typing import Any
@@ -128,8 +132,10 @@ def worker(
     hidden_size: int,
     dtype_name: str,
     disable_xccl: bool,
+    schedule: str,
     model_a_runtime_ready: Any,
     phase_barrier: Any,
+    first_wave_barrier: Any,
     race_start: Any,
     second_wave_start: Any,
     status_queue: Any,
@@ -152,7 +158,11 @@ def worker(
 
     device = rank
     label = f"model={model} rank={rank} npu={device}"
-    wave = "first" if is_first_wave(model, rank) else "second"
+    wave = (
+        "aligned"
+        if schedule == "aligned"
+        else ("first" if is_first_wave(model, rank) else "second")
+    )
     faulthandler.enable(file=sys.stderr, all_threads=True)
     faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
 
@@ -251,8 +261,9 @@ def worker(
         log(f"ARMED: {label} wave={wave}")
         race_start.wait()
 
-        if wave == "second":
-            second_wave_start.wait()
+        if schedule == "aligned" or wave == "second":
+            if wave == "second":
+                second_wave_start.wait()
             status_queue.put(("COMPUTE_STARTED", model, rank, device, wave))
             log(
                 f"ENTER xLite RMSNorm ({aiv_count} AIV requested) before "
@@ -262,7 +273,16 @@ def worker(
             status_queue.put(("COMPUTE_DONE", model, rank, device, wave))
             log(f"RETURN xLite RMSNorm: {label}")
 
-        status_queue.put(("OP_ENTERED", model, rank, device, wave))
+        if wave == "first":
+            # multiprocessing.Queue.put() uses a feeder thread. xLite's pybind
+            # AllReduce holds the GIL while synchronizing, so a queued status
+            # may not be flushed until the call returns. A process-shared
+            # barrier gives the parent synchronous proof that all eight first
+            # wave workers are ready before any enters the blocking call.
+            log(f"READY at first-wave launch barrier: {label}")
+            first_wave_barrier.wait()
+        else:
+            status_queue.put(("OP_ENTERED", model, rank, device, wave))
         log(
             f"ENTER xLite {'HCCL fallback' if disable_xccl else 'XCCL'} "
             f"AllReduce ({wave} wave): {label}"
@@ -316,6 +336,12 @@ def parse_args() -> argparse.Namespace:
         "--disable-xccl",
         action="store_true",
         help="control run: force xLite onto its HCCL fallback instead of custom XCCL",
+    )
+    parser.add_argument(
+        "--schedule",
+        choices=("crossed", "aligned"),
+        default="crossed",
+        help="crossed deadlock experiment or complete-rank normal control (default: crossed)",
     )
     parser.add_argument(
         "--init-stagger-seconds",
@@ -432,6 +458,7 @@ def print_operation_state(
     done: list[tuple[Any, ...]],
     compute_started: list[tuple[Any, ...]],
     compute_done: list[tuple[Any, ...]],
+    schedule: str,
 ) -> None:
     entered_keys = {(message[1], message[2]) for message in entered}
     done_keys = {(message[1], message[2]) for message in done}
@@ -441,7 +468,11 @@ def print_operation_state(
     for model in MODEL_NAMES:
         for rank in range(TP_SIZE):
             key = (model, rank)
-            wave = "first" if is_first_wave(model, rank) else "second"
+            wave = (
+                "aligned"
+                if schedule == "aligned"
+                else ("first" if is_first_wave(model, rank) else "second")
+            )
             if key in done_keys:
                 state = "DONE"
             elif key in entered_keys:
@@ -476,6 +507,7 @@ def main() -> int:
 
     ctx = mp.get_context("spawn")
     phase_barrier = ctx.Barrier(WORKER_COUNT)
+    first_wave_barrier = ctx.Barrier(FIRST_WAVE_SIZE + 1)
     model_a_runtime_ready = ctx.Event()
     race_start = ctx.Event()
     second_wave_start = ctx.Event()
@@ -490,6 +522,7 @@ def main() -> int:
     log(
         "CONFIG: "
         f"tp={TP_SIZE} backend={'HCCL_FALLBACK' if args.disable_xccl else 'XCCL'} "
+        f"schedule={args.schedule} "
         f"model=Qwen3-32B pool_mib={args.pool_mib} dtype={args.dtype} "
         f"op_shape=({args.decode_tokens},{args.hidden_size}) "
         f"tensor_kib={tensor_bytes // 1024} "
@@ -523,8 +556,10 @@ def main() -> int:
                         args.hidden_size,
                         args.dtype,
                         args.disable_xccl,
+                        args.schedule,
                         model_a_runtime_ready,
                         phase_barrier,
+                        first_wave_barrier,
                         race_start,
                         second_wave_start,
                         status_queue,
@@ -567,24 +602,91 @@ def main() -> int:
             log("RESULT=SETUP_FAILED exit_code=2")
             return 2
 
-        log("both xLite TP groups warmed up; releasing partial XCCL first wave")
-        race_start.set()
-        entered, unexpected = receive_until(
-            status_queue, "OP_ENTERED", FIRST_WAVE_SIZE, args.enter_timeout
-        )
-        errors = [message for message in unexpected if message[0] == "ERROR"]
-        if errors or len(entered) != FIRST_WAVE_SIZE:
-            log(f"LAUNCH FAILED: first wave entered {len(entered)}/{FIRST_WAVE_SIZE}")
-            for message in errors:
-                log(f"{message[1]} rank {message[2]} error:\n{message[4]}")
-            print_operation_state(entered, done, compute_started, compute_done)
+        if args.schedule == "aligned":
+            log(
+                "NORMAL CONTROL: both xLite TP groups warmed up; releasing "
+                "all 16 workers into RMSNorm followed by complete TP8 AllReduce"
+            )
+            race_start.set()
+            done, unexpected = receive_until(
+                status_queue, "DONE", WORKER_COUNT, args.hang_timeout
+            )
+            errors = [message for message in unexpected if message[0] == "ERROR"]
+            entered = [message for message in unexpected if message[0] == "OP_ENTERED"]
+            compute_started = [
+                message for message in unexpected if message[0] == "COMPUTE_STARTED"
+            ]
+            compute_done = [
+                message for message in unexpected if message[0] == "COMPUTE_DONE"
+            ]
+            if errors:
+                log(f"NORMAL CONTROL FAILED with {len(errors)} worker error(s)")
+                for message in errors:
+                    log(f"{message[1]} rank {message[2]} error:\n{message[4]}")
+                print_operation_state(
+                    entered,
+                    done,
+                    compute_started,
+                    compute_done,
+                    args.schedule,
+                )
+                print_process_snapshot(processes)
+                dump_live_process_stacks(processes)
+                log("RESULT=NORMAL_CONTROL_RUNTIME_FAILED exit_code=2")
+                return 2
+            if len(done) == WORKER_COUNT:
+                log("NORMAL CONTROL PASSED: all 16 xLite workers completed")
+                print_operation_state(
+                    entered,
+                    done,
+                    compute_started,
+                    compute_done,
+                    args.schedule,
+                )
+                log("RESULT=NORMAL_CONTROL_PASSED exit_code=0")
+                return 0
+
+            log(
+                f"NORMAL CONTROL HUNG: only {len(done)}/{WORKER_COUNT} workers "
+                f"completed within {args.hang_timeout:.1f}s"
+            )
+            print_operation_state(
+                entered,
+                done,
+                compute_started,
+                compute_done,
+                args.schedule,
+            )
             print_process_snapshot(processes)
             dump_live_process_stacks(processes)
-            log("RESULT=FIRST_WAVE_LAUNCH_FAILED exit_code=2")
+            log("RESULT=NORMAL_CONTROL_HUNG exit_code=1")
+            return 1
+
+        log("both xLite TP groups warmed up; releasing partial XCCL first wave")
+        race_start.set()
+        try:
+            first_wave_barrier.wait(timeout=args.enter_timeout)
+        except threading.BrokenBarrierError:
+            log(
+                "LAUNCH FAILED: not all eight first-wave workers reached the "
+                f"synchronous launch barrier within {args.enter_timeout:.1f}s"
+            )
+            print_process_snapshot(processes)
+            dump_live_process_stacks(processes)
+            log("RESULT=FIRST_WAVE_BARRIER_FAILED exit_code=2")
             return 2
 
+        # The shared barrier, unlike multiprocessing.Queue's background feeder,
+        # is synchronous proof that these exact workers have been released into
+        # the pybind AllReduce call.
+        entered = [
+            ("OP_ENTERED", model, rank, rank, "first")
+            for model in MODEL_NAMES
+            for rank in range(TP_SIZE)
+            if is_first_wave(model, rank)
+        ]
         first_wave = sorted((message[1], message[2], message[3]) for message in entered)
-        log(f"partial AllReduce first wave entered: {first_wave}")
+        log(f"partial AllReduce first wave synchronously released: {first_wave}")
         time.sleep(args.stagger_seconds)
         log("releasing crossed second wave into all-AIV xLite RMSNorm")
         second_wave_start.set()
@@ -602,19 +704,40 @@ def main() -> int:
         compute_done = [
             message for message in unexpected if message[0] == "COMPUTE_DONE"
         ]
+        # Queue feeder threads cannot flush COMPUTE_STARTED while a native
+        # xLite call holds the GIL. The event release and fixed worker control
+        # flow establish that all second-wave workers were scheduled into it.
+        compute_started.extend(
+            ("COMPUTE_STARTED", model, rank, rank, "second")
+            for model in MODEL_NAMES
+            for rank in range(TP_SIZE)
+            if not is_first_wave(model, rank)
+        )
         all_entered = entered + second_entered
         if errors:
             log(f"RUNTIME FAILED with {len(errors)} worker error(s)")
             for message in errors:
                 log(f"{message[1]} rank {message[2]} error:\n{message[4]}")
-            print_operation_state(all_entered, done, compute_started, compute_done)
+            print_operation_state(
+                all_entered,
+                done,
+                compute_started,
+                compute_done,
+                args.schedule,
+            )
             print_process_snapshot(processes)
             dump_live_process_stacks(processes)
             log("RESULT=RUNTIME_FAILED exit_code=2")
             return 2
         if len(done) == WORKER_COUNT:
             log("NO DEADLOCK: all 16 xLite workers completed")
-            print_operation_state(all_entered, done, compute_started, compute_done)
+            print_operation_state(
+                all_entered,
+                done,
+                compute_started,
+                compute_done,
+                args.schedule,
+            )
             log("RESULT=NO_DEADLOCK exit_code=1")
             return 1
 
@@ -622,12 +745,22 @@ def main() -> int:
             f"DEADLOCK REPRODUCED: only {len(done)}/{WORKER_COUNT} workers "
             f"completed within {args.hang_timeout:.1f}s"
         )
-        print_operation_state(all_entered, done, compute_started, compute_done)
+        print_operation_state(
+            all_entered,
+            done,
+            compute_started,
+            compute_done,
+            args.schedule,
+        )
         print_process_snapshot(processes)
         dump_live_process_stacks(processes)
         log("RESULT=DEADLOCK_REPRODUCED exit_code=0")
         return 0
     finally:
+        try:
+            first_wave_barrier.abort()
+        except BaseException:
+            pass
         model_a_runtime_ready.set()
         race_start.set()
         second_wave_start.set()
