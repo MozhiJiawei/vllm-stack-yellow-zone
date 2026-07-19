@@ -182,6 +182,7 @@ def configure_xlite(port: int) -> None:
         XLITE_PORT=str(port),
         XLITE_DISABLE_XCCL="false",
     )
+    os.environ.pop("HCCL_DETERMINISTIC", None)
 
 
 def package_version(name: str) -> str:
@@ -483,7 +484,7 @@ def task_key(case: Case, attempt: int) -> str:
     return f"{case.name}@{attempt}"
 
 
-def model_b(rank, port, cases, repeat, start, prepare_events, run_events, messages):
+def model_b(rank, port, model_a_ready, cases, repeat, start, prepare_events, run_events, messages):
     stage = "import"
     current_task = "-"
     try:
@@ -492,6 +493,7 @@ def model_b(rank, port, cases, repeat, start, prepare_events, run_events, messag
         import torch_npu
         import xlite._C as xc
 
+        model_a_ready.wait()
         torch.npu.set_device(rank)
         stage = "runtime"
         runtime = xc.Runtime(rank, 4096, rank, TP, 1)
@@ -562,16 +564,15 @@ def show_message(kind: str, role: str, rank: int, task: str, detail: str) -> Non
     print(f"EVENT role={role} rank={rank} state={kind} task={task}{suffix}", flush=True)
 
 
-def wait_ready(messages, timeout: float) -> tuple[bool, bool]:
+def wait_role_ready(messages, wanted_role: str, timeout: float) -> tuple[bool, bool]:
     deadline = time.monotonic() + timeout
-    ready_a, ready_b = set(), set()
-    while len(ready_a) < TP or len(ready_b) < TP:
+    ready: set[int] = set()
+    while len(ready) < TP:
         try:
             item = messages.get(timeout=max(0.0, deadline - time.monotonic()))
         except queue.Empty:
             print(
-                f"SETUP_TIMEOUT missing_a={sorted(set(range(TP)) - ready_a)} "
-                f"missing_b={sorted(set(range(TP)) - ready_b)}",
+                f"SETUP_TIMEOUT role={wanted_role} missing_ranks={sorted(set(range(TP)) - ready)}",
                 flush=True,
             )
             return False, False
@@ -579,8 +580,8 @@ def wait_ready(messages, timeout: float) -> tuple[bool, bool]:
         show_message(kind, role, rank, task, detail)
         if kind == "ERROR":
             return False, True
-        if kind == "READY":
-            (ready_a if role == "A" else ready_b).add(rank)
+        if kind == "READY" and role == wanted_role:
+            ready.add(rank)
     return True, False
 
 
@@ -616,9 +617,10 @@ def mark_not_run(tasks, results):
     return results
 
 
-def run_matrix(cases: list[Case], repeat: int, timeout: float, setup_timeout: float):
+def run_matrix(cases: list[Case], repeat: int, timeout: float, setup_timeout: float, init_stagger: float):
     ctx = mp.get_context("spawn")
     messages = ctx.Queue()
+    model_a_ready = ctx.Event()
     a_start, b_start, returned = ctx.Event(), ctx.Event(), ctx.Event()
     called = [ctx.Event() for _ in range(TP)]
     tasks = [(case, attempt) for case in cases for attempt in range(1, repeat + 1)]
@@ -632,7 +634,17 @@ def run_matrix(cases: list[Case], repeat: int, timeout: float, setup_timeout: fl
     jobs.extend(
         ctx.Process(
             target=model_b,
-            args=(rank, port_b, cases, repeat, b_start, prepare_events, run_events, messages),
+            args=(
+                rank,
+                port_b,
+                model_a_ready,
+                cases,
+                repeat,
+                b_start,
+                prepare_events,
+                run_events,
+                messages,
+            ),
         )
         for rank in range(TP)
     )
@@ -644,11 +656,21 @@ def run_matrix(cases: list[Case], repeat: int, timeout: float, setup_timeout: fl
         job.start()
     try:
         results: list[tuple[str, int, str]] = []
-        ready, failed = wait_ready(messages, setup_timeout)
+        print("INIT_PHASE model=A", flush=True)
+        ready, failed = wait_role_ready(messages, "A", setup_timeout)
         if failed or not ready:
             if tasks:
                 case, attempt = tasks[0]
                 results.append((case.name, attempt, "SETUP_FAILED"))
+            return mark_not_run(tasks, results)
+        print(f"INIT_STAGGER seconds={init_stagger:g}", flush=True)
+        time.sleep(init_stagger)
+        model_a_ready.set()
+        print("INIT_PHASE model=B", flush=True)
+        ready, failed = wait_role_ready(messages, "B", setup_timeout)
+        if failed or not ready:
+            case, attempt = tasks[0]
+            results.append((case.name, attempt, "SETUP_FAILED"))
             return mark_not_run(tasks, results)
         a_start.set()
         if not wait_events(called[: TP // 2], timeout):
@@ -707,10 +729,16 @@ def parse_args():
     parser.add_argument("--case", action="append", dest="case_names", help="exact case name; repeatable")
     parser.add_argument("--timeout", type=float, default=30.0, help="A entry and B completion timeout")
     parser.add_argument("--setup-timeout", type=float, default=3600.0, help="matrix warmup/per-case prepare timeout")
+    parser.add_argument(
+        "--init-stagger-seconds",
+        type=float,
+        default=10.0,
+        help="wait after all A ranks initialize before allowing B Runtime initialization",
+    )
     parser.add_argument("--repeat", type=int, default=1, help="repeat every selected case")
     args = parser.parse_args()
-    if args.timeout <= 0 or args.setup_timeout <= 0 or args.repeat <= 0:
-        parser.error("timeouts and repeat must be positive")
+    if args.timeout <= 0 or args.setup_timeout <= 0 or args.repeat <= 0 or args.init_stagger_seconds < 0:
+        parser.error("timeouts/repeat must be positive and init stagger must be non-negative")
     return args
 
 
@@ -745,7 +773,13 @@ def main() -> int:
         f"heads={HEADS} kv_heads={KV_HEADS} head_dim={HEAD_DIM} vocab={VOCAB}",
         flush=True,
     )
-    results = run_matrix(selected, args.repeat, args.timeout, args.setup_timeout)
+    results = run_matrix(
+        selected,
+        args.repeat,
+        args.timeout,
+        args.setup_timeout,
+        args.init_stagger_seconds,
+    )
 
     print("FINAL_SUMMARY", flush=True)
     for name, attempt, status in results:
