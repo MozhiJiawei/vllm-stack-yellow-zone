@@ -1,0 +1,151 @@
+diff --git a/vllm_ascend/diagnostics/__init__.py b/vllm_ascend/diagnostics/__init__.py
+new file mode 100644
+--- /dev/null
++++ b/vllm_ascend/diagnostics/__init__.py
+@@ -0,0 +1 @@
++"""Opt-in diagnostics for vLLM Ascend workers."""
+diff --git a/vllm_ascend/diagnostics/deadlock_dump.py b/vllm_ascend/diagnostics/deadlock_dump.py
+new file mode 100644
+--- /dev/null
++++ b/vllm_ascend/diagnostics/deadlock_dump.py
+@@ -0,0 +1,125 @@
++"""Signal-driven Python stack dumps for xLite deadlock diagnosis.
++
++This module deliberately has no torch, torch-npu, or vLLM imports so it can be
++initialized before the NPU runtime.  It is inert unless
++``VLLM_ASCEND_DEADLOCK_DIAG`` is explicitly enabled.
++"""
++
++from __future__ import annotations
++
++import contextlib
++import faulthandler
++import json
++import os
++import re
++import signal
++import sys
++import threading
++import time
++from pathlib import Path
++from typing import IO, Any
++
++_ENABLED_VALUES = frozenset({"1", "true", "yes", "on"})
++_SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9_.-]+")
++_init_lock = threading.Lock()
++_stack_file: IO[str] | None = None
++_metadata_path: Path | None = None
++
++
++def _enabled() -> bool:
++    return os.environ.get("VLLM_ASCEND_DEADLOCK_DIAG", "").strip().lower() in _ENABLED_VALUES
++
++
++def _safe_component(value: str, fallback: str) -> str:
++    cleaned = _SAFE_COMPONENT.sub("_", value.strip()).strip("._")
++    return cleaned or fallback
++
++
++def _proc_starttime(pid: int) -> int:
++    """Return Linux /proc starttime (field 22), robust to spaces in comm."""
++    stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
++    closing_paren = stat.rfind(")")
++    if closing_paren < 0:
++        raise ValueError(f"malformed /proc/{pid}/stat")
++    fields_from_state = stat[closing_paren + 2 :].split()
++    return int(fields_from_state[19])
++
++
++def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
++    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
++    with temporary.open("w", encoding="utf-8") as output:
++        json.dump(value, output, indent=2, sort_keys=True)
++        output.write("\n")
++        output.flush()
++        os.fsync(output.fileno())
++    os.replace(temporary, path)
++
++
++def initialize_deadlock_diagnostics(*, rank: int, local_rank: int) -> Path | None:
++    """Register SIGUSR1 stack dumps for one worker when diagnostics are enabled.
++
++    Returns the worker metadata path when enabled and ``None`` otherwise.
++    Repeated calls in the same process are idempotent.
++    """
++    global _metadata_path, _stack_file
++
++    if not _enabled():
++        return None
++
++    with _init_lock:
++        if _metadata_path is not None:
++            return _metadata_path
++
++        model_id = _safe_component(os.environ.get("VLLM_ASCEND_DEADLOCK_MODEL_ID", "unknown"), "unknown")
++        run_id = _safe_component(os.environ.get("VLLM_ASCEND_DEADLOCK_RUN_ID", "manual"), "manual")
++        root = Path(os.environ.get("VLLM_ASCEND_DEADLOCK_DIR", "/tmp/vllm-deadlock-diag"))
++        worker_dir = root / run_id / f"model-{model_id}"
++        worker_dir.mkdir(parents=True, exist_ok=True)
++
++        pid = os.getpid()
++        starttime = _proc_starttime(pid)
++        stack_path = worker_dir / f"rank-{rank}-pid-{pid}.python-stacks.log"
++        metadata_path = worker_dir / f"rank-{rank}.json"
++
++        stack_file = stack_path.open("a", encoding="utf-8", buffering=1)
++        stack_file.write(
++            f"# vLLM Ascend deadlock diagnostics initialized "
++            f"model={model_id} rank={rank} local_rank={local_rank} pid={pid} "
++            f"monotonic_ns={time.monotonic_ns()}\n"
++        )
++        faulthandler.enable(file=stack_file, all_threads=True)
++        faulthandler.register(signal.SIGUSR1, file=stack_file, all_threads=True, chain=False)
++
++        metadata = {
++            "schema_version": 1,
++            "model": model_id,
++            "run_id": run_id,
++            "rank": rank,
++            "local_rank": local_rank,
++            "npu": local_rank,
++            "pid": pid,
++            "pid_starttime": starttime,
++            "python_executable": sys.executable,
++            "python_version": sys.version,
++            "stack_file": str(stack_path),
++            "signal": "SIGUSR1",
++            "created_time_ns": time.time_ns(),
++            "created_monotonic_ns": time.monotonic_ns(),
++            "ascend_rt_visible_devices": os.environ.get("ASCEND_RT_VISIBLE_DEVICES"),
++        }
++        _write_json_atomic(metadata_path, metadata)
++        _stack_file = stack_file
++        _metadata_path = metadata_path
++        return metadata_path
++
++
++def _reset_for_tests() -> None:
++    """Reset module state. Intended only for isolated unit tests."""
++    global _metadata_path, _stack_file
++    with _init_lock:
++        if _stack_file is not None:
++            with contextlib.suppress(AttributeError, RuntimeError, ValueError):
++                faulthandler.unregister(signal.SIGUSR1)
++            _stack_file.close()
++        _stack_file = None
++        _metadata_path = None
+diff --git a/vllm_ascend/xlite/xlite_worker.py b/vllm_ascend/xlite/xlite_worker.py
+--- a/vllm_ascend/xlite/xlite_worker.py
++++ b/vllm_ascend/xlite/xlite_worker.py
+@@ -25,5 +25,11 @@ class XliteWorker(NPUWorker):
+     def init_device(self):
+         """Override init_device to init xlite model runner"""
++        # The hook is inert unless VLLM_ASCEND_DEADLOCK_DIAG is enabled. Install
++        # it before NPU initialization so a worker remains inspectable if a
++        # later runtime or xLite call blocks.
++        from vllm_ascend.diagnostics.deadlock_dump import initialize_deadlock_diagnostics
++
++        initialize_deadlock_diagnostics(rank=self.rank, local_rank=self.local_rank)
+         self.device = self._init_device()
+         num_ubatches = 1
+         init_workspace_manager(self.device, num_ubatches)
