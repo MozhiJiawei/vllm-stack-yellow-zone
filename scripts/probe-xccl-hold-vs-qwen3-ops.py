@@ -486,7 +486,18 @@ def task_key(case: Case, attempt: int) -> str:
     return f"{case.name}@{attempt}"
 
 
-def model_b(rank, port, model_a_ready, cases, repeat, start, prepare_events, run_events, messages):
+def model_b(
+    rank,
+    port,
+    model_a_ready,
+    cases,
+    repeat,
+    start,
+    warmup_failed_events,
+    prepare_events,
+    run_events,
+    messages,
+):
     stage = "import"
     current_task = "-"
     try:
@@ -499,16 +510,28 @@ def model_b(rank, port, model_a_ready, cases, repeat, start, prepare_events, run
         torch.npu.set_device(rank)
         stage = "runtime"
         runtime = xc.Runtime(rank, 4096, rank, TP, 1)
-        for case in cases:
+        for case_index, case in enumerate(cases):
             current_task = case.name
             stage = f"warmup:{case.name}"
-            operation = build_operation(torch, torch_npu, xc, runtime, case, rank)
-            operation()
-            torch.npu.synchronize()
-            del operation
-            release_tensors(torch)
             if rank == 0:
-                emit(messages, "WARMUP_DONE", "B", rank, case.name)
+                emit(messages, "WARMUP_START", "B", rank, case.name)
+            operation = None
+            try:
+                operation = build_operation(torch, torch_npu, xc, runtime, case, rank)
+                operation()
+                torch.npu.synchronize()
+                if rank == 0:
+                    emit(messages, "WARMUP_DONE", "B", rank, case.name)
+            except BaseException:
+                warmup_failed_events[case_index].set()
+                emit(messages, "WARMUP_FAILED", "B", rank, case.name, traceback.format_exc())
+            finally:
+                del operation
+                try:
+                    release_tensors(torch)
+                except BaseException:
+                    warmup_failed_events[case_index].set()
+                    emit(messages, "WARMUP_CLEANUP_FAILED", "B", rank, case.name, traceback.format_exc())
         detail = ""
         if rank == 0:
             cann = getattr(torch.version, "cann", "unknown")
@@ -523,6 +546,9 @@ def model_b(rank, port, model_a_ready, cases, repeat, start, prepare_events, run
         for index, (case, attempt) in enumerate(tasks):
             current_task = task_key(case, attempt)
             prepare_events[index].wait()
+            if warmup_failed_events[index // repeat].is_set():
+                emit(messages, "SKIPPED", "B", rank, current_task, "reason=warmup_failed")
+                continue
             stage = f"prepare:{current_task}"
             operation = build_operation(torch, torch_npu, xc, runtime, case, rank)
             torch.npu.synchronize()
@@ -626,6 +652,7 @@ def run_matrix(cases: list[Case], repeat: int, timeout: float, setup_timeout: fl
     a_start, b_start, returned = ctx.Event(), ctx.Event(), ctx.Event()
     called = [ctx.Event() for _ in range(TP)]
     tasks = [(case, attempt) for case in cases for attempt in range(1, repeat + 1)]
+    warmup_failed_events = [ctx.Event() for _ in cases]
     prepare_events = [ctx.Event() for _ in tasks]
     run_events = [ctx.Event() for _ in tasks]
     port_a, port_b = find_ports()
@@ -643,6 +670,7 @@ def run_matrix(cases: list[Case], repeat: int, timeout: float, setup_timeout: fl
                 cases,
                 repeat,
                 b_start,
+                warmup_failed_events,
                 prepare_events,
                 run_events,
                 messages,
@@ -693,6 +721,20 @@ def run_matrix(cases: list[Case], repeat: int, timeout: float, setup_timeout: fl
                 flush=True,
             )
             prepare_events[index].set()
+            if warmup_failed_events[index // repeat].is_set():
+                skipped, failed = wait_for_task(messages, "SKIPPED", key, setup_timeout)
+                if failed or len(skipped) != TP:
+                    missing = sorted(set(range(TP)) - skipped)
+                    print(f"SKIP_FAILED task={key} missing_ranks={missing}", flush=True)
+                    results.append((case.name, attempt, "SETUP_FAILED"))
+                    break
+                results.append((case.name, attempt, "SKIPPED"))
+                print(
+                    f"CASE_RESULT name={case.name} attempt={attempt} "
+                    "status=SKIPPED reason=warmup_failed",
+                    flush=True,
+                )
+                continue
             prepared, failed = wait_for_task(messages, "PREPARED", key, setup_timeout)
             if failed or len(prepared) != TP:
                 missing = sorted(set(range(TP)) - prepared)
@@ -788,10 +830,10 @@ def main() -> int:
         print(f"SUMMARY name={name} attempt={attempt} status={status}", flush=True)
     counts = {
         status: sum(result == status for _, _, result in results)
-        for status in ("PASS", "BLOCKED", "SETUP_FAILED", "NOT_RUN")
+        for status in ("PASS", "BLOCKED", "SKIPPED", "SETUP_FAILED", "NOT_RUN")
     }
     print("COUNTS " + " ".join(f"{key}={value}" for key, value in counts.items()), flush=True)
-    if counts["SETUP_FAILED"]:
+    if counts["SETUP_FAILED"] or counts["SKIPPED"]:
         return 2
     if counts["BLOCKED"]:
         return 1
