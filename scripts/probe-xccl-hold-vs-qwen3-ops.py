@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Probe Qwen3-32B B-side ops while model A waits in xLite AllReduce.
 
-The script needs one host with eight Ascend NPUs.  Every case creates two
-independent xLite TP8 runtimes on the same devices.  Model A deliberately
-withholds ranks 4-7 from an AllReduce; after ranks 0-3 are confirmed waiting,
-all model-B ranks execute exactly one warmed-up operation.
+The script needs one host with eight Ascend NPUs.  It creates two independent
+xLite TP8 runtimes on the same devices and reuses them for the whole matrix.
+Model A deliberately withholds ranks 4-7 from an AllReduce; after ranks 0-3
+are confirmed waiting, all model-B ranks execute warmed-up operations serially.
 
 No checkpoint is loaded.  Tensor shapes match Qwen3-32B TP8.
 """
@@ -425,7 +425,7 @@ def build_operation(torch, torch_npu, xc, runtime, case: Case, rank: int):
         if case.op == "softmax":
             return lambda: torch.softmax(logits, dim=-1, dtype=torch.float32)
         if case.op == "random_sample":
-            probabilities = torch.softmax(logits, dim=-1, dtype=torch.float32)
+            probabilities = torch.empty(BATCH, VOCAB, dtype=torch.float32, device=device)
             q = torch.empty_like(probabilities)
 
             def random_sample():
@@ -441,8 +441,8 @@ def build_operation(torch, torch_npu, xc, runtime, case: Case, rank: int):
     raise ValueError(f"unknown operation: {case.op}")
 
 
-def emit(messages, kind: str, role: str, rank: int, detail: str = "") -> None:
-    messages.put((kind, role, rank, detail))
+def emit(messages, kind: str, role: str, rank: int, task: str = "-", detail: str = "") -> None:
+    messages.put((kind, role, rank, task, detail))
 
 
 def model_a(rank, port, start, called, returned, messages):
@@ -461,19 +461,31 @@ def model_a(rank, port, start, called, returned, messages):
         start.wait()
         if rank < TP // 2:
             called.set()
-            emit(messages, "ENTER", "A", rank, "all_reduce")
+            emit(messages, "ENTER", "A", rank, detail="all_reduce")
             all_reduce(runtime, output, source, 0)
             torch.npu.synchronize()
             returned.set()
-            emit(messages, "RETURN", "A", rank, "all_reduce")
+            emit(messages, "RETURN", "A", rank, detail="all_reduce")
         else:
             time.sleep(3600)
     except BaseException:
-        emit(messages, "ERROR", "A", rank, traceback.format_exc())
+        emit(messages, "ERROR", "A", rank, detail=traceback.format_exc())
 
 
-def model_b(rank, port, case, start, messages):
+def release_tensors(torch) -> None:
+    import gc
+
+    gc.collect()
+    torch.npu.empty_cache()
+
+
+def task_key(case: Case, attempt: int) -> str:
+    return f"{case.name}@{attempt}"
+
+
+def model_b(rank, port, cases, repeat, start, prepare_events, run_events, messages):
     stage = "import"
+    current_task = "-"
     try:
         configure_xlite(port)
         import torch
@@ -483,11 +495,16 @@ def model_b(rank, port, case, start, messages):
         torch.npu.set_device(rank)
         stage = "runtime"
         runtime = xc.Runtime(rank, 4096, rank, TP, 1)
-        stage = "allocate"
-        operation = build_operation(torch, torch_npu, xc, runtime, case, rank)
-        stage = "warmup"
-        operation()
-        torch.npu.synchronize()
+        for case in cases:
+            current_task = case.name
+            stage = f"warmup:{case.name}"
+            operation = build_operation(torch, torch_npu, xc, runtime, case, rank)
+            operation()
+            torch.npu.synchronize()
+            del operation
+            release_tensors(torch)
+            if rank == 0:
+                emit(messages, "WARMUP_DONE", "B", rank, case.name)
         detail = ""
         if rank == 0:
             cann = getattr(torch.version, "cann", "unknown")
@@ -496,16 +513,27 @@ def model_b(rank, port, case, start, messages):
                 f"torch_npu={package_version('torch-npu')} xlite={package_version('xlite')} "
                 f"cann={cann} device={torch.npu.get_device_name(rank)!r}"
             )
-        emit(messages, "READY", "B", rank, detail)
+        emit(messages, "READY", "B", rank, detail=detail)
         start.wait()
-        emit(messages, "ENTER", "B", rank, case.name)
-        stage = "test"
-        begin = time.monotonic()
-        operation()
-        torch.npu.synchronize()
-        emit(messages, "DONE", "B", rank, f"elapsed={time.monotonic() - begin:.6f}")
+        tasks = [(case, attempt) for case in cases for attempt in range(1, repeat + 1)]
+        for index, (case, attempt) in enumerate(tasks):
+            current_task = task_key(case, attempt)
+            prepare_events[index].wait()
+            stage = f"prepare:{current_task}"
+            operation = build_operation(torch, torch_npu, xc, runtime, case, rank)
+            torch.npu.synchronize()
+            emit(messages, "PREPARED", "B", rank, current_task)
+            run_events[index].wait()
+            emit(messages, "ENTER", "B", rank, current_task)
+            stage = f"test:{current_task}"
+            begin = time.monotonic()
+            operation()
+            torch.npu.synchronize()
+            emit(messages, "DONE", "B", rank, current_task, f"elapsed={time.monotonic() - begin:.6f}")
+            del operation
+            release_tensors(torch)
     except BaseException:
-        emit(messages, "ERROR", "B", rank, f"stage={stage}\n{traceback.format_exc()}")
+        emit(messages, "ERROR", "B", rank, current_task, f"stage={stage}\n{traceback.format_exc()}")
 
 
 def find_ports() -> tuple[int, int]:
@@ -529,9 +557,9 @@ def find_ports() -> tuple[int, int]:
     raise RuntimeError("cannot find two free xLite port pairs")
 
 
-def show_message(kind: str, role: str, rank: int, detail: str) -> None:
+def show_message(kind: str, role: str, rank: int, task: str, detail: str) -> None:
     suffix = f" {detail}" if detail else ""
-    print(f"EVENT role={role} rank={rank} state={kind}{suffix}", flush=True)
+    print(f"EVENT role={role} rank={rank} state={kind} task={task}{suffix}", flush=True)
 
 
 def wait_ready(messages, timeout: float) -> tuple[bool, bool]:
@@ -547,8 +575,8 @@ def wait_ready(messages, timeout: float) -> tuple[bool, bool]:
                 flush=True,
             )
             return False, False
-        kind, role, rank, detail = item
-        show_message(kind, role, rank, detail)
+        kind, role, rank, task, detail = item
+        show_message(kind, role, rank, task, detail)
         if kind == "ERROR":
             return False, True
         if kind == "READY":
@@ -565,65 +593,105 @@ def wait_events(events, timeout: float) -> bool:
     return True
 
 
-def wait_done(messages, timeout: float) -> tuple[set[int], bool]:
+def wait_for_task(messages, wanted: str, task: str, timeout: float) -> tuple[set[int], bool]:
     deadline = time.monotonic() + timeout
-    done: set[int] = set()
+    seen: set[int] = set()
     failed = False
-    while len(done) < TP and not failed:
+    while len(seen) < TP and not failed:
         try:
-            kind, role, rank, detail = messages.get(timeout=max(0.0, deadline - time.monotonic()))
+            kind, role, rank, event_task, detail = messages.get(timeout=max(0.0, deadline - time.monotonic()))
         except queue.Empty:
             break
-        show_message(kind, role, rank, detail)
+        show_message(kind, role, rank, event_task, detail)
         if kind == "ERROR":
             failed = True
-        elif role == "B" and kind == "DONE":
-            done.add(rank)
-    return done, failed
+        elif role == "B" and kind == wanted and event_task == task:
+            seen.add(rank)
+    return seen, failed
 
 
-def run_case(case: Case, timeout: float, setup_timeout: float) -> str:
+def mark_not_run(tasks, results):
+    for case, attempt in tasks[len(results) :]:
+        results.append((case.name, attempt, "NOT_RUN"))
+    return results
+
+
+def run_matrix(cases: list[Case], repeat: int, timeout: float, setup_timeout: float):
     ctx = mp.get_context("spawn")
     messages = ctx.Queue()
     a_start, b_start, returned = ctx.Event(), ctx.Event(), ctx.Event()
     called = [ctx.Event() for _ in range(TP)]
+    tasks = [(case, attempt) for case in cases for attempt in range(1, repeat + 1)]
+    prepare_events = [ctx.Event() for _ in tasks]
+    run_events = [ctx.Event() for _ in tasks]
     port_a, port_b = find_ports()
     jobs = [
         ctx.Process(target=model_a, args=(rank, port_a, a_start, called[rank], returned, messages))
         for rank in range(TP)
     ]
-    jobs.extend(ctx.Process(target=model_b, args=(rank, port_b, case, b_start, messages)) for rank in range(TP))
+    jobs.extend(
+        ctx.Process(
+            target=model_b,
+            args=(rank, port_b, cases, repeat, b_start, prepare_events, run_events, messages),
+        )
+        for rank in range(TP)
+    )
     print(
-        f"CASE_START name={case.name} suite={case.suite} rows={case.rows} "
-        f"variant={case.variant or '-'} cached={case.cached} port_a={port_a} port_b={port_b}",
+        f"MATRIX_START cases={len(cases)} tasks={len(tasks)} port_a={port_a} port_b={port_b}",
         flush=True,
     )
     for job in jobs:
         job.start()
     try:
+        results: list[tuple[str, int, str]] = []
         ready, failed = wait_ready(messages, setup_timeout)
         if failed or not ready:
-            return "SETUP_FAILED"
+            if tasks:
+                case, attempt = tasks[0]
+                results.append((case.name, attempt, "SETUP_FAILED"))
+            return mark_not_run(tasks, results)
         a_start.set()
         if not wait_events(called[: TP // 2], timeout):
-            return "SETUP_FAILED"
+            case, attempt = tasks[0]
+            return mark_not_run(tasks, [(case.name, attempt, "SETUP_FAILED")])
         time.sleep(3)
         if returned.is_set():
             print("INVALID A AllReduce returned before B started", flush=True)
-            return "SETUP_FAILED"
+            case, attempt = tasks[0]
+            return mark_not_run(tasks, [(case.name, attempt, "SETUP_FAILED")])
         print("A_BLOCKED ranks=0,1,2,3 waited_seconds=3", flush=True)
         b_start.set()
-        done, failed = wait_done(messages, timeout)
-        if failed:
-            return "SETUP_FAILED"
-        if returned.is_set():
-            print("INVALID A AllReduce returned during B operation", flush=True)
-            return "SETUP_FAILED"
-        if len(done) != TP:
-            blocked = sorted(set(range(TP)) - done)
-            print(f"B_TIMEOUT blocked_ranks={blocked}", flush=True)
-            return "BLOCKED"
-        return "PASS"
+        for index, (case, attempt) in enumerate(tasks):
+            key = task_key(case, attempt)
+            print(
+                f"CASE_START name={case.name} attempt={attempt} suite={case.suite} rows={case.rows} "
+                f"variant={case.variant or '-'} cached={case.cached}",
+                flush=True,
+            )
+            prepare_events[index].set()
+            prepared, failed = wait_for_task(messages, "PREPARED", key, setup_timeout)
+            if failed or len(prepared) != TP:
+                missing = sorted(set(range(TP)) - prepared)
+                print(f"PREPARE_FAILED task={key} missing_ranks={missing}", flush=True)
+                results.append((case.name, attempt, "SETUP_FAILED"))
+                break
+            run_events[index].set()
+            done, failed = wait_for_task(messages, "DONE", key, timeout)
+            if failed:
+                status = "SETUP_FAILED"
+            elif returned.is_set():
+                print("INVALID A AllReduce returned during B operation", flush=True)
+                status = "SETUP_FAILED"
+            elif len(done) != TP:
+                print(f"B_TIMEOUT task={key} blocked_ranks={sorted(set(range(TP)) - done)}", flush=True)
+                status = "BLOCKED"
+            else:
+                status = "PASS"
+            results.append((case.name, attempt, status))
+            print(f"CASE_RESULT name={case.name} attempt={attempt} status={status}", flush=True)
+            if status != "PASS":
+                break
+        return mark_not_run(tasks, results)
     finally:
         for job in jobs:
             if job.is_alive():
@@ -638,7 +706,7 @@ def parse_args():
     parser.add_argument("--suite", default="all", help="suite name, or all (default: all)")
     parser.add_argument("--case", action="append", dest="case_names", help="exact case name; repeatable")
     parser.add_argument("--timeout", type=float, default=30.0, help="A entry and B completion timeout")
-    parser.add_argument("--setup-timeout", type=float, default=600.0, help="per-case runtime/warmup timeout")
+    parser.add_argument("--setup-timeout", type=float, default=3600.0, help="matrix warmup/per-case prepare timeout")
     parser.add_argument("--repeat", type=int, default=1, help="repeat every selected case")
     args = parser.parse_args()
     if args.timeout <= 0 or args.setup_timeout <= 0 or args.repeat <= 0:
@@ -677,17 +745,15 @@ def main() -> int:
         f"heads={HEADS} kv_heads={KV_HEADS} head_dim={HEAD_DIM} vocab={VOCAB}",
         flush=True,
     )
-    results: list[tuple[str, int, str]] = []
-    for case in selected:
-        for attempt in range(1, args.repeat + 1):
-            status = run_case(case, args.timeout, args.setup_timeout)
-            results.append((case.name, attempt, status))
-            print(f"CASE_RESULT name={case.name} attempt={attempt} status={status}", flush=True)
+    results = run_matrix(selected, args.repeat, args.timeout, args.setup_timeout)
 
     print("FINAL_SUMMARY", flush=True)
     for name, attempt, status in results:
         print(f"SUMMARY name={name} attempt={attempt} status={status}", flush=True)
-    counts = {status: sum(result == status for _, _, result in results) for status in ("PASS", "BLOCKED", "SETUP_FAILED")}
+    counts = {
+        status: sum(result == status for _, _, result in results)
+        for status in ("PASS", "BLOCKED", "SETUP_FAILED", "NOT_RUN")
+    }
     print("COUNTS " + " ".join(f"{key}={value}" for key, value in counts.items()), flush=True)
     if counts["SETUP_FAILED"]:
         return 2
