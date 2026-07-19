@@ -6,7 +6,7 @@ import queue
 import random
 import time
 TP = 8
-def model_a(rank, port, start, returned, messages):
+def model_a(rank, port, start, called, returned, messages):
     try:
         os.environ.update(XLITE_NODE_IPS="127.0.0.1", XLITE_PORT=str(port), XLITE_DISABLE_XCCL="false")
         import torch
@@ -20,7 +20,7 @@ def model_a(rank, port, start, returned, messages):
         messages.put(("READY", rank, ""))
         start.wait()
         if rank < TP // 2:
-            messages.put(("A_CALL", rank, ""))
+            called.set()
             all_reduce(runtime, dst, src)
             torch.npu.synchronize()
             returned.set()
@@ -57,8 +57,9 @@ def wait_for(messages, wanted, count, timeout):
 def main():
     ctx = mp.get_context("spawn")
     messages, returned = ctx.Queue(), ctx.Event()
+    called = [ctx.Event() for _ in range(TP)]
     a_start, b_start, port = ctx.Event(), ctx.Event(), random.randint(20000, 30000)
-    jobs = [ctx.Process(target=model_a, args=(rank, port, a_start, returned, messages))
+    jobs = [ctx.Process(target=model_a, args=(rank, port, a_start, called[rank], returned, messages))
             for rank in range(TP)]
     jobs += [ctx.Process(target=model_b, args=(b_start, messages))]
     for job in jobs:
@@ -68,7 +69,7 @@ def main():
             print("RESULT=SETUP_FAILED")
             return 2
         a_start.set()
-        if not wait_for(messages, "A_CALL", TP // 2, 30):
+        if not all(event.wait(30) for event in called[:TP // 2]):
             print("RESULT=SETUP_FAILED")
             return 2
         time.sleep(3)
