@@ -28,21 +28,16 @@ def model_a(rank, port, start, returned, messages):
             time.sleep(3600)  # Deliberately withhold half of model A's ranks.
     except BaseException as error:
         messages.put(("ERROR", rank, repr(error)))
-def model_b(port, init, start, messages):
+def model_b(start, messages):
     try:
-        os.environ.update(XLITE_NODE_IPS="127.0.0.1", XLITE_PORT=str(port))
         import torch
         import torch_npu  # noqa: F401
-        import xlite._C as xc
-        init.wait()  # Proven scripts serialize the two communicator initializations.
         torch.npu.set_device(0)
-        runtime = xc.Runtime(0, 500, 0, 1, 1)
-        x = torch.ones((16, 5120), dtype=torch.bfloat16, device="npu:0")
-        out, weight = torch.empty_like(x), torch.ones(5120, dtype=torch.bfloat16, device="npu:0")
+        x = torch.randn((64 * 524_288,), dtype=torch.float16, device="npu:0")
         torch.npu.synchronize()
         messages.put(("READY", 0, ""))
         start.wait()
-        xc.rmsnorm(runtime, x, weight, out, 1e-6)
+        out = torch.sigmoid(x)
         torch.npu.synchronize()
         messages.put(("B_DONE", 0, ""))
     except BaseException as error:
@@ -61,19 +56,17 @@ def wait_for(messages, wanted, count, timeout):
     return True
 def main():
     ctx = mp.get_context("spawn")
-    messages, returned, b_init = ctx.Queue(), ctx.Event(), ctx.Event()
+    messages, returned = ctx.Queue(), ctx.Event()
     a_start, b_start, port = ctx.Event(), ctx.Event(), random.randint(20000, 30000)
     jobs = [ctx.Process(target=model_a, args=(rank, port, a_start, returned, messages))
             for rank in range(TP)]
-    jobs += [ctx.Process(target=model_b, args=(port + 1000, b_init, b_start, messages))]
+    jobs += [ctx.Process(target=model_b, args=(b_start, messages))]
     for job in jobs:
         job.start()
     try:
-        if not wait_for(messages, "READY", TP, 300):
+        if not wait_for(messages, "READY", TP + 1, 300):
             print("RESULT=SETUP_FAILED")
             return 2
-        time.sleep(5); b_init.set()
-        if not wait_for(messages, "READY", 1, 300): return 2
         a_start.set()
         if not wait_for(messages, "A_CALL", TP // 2, 30):
             print("RESULT=SETUP_FAILED")
@@ -82,7 +75,7 @@ def main():
         if returned.is_set():
             print("RESULT=ALLREDUCE_DID_NOT_BLOCK")
             return 2
-        print("A is waiting in Vector AllReduce; starting B's Vector RMSNorm", flush=True)
+        print("A is waiting in Vector AllReduce; starting B's Vector Sigmoid", flush=True)
         b_start.set()
         passed = wait_for(messages, "B_DONE", 1, 30)
         if passed is None: return 2
