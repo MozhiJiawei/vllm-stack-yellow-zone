@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
 """Reproduce the physical 910B4 two-model TP8 xLite/XCCL deadlock.
 
-The crossed schedule starts incomplete collectives on opposite halves:
+The crossed schedule submits complete native forwards in opposite card order:
 
-    NPU 0..3: model A XCCL AllReduce -> model B FlashAttention -> B AllReduce
-    NPU 4..7: model B XCCL AllReduce -> model A FlashAttention -> A AllReduce
+    NPU 0..3: submit complete model A forward, then complete model B forward
+    NPU 4..7: submit complete model B forward, then complete model A forward
 
-Each incomplete XCCL collective retains Vector Cores while waiting for four
-missing ranks.  The missing ranks first execute the same xLite Qwen3-32B
-FlashAttention kernel used by decode.  If that mixed AIC/AIV kernel cannot be
-scheduled, neither model can submit its missing ranks: hold-and-wait.
+Every rank submits the entire 64-layer model exactly once.  The first forwards
+naturally reach their first TP AllReduce with four ranks missing.  Only then are
+the other model's complete forwards released on the same cards.  There are no
+standalone held/tail collectives and no deliberately omitted later ranks.
 
-This is a kernel-level reproducer.  It needs torch, torch-npu and xLite, but no
-model checkpoint or vCANN.  ``--schedule aligned`` is the normal control.
+All ranks call xLite Model.forward_with_inputs_embeds, which submits the real
+Qwen3-32B decode layer sequence (QKV, FlashAttention, O projection, AllReduce,
+MLP, AllReduce) on xLite's private stream.  If a naturally waiting collective
+retains the AIVs needed by the opposite model's compute prefix, that model can
+never reach the missing-rank collective: hold-and-wait.
+
+No checkpoint is needed: all layers share one correctly-shaped set of synthetic
+BF16 weights and one KV-cache pair.  It needs torch, torch-npu and xLite, but no
+vCANN.  ``--schedule aligned`` is the normal control.
 """
 
 from __future__ import annotations
@@ -39,6 +46,9 @@ KV_HEADS_TP8 = 1
 HEAD_DIM = 128
 BLOCK_SIZE = 128
 FLASH_TILE = 8192
+QWEN3_INTERMEDIATE = 25600
+QWEN3_HEADS = 64
+QWEN3_KV_HEADS = 8
 
 
 def log(message: str) -> None:
@@ -71,61 +81,118 @@ def free_ports() -> tuple[int, int]:
     raise RuntimeError("cannot find two free XLITE_PORT pairs")
 
 
-def make_attention(
+def make_model_forward(
     torch: Any,
     device: int,
     runtime: Any,
     batch: int,
     cached_tokens: int,
     dtype: Any,
+    layers: int,
+    hidden_size: int,
+    intermediate_size: int,
+    Model: Any,
+    ModelConfig: Any,
+    AttnMeta: Any,
+    AttnMHA: Any,
 ) -> tuple[Any, ...]:
-    """Build xLite's real batch-N decode metadata: one query per request."""
+    """Build a checkpoint-free native xLite Qwen3 dense decode forward."""
     max_blocks = (cached_tokens + 1 + BLOCK_SIZE - 1) // BLOCK_SIZE
     cache_blocks = batch * max_blocks
-    qkv_width = (Q_HEADS_TP8 + 2 * KV_HEADS_TP8) * HEAD_DIM
     dev = f"npu:{device}"
 
-    qkv = torch.randn((batch, qkv_width), dtype=dtype, device=dev)
-    k_cache = torch.randn(
+    config = ModelConfig()
+    config.vocab_size = TP
+    config.hidden_size = hidden_size
+    config.n_layers = layers
+    config.n_heads = QWEN3_HEADS
+    config.n_kv_heads = QWEN3_KV_HEADS
+    config.head_dim = HEAD_DIM
+    config.rope_head_dim = HEAD_DIM
+    config.norm_eps = 1e-6
+    config.rope_theta = 1_000_000.0
+    config.softmax_scale = HEAD_DIM ** -0.5
+    config.n_dense_layers = layers
+    config.intermediate_size = intermediate_size
+    config.def_tp_size = TP
+    config.def_dp_size = 1
+    config.moe_ep_size = 1
+    config.moe_tp_size = 1
+    config.max_seq_len = cached_tokens + 1
+    config.max_batch_size = batch
+    # vLLM-Ascend sets max_m (batch in decode-only graph mode).
+    config.max_m = batch
+    config.block_size = BLOCK_SIZE
+    config.weight_nz = False
+    config.qkv_bias = False
+    config.qk_norm = True
+    config.attn_type = AttnMHA
+
+    local_intermediate = intermediate_size // TP
+    local_qkv = (Q_HEADS_TP8 + 2 * KV_HEADS_TP8) * HEAD_DIM
+    # The list length preserves the complete layer stack. Reusing storage keeps
+    # this reproducer small without changing any native Model.forward operator.
+    norm = torch.ones(hidden_size, dtype=dtype, device=dev)
+    q_norm = torch.ones(HEAD_DIM, dtype=dtype, device=dev)
+    k_norm = torch.ones(HEAD_DIM, dtype=dtype, device=dev)
+    qkv = torch.zeros((local_qkv, hidden_size), dtype=dtype, device=dev)
+    attn_out = torch.zeros(
+        (hidden_size, Q_HEADS_TP8 * HEAD_DIM), dtype=dtype, device=dev
+    )
+    up_gate = torch.zeros(
+        (2 * local_intermediate, hidden_size), dtype=dtype, device=dev
+    )
+    down = torch.zeros(
+        (hidden_size, local_intermediate), dtype=dtype, device=dev
+    )
+    embed = torch.zeros((1, hidden_size), dtype=dtype, device=dev)
+
+    model = Model()
+    model.embed = embed
+    model.norm = norm
+    model.head = embed
+    model.attn_norm = [norm] * layers
+    model.attn_out = [attn_out] * layers
+    model.mha_qkv = [qkv] * layers
+    model.mha_q_norm = [q_norm] * layers
+    model.mha_k_norm = [k_norm] * layers
+    model.mlp_norm = [norm] * layers
+    model.mlp_up_gate = [up_gate] * layers
+    model.mlp_down = [down] * layers
+    model.init(config, device)
+
+    pool_mib = model.get_tensor_pool_size()
+    if runtime.init_tensor_pool(pool_mib) != 0:
+        raise RuntimeError(f"xLite tensor pool init failed: requested_mib={pool_mib}")
+
+    k_cache = torch.zeros(
         (cache_blocks, BLOCK_SIZE, KV_HEADS_TP8, HEAD_DIM),
         dtype=dtype,
         device=dev,
     )
-    v_cache = torch.randn_like(k_cache)
-    output = torch.empty(
-        (batch, Q_HEADS_TP8 * HEAD_DIM), dtype=dtype, device=dev
+    v_cache = torch.zeros_like(k_cache)
+    kv_cache = [[k_cache, v_cache] for _ in range(layers)]
+
+    attn_meta = AttnMeta()
+    attn_meta.lens = [1] * batch
+    attn_meta.cached_lens = [cached_tokens] * batch
+    attn_meta.is_prefills = [False] * batch
+    attn_meta.block_tables_cpu = [
+        [request * max_blocks + block for block in range(max_blocks)]
+        for request in range(batch)
+    ]
+    attn_meta.positions = torch.full(
+        (batch,), cached_tokens, dtype=torch.int64, device=dev
     )
 
-    # One decode token per request.  Each request owns a separate block-table
-    # row, flattened exactly like xLite's upstream attention kernel test.
-    query_start = torch.arange(batch, dtype=torch.int32, device=dev)
-    query_lens = torch.ones(batch, dtype=torch.int32, device=dev)
-    cached_lens = torch.full(
-        (batch,), cached_tokens, dtype=torch.int32, device=dev
+    inputs = torch.ones((batch, hidden_size), dtype=dtype, device=dev)
+    output = torch.empty_like(inputs)
+    # xLite expects concatenated cos/sin, hence width=head_dim rather than 2x.
+    freqs_cis = torch.ones(
+        (cached_tokens + 1, HEAD_DIM), dtype=dtype, device=dev
     )
-    block_tables = torch.arange(
-        cache_blocks, dtype=torch.int32, device=dev
-    )
-
-    return (
-        runtime,
-        qkv,
-        k_cache,
-        v_cache,
-        output,
-        query_start,
-        query_lens,
-        cached_lens,
-        block_tables,
-        Q_HEADS_TP8,
-        KV_HEADS_TP8,
-        HEAD_DIM,
-        BLOCK_SIZE,
-        batch,
-        max_blocks,
-        True,
-        FLASH_TILE,
-    )
+    stream = torch.npu.current_stream().npu_stream
+    return model, runtime, inputs, attn_meta, kv_cache, freqs_cis, output, stream, []
 
 
 def worker(
@@ -150,7 +217,13 @@ def worker(
         import torch
         import torch_npu  # noqa: F401 - registers the NPU backend
         import xlite
-        from xlite._C import Runtime, all_reduce, attention
+        from xlite._C import (
+            AttnMHA,
+            Model,
+            AttnMeta,
+            ModelConfig,
+            Runtime,
+        )
 
         if model == "A" and rank == 0:
             try:
@@ -165,71 +238,77 @@ def worker(
         if model == "B":
             model_a_ready.wait()
 
-        runtime = Runtime(rank, args.pool_mib, rank, TP, 1)
         torch.npu.set_device(rank)
+        runtime = Runtime(rank, 0, rank, TP, 1)
         dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float16
-        dev = f"npu:{rank}"
-        comm_in = torch.full(
-            (args.batch, args.hidden_size), rank + 1, dtype=dtype, device=dev
-        )
-        comm_out = torch.empty_like(comm_in)
-        attention_args = make_attention(
-            torch, rank, runtime, args.batch, args.cached_tokens, dtype
+        forward_args = make_model_forward(
+            torch,
+            rank,
+            runtime,
+            args.batch,
+            args.cached_tokens,
+            dtype,
+            args.layers,
+            args.hidden_size,
+            args.intermediate_size,
+            Model,
+            ModelConfig,
+            AttnMeta,
+            AttnMHA,
         )
         torch.npu.synchronize()
         status.send(("READY", model, rank, label))
 
         # Initialize the two TP groups independently, matching two vLLM engines.
-        # Warm-up also proves the exact batch-16 FA and both complete TP8 groups.
+        # Warm up each complete TP8 native forward independently.
         phases.wait()
         if model == "A":
-            attention(*attention_args)
-            all_reduce(runtime, comm_out, comm_in)
+            forward_args[0].forward_with_inputs_embeds(*forward_args[1:])
             torch.npu.synchronize()
         phases.wait()
         if model == "B":
-            attention(*attention_args)
-            all_reduce(runtime, comm_out, comm_in)
+            forward_args[0].forward_with_inputs_embeds(*forward_args[1:])
             torch.npu.synchronize()
         phases.wait()
 
-        expected = float(TP * (TP + 1) // 2)
-        actual = float(comm_out[0, 0].cpu().item())
-        if actual != expected:
-            raise RuntimeError(
-                f"warm-up AllReduce mismatch: got {actual}, expected {expected}"
-            )
+        if not bool(torch.isfinite(forward_args[6]).all().cpu().item()):
+            raise RuntimeError("warm-up native Model.forward produced non-finite output")
         status.send(("ARMED", model, rank, label))
         start.wait()
 
         wave = "aligned" if args.schedule == "aligned" else (
             "first" if first_wave(model, rank) else "second"
         )
-        if wave != "first":
-            if wave == "second":
-                start_compute.wait()
-            status.send(("COMPUTE_ENTER", model, rank, label))
-            log(
-                f"ENTER xLite FlashAttention batch={args.batch} "
-                f"cached={args.cached_tokens}: {label}"
-            )
-            attention(*attention_args)
-            status.send(("COMPUTE_DONE", model, rank, label))
-            log(f"RETURN xLite FlashAttention: {label}")
+        if wave == "aligned":
+            status.send(("MODEL_ENTER_ALIGNED", model, rank, label))
+            log(f"ENTER xLite Model.forward layers={args.layers}: {label}")
+            forward_args[0].forward_with_inputs_embeds(*forward_args[1:])
+            status.send(("MODEL_SUBMITTED_ALIGNED", model, rank, label))
+            torch.npu.synchronize()
+            status.send(("MODEL_DONE", model, rank, label))
+            log(f"RETURN xLite Model.forward: {label}")
+            status.send(("DONE", model, rank, label))
+            return
 
         if wave == "first":
             first_barrier.wait()
-        status.send(("AR_ENTER", model, rank, label))
-        log(f"ENTER xLite XCCL AllReduce wave={wave}: {label}")
-        all_reduce(runtime, comm_out, comm_in)
-        status.send(("AR_DONE", model, rank, label))
-        log(f"RETURN xLite XCCL AllReduce wave={wave}: {label}")
+            status.send(("MODEL_ENTER_FIRST", model, rank, label))
+            log(f"ENTER first complete xLite Model.forward layers={args.layers}: {label}")
+            forward_args[0].forward_with_inputs_embeds(*forward_args[1:])
+            status.send(("MODEL_SUBMITTED_FIRST", model, rank, label))
+            torch.npu.synchronize()
+            status.send(("MODEL_DONE", model, rank, label))
+            log(f"RETURN first complete xLite Model.forward: {label}")
+        else:
+            start_compute.wait()
+            status.send(("MODEL_ENTER_SECOND", model, rank, label))
+            log(f"ENTER second complete xLite Model.forward layers={args.layers}: {label}")
+            forward_args[0].forward_with_inputs_embeds(*forward_args[1:])
+            status.send(("MODEL_SUBMITTED_SECOND", model, rank, label))
+            torch.npu.synchronize()
+            status.send(("MODEL_DONE", model, rank, label))
+            log(f"RETURN second complete xLite Model.forward: {label}")
 
-        actual = float(comm_out[0, 0].cpu().item())
-        if actual != expected:
-            raise RuntimeError(
-                f"race AllReduce mismatch: got {actual}, expected {expected}"
-            )
         status.send(("DONE", model, rank, label))
     except BaseException:
         error = traceback.format_exc()
@@ -298,12 +377,14 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--schedule", choices=("crossed", "aligned"), default="crossed")
     result.add_argument("--batch", type=int, default=16, help="decode requests (default: 16)")
     result.add_argument("--hidden-size", type=int, default=5120)
+    result.add_argument("--intermediate-size", type=int, default=QWEN3_INTERMEDIATE)
+    result.add_argument("--layers", type=int, default=64)
     result.add_argument("--cached-tokens", type=int, default=9216)
     result.add_argument("--dtype", choices=("bf16", "fp16"), default="bf16")
-    result.add_argument("--pool-mib", type=int, default=500)
     result.add_argument("--init-stagger-seconds", type=float, default=10)
     result.add_argument("--stagger-seconds", type=float, default=5)
     result.add_argument("--hang-timeout", type=float, default=30)
+    result.add_argument("--confirm-timeout", type=float, default=120)
     result.add_argument("--startup-timeout", type=float, default=600)
     return result
 
@@ -314,8 +395,12 @@ def main() -> int:
         log("ERROR: run this script inside the Linux Ascend container")
         log("RESULT=UNSUPPORTED_PLATFORM exit_code=2")
         return 2
-    if args.batch <= 0 or args.hidden_size <= 0 or args.pool_mib <= 0:
-        parser().error("batch, hidden-size and pool-mib must be positive")
+    if args.batch <= 0 or args.layers <= 0 or args.intermediate_size <= 0:
+        parser().error("batch, layers and intermediate-size must be positive")
+    if args.hidden_size != 5120:
+        parser().error("this Qwen3-32B reproducer requires --hidden-size 5120")
+    if args.intermediate_size % TP:
+        parser().error("intermediate-size must be divisible by TP=8")
     if args.cached_tokens <= FLASH_TILE:
         parser().error("cached-tokens must exceed 8192 to select FlashAttention")
 
@@ -323,6 +408,8 @@ def main() -> int:
         os.environ.pop(name, None)
     os.environ.setdefault("ASCEND_SLOG_PRINT_TO_STDOUT", "0")
     os.environ.setdefault("ASCEND_GLOBAL_LOG_LEVEL", "3")
+
+    comm_threshold_raw = os.environ.get("XLITE_COMM_OPTIMIZE_LEN")
 
     try:
         port_a, port_b = free_ports()
@@ -337,10 +424,21 @@ def main() -> int:
     log(f"COMMAND: {shlex.join(sys.argv)}")
     log(
         f"CONFIG: physical_910B4=true tp=8 schedule={args.schedule} "
-        f"decode_batch={args.batch} hidden_size={args.hidden_size} dtype={args.dtype} "
+        f"native_model_forward=true layers={args.layers} "
+        f"nominal_allreduces_per_forward={2 * args.layers} decode_batch={args.batch} "
+        f"hidden_size={args.hidden_size} intermediate_size={args.intermediate_size} "
+        f"dtype={args.dtype} "
         f"cached_tokens={args.cached_tokens} comm_bytes={tensor_bytes} "
-        f"expected_xccl_aiv={expected_ar_aiv} expected_fa=20AIC+40AIV "
+        f"expected_xccl_aiv_launch={expected_ar_aiv} "
+        f"expected_fa_launch=20AIC+40AIV "
         f"ports=A:{port_a},B:{port_b}"
+    )
+    log(
+        "FUSION_CONFIG: "
+        f"XLITE_COMM_OPTIMIZE_LEN={comm_threshold_raw or '6144(default)'} "
+        "all_ranks_submit_complete_forward=true "
+        f"VLLM_ASCEND_ENABLE_MATMUL_ALLREDUCE="
+        f"{os.environ.get('VLLM_ASCEND_ENABLE_MATMUL_ALLREDUCE', '<unset>')}"
     )
 
     ctx = mp.get_context("spawn")
@@ -386,6 +484,9 @@ def main() -> int:
             log("CONTROL: releasing two complete TP8 groups")
             start.set()
             complete = collector.until("DONE", WORKERS, args.hang_timeout)
+            if not complete and not collector.errors():
+                log(f"CONTROL: confirming apparent hang for {args.confirm_timeout}s")
+                complete = collector.until("DONE", WORKERS, args.confirm_timeout)
             collector.print_states()
             if collector.errors():
                 log("RESULT=NORMAL_CONTROL_RUNTIME_FAILED exit_code=2")
@@ -396,16 +497,19 @@ def main() -> int:
             log("RESULT=NORMAL_CONTROL_HUNG exit_code=1")
             return 1
 
-        log("CROSSED: releasing 8 incomplete XCCL AllReduce ranks")
+        log("CROSSED: releasing 8 first complete native Model.forward calls")
         start.set()
-        if not collector.until("AR_ENTER", TP, args.hang_timeout):
+        if not collector.until("MODEL_SUBMITTED_FIRST", TP, args.hang_timeout):
             collector.print_states()
             log("RESULT=FIRST_WAVE_FAILED exit_code=2")
             return 2
         time.sleep(args.stagger_seconds)
-        log("CROSSED: releasing 8 missing ranks into batch-16 FlashAttention")
+        log("CROSSED: releasing 8 opposite-model complete native Model.forward calls")
         start_compute.set()
         complete = collector.until("DONE", WORKERS, args.hang_timeout)
+        if not complete and not collector.errors():
+            log(f"CROSSED: confirming stable hang for {args.confirm_timeout}s")
+            complete = collector.until("DONE", WORKERS, args.confirm_timeout)
         collector.print_states()
         if collector.errors():
             log("RESULT=RUNTIME_FAILED exit_code=2")
@@ -413,13 +517,20 @@ def main() -> int:
         if complete:
             log("RESULT=NO_DEADLOCK exit_code=1")
             return 1
+        entered = collector.count("MODEL_ENTER_SECOND")
+        first_submitted = collector.count("MODEL_SUBMITTED_FIRST")
+        second_submitted = collector.count("MODEL_SUBMITTED_SECOND")
+        model_done = collector.count("MODEL_DONE")
         log(
-            f"DEADLOCK: done={collector.count('DONE')}/16 "
-            f"compute_enter={collector.count('COMPUTE_ENTER')}/8 "
-            f"compute_done={collector.count('COMPUTE_DONE')}/8"
+            f"HANG: done={collector.count('DONE')}/16 "
+            f"first_submitted={first_submitted}/8 second_enter={entered}/8 "
+            f"second_submitted={second_submitted}/8 model_done={model_done}/16"
         )
-        log("RESULT=DEADLOCK_REPRODUCED exit_code=0")
-        return 0
+        if first_submitted == TP and entered == TP and model_done == 0:
+            log("RESULT=DEADLOCK_REPRODUCED exit_code=0")
+            return 0
+        log("RESULT=HUNG_AFTER_PROGRESS_INCONCLUSIVE exit_code=2")
+        return 2
     finally:
         model_a_ready.set()
         start.set()

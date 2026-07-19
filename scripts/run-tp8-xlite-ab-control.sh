@@ -22,6 +22,7 @@ exec >>"$output_file" 2>&1
 
 unset HCCL_DETERMINISTIC
 unset HCCL_OP_EXPANSION_MODE
+unset XLITE_COMM_OPTIMIZE_LEN
 export XLITE_DISABLE_XCCL=false
 export ASCEND_SLOG_PRINT_TO_STDOUT=0
 export ASCEND_GLOBAL_LOG_LEVEL=3
@@ -37,11 +38,14 @@ run_case() {
   python3 "$script_dir/repro-tp8-xlite-xccl-deadlock.py" \
     --batch 16 \
     --hidden-size 5120 \
+    --intermediate-size 25600 \
+    --layers 64 \
     --dtype bf16 \
     --cached-tokens 9216 \
     --init-stagger-seconds 10 \
     --stagger-seconds 5 \
     --hang-timeout 30 \
+    --confirm-timeout 120 \
     "$@"
   local case_rc=$?
   printf 'CASE_RESULT name=%s exit_code=%d\n' "$case_name" "$case_rc"
