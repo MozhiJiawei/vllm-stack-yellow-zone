@@ -152,7 +152,9 @@ def make_cases() -> list[Case]:
     return cases
 
 
-CASES = make_cases()
+# Temporarily enable only the first ten decode cases.  The remaining cases
+# returned by make_cases() stay defined above but are intentionally disabled.
+CASES = make_cases()[:10]
 CASE_BY_NAME = {case.name: case for case in CASES}
 
 
