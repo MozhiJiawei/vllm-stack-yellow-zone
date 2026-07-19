@@ -4,6 +4,23 @@ These scripts are the reviewable, version-controlled entry points for the
 yellow-zone experiment. Run them from the repository root on the yellow-zone
 Linux host.
 
+## Stop all local vLLM processes
+
+`stop-vllm-processes.sh` finds vLLM launchers, engine/worker processes, and all
+of their descendants (including Python multiprocessing helpers). It first sends
+`SIGTERM`, waits up to 10 seconds, and sends `SIGKILL` to anything still running.
+
+```bash
+bash scripts/yellow-zone/stop-vllm-processes.sh
+```
+
+Preview the matched processes without stopping them, or skip the grace period:
+
+```bash
+bash scripts/yellow-zone/stop-vllm-processes.sh --dry-run
+bash scripts/yellow-zone/stop-vllm-processes.sh --force
+```
+
 ## Native vLLM baseline
 
 `run-native-vllm.sh` starts one Qwen3-8B instance on physical NPU 0 using the
