@@ -319,8 +319,10 @@ def build_operation(torch, torch_npu, xc, runtime, case: Case, rank: int):
             positions,
             freqs,
             slots,
-            LOCAL_HEADS,
-            LOCAL_KV_HEADS,
+            # The binding expects global head counts and divides them by the
+            # Runtime TP size internally.
+            HEADS,
+            KV_HEADS,
             HEAD_DIM,
             HEAD_DIM,
             BLOCK_SIZE,
