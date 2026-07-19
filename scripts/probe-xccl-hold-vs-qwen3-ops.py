@@ -764,6 +764,13 @@ def run_matrix(cases: list[Case], repeat: int, timeout: float, setup_timeout: fl
                 job.terminate()
         for job in jobs:
             job.join(5)
+        for job in jobs:
+            if job.is_alive():
+                print(f"PROCESS_FORCE_KILL name={job.name} pid={job.pid}", flush=True)
+                job.kill()
+        for job in jobs:
+            job.join(5)
+        messages.close()
 
 
 def parse_args():
@@ -780,9 +787,21 @@ def parse_args():
         help="wait after all A ranks initialize before allowing B Runtime initialization",
     )
     parser.add_argument("--repeat", type=int, default=1, help="repeat every selected case")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=10,
+        help="cases per fresh A/B process group and Runtime initialization (default: 10)",
+    )
     args = parser.parse_args()
-    if args.timeout <= 0 or args.setup_timeout <= 0 or args.repeat <= 0 or args.init_stagger_seconds < 0:
-        parser.error("timeouts/repeat must be positive and init stagger must be non-negative")
+    if (
+        args.timeout <= 0
+        or args.setup_timeout <= 0
+        or args.repeat <= 0
+        or args.batch_size <= 0
+        or args.init_stagger_seconds < 0
+    ):
+        parser.error("timeouts/repeat/batch size must be positive and init stagger must be non-negative")
     return args
 
 
@@ -817,13 +836,33 @@ def main() -> int:
         f"heads={HEADS} kv_heads={KV_HEADS} head_dim={HEAD_DIM} vocab={VOCAB}",
         flush=True,
     )
-    results = run_matrix(
-        selected,
-        args.repeat,
-        args.timeout,
-        args.setup_timeout,
-        args.init_stagger_seconds,
-    )
+    results = []
+    batch_count = (len(selected) + args.batch_size - 1) // args.batch_size
+    for batch_index, offset in enumerate(range(0, len(selected), args.batch_size), 1):
+        batch = selected[offset : offset + args.batch_size]
+        print(
+            f"PROBE_BATCH_START index={batch_index}/{batch_count} cases={len(batch)} "
+            f"first={batch[0].name} last={batch[-1].name}",
+            flush=True,
+        )
+        try:
+            batch_results = run_matrix(
+                batch,
+                args.repeat,
+                args.timeout,
+                args.setup_timeout,
+                args.init_stagger_seconds,
+            )
+        except Exception:
+            print(f"PROBE_BATCH_ERROR index={batch_index}\n{traceback.format_exc()}", flush=True)
+            batch_tasks = [(case, attempt) for case in batch for attempt in range(1, args.repeat + 1)]
+            first_case, first_attempt = batch_tasks[0]
+            batch_results = mark_not_run(
+                batch_tasks,
+                [(first_case.name, first_attempt, "SETUP_FAILED")],
+            )
+        results.extend(batch_results)
+        print(f"PROBE_BATCH_DONE index={batch_index}/{batch_count}", flush=True)
 
     print("FINAL_SUMMARY", flush=True)
     for name, attempt, status in results:
