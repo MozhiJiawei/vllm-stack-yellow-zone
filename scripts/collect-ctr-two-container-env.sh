@@ -1,36 +1,33 @@
 #!/usr/bin/env bash
-# Collect only the host/container facts needed to run the two-container XCCL
-# control plane through ctr. This script is read-only and targets two explicitly
-# named containers; it does not inspect NPU, driver, model, or package state.
+# Collect the minimum host-side facts needed to translate the known Docker
+# launch into two ctr-managed vCANN containers. No containers need to exist.
+# This script is read-only and does not inspect NPU state, model contents,
+# package inventories, credentials, or unrelated containers/processes.
 
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: collect-ctr-two-container-env.sh \
-  --container-a ID --container-b ID [--namespace NAME]
+Usage: collect-ctr-two-container-env.sh [OPTIONS]
 
-Defaults:
-  --namespace k8s.io
+Options:
+  --namespace NAME  containerd namespace (default: k8s.io)
+  --image REF       target image reference
+  -h, --help        show this help
 EOF
 }
 
 namespace=k8s.io
-container_a=
-container_b=
+image=quay.io/ascend/vllm-ascend:v0.19.1rc1
 
 while (($#)); do
   case "$1" in
-    --container-a)
-      container_a=${2:-}
-      shift 2
-      ;;
-    --container-b)
-      container_b=${2:-}
-      shift 2
-      ;;
     --namespace)
       namespace=${2:-}
+      shift 2
+      ;;
+    --image)
+      image=${2:-}
       shift 2
       ;;
     -h | --help)
@@ -45,13 +42,8 @@ while (($#)); do
   esac
 done
 
-if [[ -z "$container_a" || -z "$container_b" || -z "$namespace" ]]; then
-  printf 'ERROR: --container-a, --container-b, and --namespace must be non-empty\n' >&2
-  usage >&2
-  exit 2
-fi
-if [[ "$container_a" == "$container_b" ]]; then
-  printf 'ERROR: container A and B must be different\n' >&2
+if [[ -z "$namespace" || -z "$image" ]]; then
+  printf 'ERROR: namespace and image must be non-empty\n' >&2
   exit 2
 fi
 
@@ -62,164 +54,157 @@ require_command() {
   fi
 }
 
-require_command ctr
-require_command python3
-require_command readlink
-require_command sed
-
-print_container_metadata() {
-  local container=$1
-  local container_json=$2
-  local task_json=$3
-
-  CONTAINER_ID="$container" python3 -c '
-import json
-import os
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as source:
-    container = json.load(source)
-with open(sys.argv[2], encoding="utf-8") as source:
-    task = json.load(source)
-
-def pick(mapping, *names, default=None):
-    if not isinstance(mapping, dict):
-        return default
-    lowered = {str(key).lower(): value for key, value in mapping.items()}
-    for name in names:
-        if name.lower() in lowered:
-            return lowered[name.lower()]
-    return default
-
-spec = pick(container, "Spec", default={}) or {}
-process = pick(spec, "process", default={}) or {}
-runtime = pick(container, "Runtime", default={}) or {}
-linux = pick(spec, "linux", default={}) or {}
-namespaces = pick(linux, "namespaces", default=[]) or []
-mounts = pick(spec, "mounts", default=[]) or []
-
-container_id = os.environ["CONTAINER_ID"]
-image = pick(container, "Image", default="unknown")
-runtime_name = pick(runtime, "Name", default="unknown")
-task_pid = pick(task, "Pid", default="unknown")
-task_status = pick(task, "Status", default="unknown")
-container_cwd = pick(process, "cwd", default="unknown")
-print(f"container_id={container_id}")
-print(f"image={image}")
-print(f"runtime={runtime_name}")
-print(f"task_pid={task_pid}")
-print(f"task_status={task_status}")
-print(f"container_cwd={container_cwd}")
-
-network_types = {
-    str(pick(item, "type", default="")).lower()
-    for item in namespaces
-    if isinstance(item, dict)
-}
-isolated = any(value in {"network", "network_namespace"} for value in network_types)
-network_namespace = "isolated" if isolated else "host_or_unspecified"
-print(f"oci_network_namespace={network_namespace}")
-
-project_mounts = []
-for mount in mounts:
-    source = str(pick(mount, "source", default=""))
-    destination = str(pick(mount, "destination", default=""))
-    if "/root/l00933108" in source or "/root/l00933108" in destination:
-        project_mounts.append(f"{source}->{destination}")
-print("project_mounts=" + (";".join(project_mounts) if project_mounts else "none"))
-' <(printf '%s' "$container_json") <(printf '%s' "$task_json")
-}
-
-inspect_role() {
-  local role=$1
-  local container=$2
-  local container_json
-  local task_json
-  local pid
-  local host_net
-  local exec_prefix="xccl-env-${role,,}-$$"
-
-  if ! container_json=$(ctr -n "$namespace" containers info "$container" 2>&1); then
-    printf 'ERROR: cannot inspect role=%s container=%s\n%s\n' \
-      "$role" "$container" "$container_json" >&2
-    exit 2
-  fi
-  if ! task_json=$(ctr -n "$namespace" tasks info "$container" 2>&1); then
-    printf 'ERROR: role=%s container=%s has no inspectable running task\n%s\n' \
-      "$role" "$container" "$task_json" >&2
-    exit 2
-  fi
-
-  printf '=== role=%s selected container ===\n' "$role"
-  print_container_metadata "$container" "$container_json" "$task_json"
-
-  pid=$(printf '%s' "$task_json" | python3 -c '
-import json
-import sys
-data = json.load(sys.stdin)
-values = {str(key).lower(): value for key, value in data.items()}
-print(values.get("pid", ""))
-')
-  if [[ ! "$pid" =~ ^[0-9]+$ ]] || [[ ! -e "/proc/$pid/ns/net" ]]; then
-    printf 'ERROR: invalid or unavailable task PID for role=%s: %s\n' \
-      "$role" "${pid:-<empty>}" >&2
-    exit 2
-  fi
-  if [[ "$(readlink /proc/1/ns/net)" == "$(readlink "/proc/$pid/ns/net")" ]]; then
-    host_net=yes
+path_status() {
+  local path=$1
+  if [[ -e "$path" ]]; then
+    if [[ -r "$path" ]]; then
+      stat -Lc 'path=%n type=%F mode=%a readable=yes' "$path"
+    else
+      stat -Lc 'path=%n type=%F mode=%a readable=no' "$path"
+    fi
   else
-    host_net=no
+    printf 'path=%s status=missing\n' "$path"
   fi
-  printf 'host_network=%s\n' "$host_net"
-
-  ctr -n "$namespace" tasks exec \
-    --exec-id "${exec_prefix}-runtime" \
-    "$container" /bin/sh -lc '
-      printf "container_python="
-      command -v python3 || printf "missing\n"
-      if command -v python3 >/dev/null 2>&1; then
-        python3 --version
-      fi
-      printf "container_identity="
-      id -u
-      printf "container_pwd="
-      pwd
-      for path in /tmp /root; do
-        if test -d "$path" && test -w "$path"; then
-          printf "writable_%s=yes\n" "${path#/}"
-        else
-          printf "writable_%s=no\n" "${path#/}"
-        fi
-      done
-      printf "container_tar="
-      command -v tar || printf "missing\n"
-      if command -v ip >/dev/null 2>&1; then
-        printf "default_route="
-        ip route show default | head -n 1
-      else
-        printf "default_route=ip-command-missing\n"
-      fi
-    '
-
-  printf 'ctr-stdin-ok\n' | ctr -n "$namespace" tasks exec \
-    --exec-id "${exec_prefix}-stdin" \
-    "$container" /bin/sh -c '
-      IFS= read -r probe
-      test "$probe" = ctr-stdin-ok
-      printf "ctr_exec_stdin=ok\n"
-    '
 }
 
-printf '=== collection scope ===\n'
-printf 'namespace=%s\ncontainer_a=%s\ncontainer_b=%s\n' \
-  "$namespace" "$container_a" "$container_b"
+require_command ctr
+require_command awk
+require_command find
+require_command grep
+require_command python3
+require_command sed
+require_command sort
+require_command stat
+
+printf '=== requested topology ===\n'
+printf 'namespace=%s\nimage=%s\ncontainer_a=xlite-xccl-a\ncontainer_b=xlite-xccl-b\n' \
+  "$namespace" "$image"
 
 printf '=== ctr/containerd ===\n'
-ctr version | sed -n '1,6p'
-printf 'host_python=%s\n' "$(command -v python3)"
-python3 --version
+ctr version | sed -n '1,8p'
+printf 'namespace_present='
+if ctr namespaces list 2>/dev/null | awk -v ns="$namespace" 'NR > 1 && $1 == ns {found=1} END {exit !found}'; then
+  printf 'yes\n'
+else
+  printf 'no\n'
+fi
 
-inspect_role A "$container_a"
-inspect_role B "$container_b"
+printf 'target_image='
+if ctr -n "$namespace" images list 2>/dev/null | awk -v image="$image" 'NR > 1 && $1 == image {found=1} END {exit !found}'; then
+  printf 'present\n'
+else
+  printf 'missing\n'
+fi
+
+printf 'container_id_xlite-xccl-a='
+if ctr -n "$namespace" containers info xlite-xccl-a >/dev/null 2>&1; then
+  printf 'occupied\n'
+else
+  printf 'available\n'
+fi
+printf 'container_id_xlite-xccl-b='
+if ctr -n "$namespace" containers info xlite-xccl-b >/dev/null 2>&1; then
+  printf 'occupied\n'
+else
+  printf 'available\n'
+fi
+
+printf '=== required ctr run flags ===\n'
+run_help=$(ctr run --help 2>&1)
+for flag in detach device env mount net-host privileged tty; do
+  if grep -Eq -- "--${flag}([=,[:space:]]|$)" <<<"$run_help"; then
+    printf '%s=yes\n' "$flag"
+  else
+    printf '%s=no\n' "$flag"
+  fi
+done
+
+printf '=== host coordinator ===\n'
+printf 'python3=%s\n' "$(command -v python3)"
+python3 --version
+python3 -c '
+import socket
+
+for port in (23000, 23400, 24000, 24400, 29680, 29681, 29504, 29510):
+    sock = socket.socket()
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError as error:
+        print(f"port_{port}=busy:{error.errno}")
+    else:
+        print(f"port_{port}=available")
+    finally:
+        sock.close()
+'
+
+printf '=== exact device sources from old Docker launch ===\n'
+for path in \
+  /dev/davinci0 /dev/davinci1 /dev/davinci2 /dev/davinci3 \
+  /dev/davinci4 /dev/davinci5 /dev/davinci6 /dev/davinci7 \
+  /dev/davinci_manager /dev/devmm_svm /dev/hisi_hdc; do
+  path_status "$path"
+done
+
+printf '=== exact bind sources from old Docker launch ===\n'
+for path in \
+  /cache/isa/Qwen3-4B \
+  /cache/isa/Qwen3-32B \
+  /opt/isa/shm \
+  /usr/local/Ascend/driver \
+  /usr/local/Ascend/driver/lib64/common \
+  /usr/local/Ascend/driver/lib64/driver \
+  /usr/local/Ascend/firmware \
+  /usr/local/sbin/npu-smi \
+  /usr/local/sbin \
+  /usr/local/dcmi \
+  /root/isa/bins/libvruntime.so \
+  /root/isa/bins/enpu-monitor \
+  /root/isa/conf/xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl \
+  /root/l00933108; do
+  path_status "$path"
+done
+
+printf '=== targeted preload candidates ===\n'
+for path in \
+  /root/l00933108/runtime/vcann-rt/preload/ld.so.preload \
+  /root/isa/build/ld.so.preload \
+  /root/isa/bins/ld.so.preload; do
+  path_status "$path"
+done
+
+printf '=== vCANN config candidates and scheduling fields ===\n'
+config_count=0
+for directory in /root/isa/bins /root/l00933108/runtime/vcann-rt/config; do
+  [[ -d "$directory" ]] || continue
+  while IFS= read -r config; do
+    config_count=$((config_count + 1))
+    printf '%s\n' "--- config=$config"
+    grep -E '^[[:space:]]*(\[DEVICE-[0-7]\]|virtual-npu-id|aicore-quota|memory-quota|shm-id|scheduling-policy)[[:space:]]*([=]|$)' \
+      "$config" || true
+  done < <(find "$directory" -maxdepth 1 -type f -name '*npu_info.config' -print | sort)
+done
+printf 'config_count=%d\n' "$config_count"
+
+printf '=== exact reserved socket ranges ===\n'
+if command -v ss >/dev/null 2>&1; then
+  listeners=$(ss -lntup 2>/dev/null | awk '
+    NR == 1 {next}
+    {
+      endpoint=$5
+      sub(/^.*:/, "", endpoint)
+      if (endpoint ~ /^[0-9]+$/ &&
+          (endpoint == 29504 || endpoint == 29510 ||
+           (endpoint >= 61000 && endpoint <= 61050) ||
+           (endpoint >= 62000 && endpoint <= 62050))) print
+    }
+  ')
+  if [[ -n "$listeners" ]]; then
+    printf '%s\n' "$listeners"
+  else
+    printf 'reserved_socket_listeners=none\n'
+  fi
+else
+  printf 'reserved_socket_listeners=ss-command-missing\n'
+fi
 
 printf 'RESULT=COLLECTION_COMPLETE\n'
