@@ -16,8 +16,12 @@ extern "C" {
 #endif
 
 #define VCANN_TRACE_MAGIC 0x5643414E4E545243ULL /* "VCANNTRC" */
-#define VCANN_TRACE_ABI_VERSION 2U
+#define VCANN_TRACE_ABI_VERSION 3U
 #define VCANN_TRACE_CAPACITY 4096U
+#define VCANN_KERNEL_REGISTRY_MAGIC 0x5643414E4E4B5247ULL /* "VCANNKRG" */
+#define VCANN_KERNEL_REGISTRY_ABI_VERSION 1U
+#define VCANN_KERNEL_REGISTRY_CAPACITY 512U
+#define VCANN_KERNEL_NAME_CAPACITY 128U
 
 /* Keep these values stable: vcann_trace_gdb.py decodes the ABI by number. */
 typedef enum vcann_trace_kind {
@@ -60,6 +64,12 @@ typedef enum vcann_trace_kind {
     VCANN_TRACE_STREAM_CAPTURE_END = 36,
     VCANN_TRACE_SCHED_SYNC_BEGIN = 37,
     VCANN_TRACE_SCHED_SYNC_END = 38,
+    VCANN_TRACE_KERNEL_REGISTER = 39,
+    VCANN_TRACE_KERNEL_UNREGISTER = 40,
+    VCANN_TRACE_DEVICE_SYNC_BEGIN = 41,
+    VCANN_TRACE_DEVICE_SYNC_END = 42,
+    VCANN_TRACE_STREAM_SYNC_BEGIN = 43,
+    VCANN_TRACE_STREAM_SYNC_END = 44,
 } vcann_trace_kind_t;
 
 /* committed_sequence is published last; readers ignore partially written slots. */
@@ -97,8 +107,42 @@ typedef struct vcann_sync_probe {
     uintptr_t stream;
 } vcann_sync_probe_t;
 
+typedef struct vcann_host_sync_probe {
+    volatile uint32_t active;
+    uint32_t kind;
+    uint32_t tid;
+    int32_t timeout;
+    uint64_t begin_ns;
+    uint64_t begin_sequence;
+    uintptr_t stream;
+} vcann_host_sync_probe_t;
+
+/* Names are copied at rtFunctionRegister time so GDB never dereferences stale pointers. */
+typedef struct vcann_kernel_registration {
+    volatile uint64_t committed_sequence;
+    uintptr_t handle;
+    uintptr_t stub;
+    uintptr_t device_function;
+    uint32_t function_mode;
+    uint32_t tid;
+    char stub_name[VCANN_KERNEL_NAME_CAPACITY];
+    char device_name[VCANN_KERNEL_NAME_CAPACITY];
+} vcann_kernel_registration_t;
+
+typedef struct vcann_kernel_registry {
+    uint64_t magic;
+    uint32_t abi_version;
+    uint32_t capacity;
+    volatile uint64_t next_sequence;
+    volatile uint32_t dropped;
+    uint32_t reserved;
+    vcann_kernel_registration_t entries[VCANN_KERNEL_REGISTRY_CAPACITY];
+} vcann_kernel_registry_t;
+
 extern vcann_trace_buffer_t g_vcann_trace;
 extern vcann_sync_probe_t g_vcann_sync_probe;
+extern vcann_host_sync_probe_t g_vcann_host_sync_probe;
+extern vcann_kernel_registry_t g_vcann_kernel_registry;
 
 void vcann_trace_init(void);
 void vcann_trace_record_enabled(vcann_trace_kind_t kind, rtStream_t stream, const void *object,
@@ -107,6 +151,13 @@ void vcann_trace_record_enabled(vcann_trace_kind_t kind, rtStream_t stream, cons
 void vcann_trace_sync_begin_enabled(rtStream_t stream, int32_t owner, uint32_t schedule_turn,
                                     uint32_t vnpu_id);
 void vcann_trace_sync_end_enabled(rtStream_t stream);
+void vcann_trace_host_sync_begin_enabled(vcann_trace_kind_t kind, rtStream_t stream,
+                                         int32_t timeout);
+void vcann_trace_host_sync_end_enabled(vcann_trace_kind_t kind, rtStream_t stream,
+                                       int32_t result);
+void vcann_trace_kernel_register_enabled(void *handle, const void *stub, const char *stub_name,
+                                         const void *device_function, uint32_t function_mode);
+void vcann_trace_kernel_unregister_enabled(void *handle);
 
 static inline bool vcann_trace_is_enabled(void)
 {
@@ -131,6 +182,30 @@ static inline bool vcann_trace_is_enabled(void)
             vcann_trace_sync_end_enabled(__VA_ARGS__); \
         } \
     } while (0)
+#define vcann_trace_host_sync_begin(...) \
+    do { \
+        if (__builtin_expect(vcann_trace_is_enabled(), 0)) { \
+            vcann_trace_host_sync_begin_enabled(__VA_ARGS__); \
+        } \
+    } while (0)
+#define vcann_trace_host_sync_end(...) \
+    do { \
+        if (__builtin_expect(vcann_trace_is_enabled(), 0)) { \
+            vcann_trace_host_sync_end_enabled(__VA_ARGS__); \
+        } \
+    } while (0)
+#define vcann_trace_kernel_register(...) \
+    do { \
+        if (__builtin_expect(vcann_trace_is_enabled(), 0)) { \
+            vcann_trace_kernel_register_enabled(__VA_ARGS__); \
+        } \
+    } while (0)
+#define vcann_trace_kernel_unregister(...) \
+    do { \
+        if (__builtin_expect(vcann_trace_is_enabled(), 0)) { \
+            vcann_trace_kernel_unregister_enabled(__VA_ARGS__); \
+        } \
+    } while (0)
 
 #if defined(__cplusplus)
 }
@@ -143,6 +218,10 @@ static inline bool vcann_trace_is_enabled(void)
 #define vcann_trace_record(...) ((void)0)
 #define vcann_trace_sync_begin(...) ((void)0)
 #define vcann_trace_sync_end(...) ((void)0)
+#define vcann_trace_host_sync_begin(...) ((void)0)
+#define vcann_trace_host_sync_end(...) ((void)0)
+#define vcann_trace_kernel_register(...) ((void)0)
+#define vcann_trace_kernel_unregister(...) ((void)0)
 
 #endif
 #endif

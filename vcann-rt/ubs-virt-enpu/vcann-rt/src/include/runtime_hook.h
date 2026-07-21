@@ -103,6 +103,10 @@ typedef enum
     RUNTIME_HOOK_ENUM(rtsLaunchRandomNumTask),
     RUNTIME_HOOK_ENUM(rtsLaunchReduceAsyncTask),
     RUNTIME_HOOK_ENUM(rtsLaunchUpdateTask),
+#ifdef VCANN_ENABLE_DEADLOCK_DIAGNOSTICS
+    RUNTIME_HOOK_ENUM(rtFunctionRegister),
+    RUNTIME_HOOK_ENUM(rtDevBinaryUnRegister),
+#endif
     /* Event Part */
     RUNTIME_HOOK_ENUM(rtEventCreate),
     RUNTIME_HOOK_ENUM(rtsEventCreate),
@@ -132,6 +136,10 @@ typedef enum
     RUNTIME_HOOK_ENUM(rtsCntNotifyWaitWithTimeout),
     /* Other Part */
     RUNTIME_HOOK_ENUM(rtStreamSynchronize),
+#ifdef VCANN_ENABLE_DEADLOCK_DIAGNOSTICS
+    RUNTIME_HOOK_ENUM(rtDeviceSynchronize),
+    RUNTIME_HOOK_ENUM(rtDeviceSynchronizeWithTimeout),
+#endif
     RUNTIME_HOOK_ENUM(rtStreamDestroy),
     RUNTIME_HOOK_ENUM(rtDestroyStreamForce),
     RUNTIME_HOOK_ENUM(rtGetDevice),
@@ -142,6 +150,9 @@ typedef enum
 } rt_hook_enum_t;
 
 extern rt_entry_t rt_library_entry[];
+#ifdef VCANN_ENABLE_DEADLOCK_DIAGNOSTICS
+void runtime_hook_resolve(rt_hook_enum_t entry);
+#endif
 
 #if defined(__cplusplus)
 }

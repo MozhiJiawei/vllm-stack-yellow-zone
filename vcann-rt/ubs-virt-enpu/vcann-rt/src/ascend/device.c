@@ -15,9 +15,39 @@
 #endif
 #include <dlfcn.h>
 #include "core_limiter.h"
+#include "deadlock_trace.h"
 #include "log.h"
 #include "npu_manager.h"
 #include "runtime_hook.h"
+
+#ifdef VCANN_ENABLE_DEADLOCK_DIAGNOSTICS
+RUNTIME_HOOK_DEFINE(rtStreamSynchronize, rtStream_t stm)
+{
+    runtime_hook_resolve(HOOK_rtStreamSynchronize);
+    vcann_trace_host_sync_begin(VCANN_TRACE_STREAM_SYNC_BEGIN, stm, -1);
+    rtError_t ret = RUNTIME_HOOK_CALL(rt_library_entry, rtStreamSynchronize, stm);
+    vcann_trace_host_sync_end(VCANN_TRACE_STREAM_SYNC_END, stm, ret);
+    return ret;
+}
+
+RUNTIME_HOOK_DEFINE(rtDeviceSynchronize, void)
+{
+    runtime_hook_resolve(HOOK_rtDeviceSynchronize);
+    vcann_trace_host_sync_begin(VCANN_TRACE_DEVICE_SYNC_BEGIN, NULL, -1);
+    rtError_t ret = RUNTIME_HOOK_CALL(rt_library_entry, rtDeviceSynchronize);
+    vcann_trace_host_sync_end(VCANN_TRACE_DEVICE_SYNC_END, NULL, ret);
+    return ret;
+}
+
+RUNTIME_HOOK_DEFINE(rtDeviceSynchronizeWithTimeout, int32_t timeout)
+{
+    runtime_hook_resolve(HOOK_rtDeviceSynchronizeWithTimeout);
+    vcann_trace_host_sync_begin(VCANN_TRACE_DEVICE_SYNC_BEGIN, NULL, timeout);
+    rtError_t ret = RUNTIME_HOOK_CALL(rt_library_entry, rtDeviceSynchronizeWithTimeout, timeout);
+    vcann_trace_host_sync_end(VCANN_TRACE_DEVICE_SYNC_END, NULL, ret);
+    return ret;
+}
+#endif
 
 pthread_once_t pre_rt_init_flag = PTHREAD_ONCE_INIT;
 

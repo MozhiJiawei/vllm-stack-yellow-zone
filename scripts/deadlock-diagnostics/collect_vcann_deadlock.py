@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 VCANN_LIBRARY = "libvruntime.so"
 VCANN_LOG_DIR = Path("/var/log/enpu/vcann-rt")
 GDB_HELPER = Path(__file__).with_name("vcann_trace_gdb.py")
@@ -39,11 +39,17 @@ SAFE_ENV_NAMES = {
 }
 NPU_DEVICE = re.compile(r"/dev/davinci\d+$")
 TRACE_MAGIC = 0x5643414E4E545243
-TRACE_ABI_VERSION = 2
+TRACE_ABI_VERSION = 3
 TRACE_CAPACITY = 4096
 TRACE_HEADER = struct.Struct("<QIIIIQ")
 TRACE_RECORD = struct.Struct("<QQQQQQIIII")
 SYNC_PROBE = struct.Struct("<IIiIQQQ")
+HOST_SYNC_PROBE = struct.Struct("<IIIiQQQ")
+KERNEL_REGISTRY_MAGIC = 0x5643414E4E4B5247
+KERNEL_REGISTRY_ABI_VERSION = 1
+KERNEL_REGISTRY_CAPACITY = 512
+KERNEL_REGISTRY_HEADER = struct.Struct("<QIIQII")
+KERNEL_REGISTRATION = struct.Struct("<QQQQII128s128s")
 KIND_NAMES = {
     0: "INVALID", 1: "RT_KERNEL_LAUNCH", 2: "RT_KERNEL_HANDLE",
     3: "RT_KERNEL_HANDLE_V2", 4: "RT_KERNEL_FLAG", 5: "RT_KERNEL_FLAG_V2",
@@ -58,6 +64,9 @@ KIND_NAMES = {
     30: "EVENT_RECORD", 31: "EVENT_WAIT", 32: "NOTIFY_RECORD",
     33: "NOTIFY_WAIT", 34: "STREAM_DESTROY", 35: "STREAM_CAPTURE_BEGIN",
     36: "STREAM_CAPTURE_END", 37: "SCHED_SYNC_BEGIN", 38: "SCHED_SYNC_END",
+    39: "KERNEL_REGISTER", 40: "KERNEL_UNREGISTER",
+    41: "DEVICE_SYNC_BEGIN", 42: "DEVICE_SYNC_END",
+    43: "STREAM_SYNC_BEGIN", 44: "STREAM_SYNC_END",
 }
 STRING_OBJECT_KINDS = {7, 8, 10}
 
@@ -274,18 +283,35 @@ def gdb_python_supported(gdb: str) -> bool:
 def decode_raw_trace(
     trace_raw: bytes,
     probe_raw: bytes,
+    host_probe_raw: bytes,
+    registry_raw: bytes,
     limit: int,
     string_reader: Any | None = None,
 ) -> dict[str, Any]:
     expected_trace_size = (
         TRACE_HEADER.size + TRACE_CAPACITY * 4 + TRACE_CAPACITY * TRACE_RECORD.size
     )
-    if len(trace_raw) != expected_trace_size or len(probe_raw) != SYNC_PROBE.size:
+    expected_registry_size = (
+        KERNEL_REGISTRY_HEADER.size
+        + KERNEL_REGISTRY_CAPACITY * KERNEL_REGISTRATION.size
+    )
+    if (
+        len(trace_raw) != expected_trace_size
+        or len(probe_raw) != SYNC_PROBE.size
+        or len(host_probe_raw) != HOST_SYNC_PROBE.size
+        or len(registry_raw) != expected_registry_size
+    ):
         return {
             "available": False,
             "error": "unexpected raw vCANN trace size",
-            "observed": {"trace": len(trace_raw), "probe": len(probe_raw)},
-            "expected": {"trace": expected_trace_size, "probe": SYNC_PROBE.size},
+            "observed": {
+                "trace": len(trace_raw), "probe": len(probe_raw),
+                "host_probe": len(host_probe_raw), "registry": len(registry_raw),
+            },
+            "expected": {
+                "trace": expected_trace_size, "probe": SYNC_PROBE.size,
+                "host_probe": HOST_SYNC_PROBE.size, "registry": expected_registry_size,
+            },
         }
     magic, abi_version, capacity, enabled, process_id, next_sequence = (
         TRACE_HEADER.unpack_from(trace_raw)
@@ -309,6 +335,53 @@ def decode_raw_trace(
     )
     if not active:
         sync_stream = 0
+    (
+        host_active,
+        host_kind,
+        host_tid,
+        host_timeout,
+        host_begin_ns,
+        host_begin_sequence,
+        host_stream,
+    ) = HOST_SYNC_PROBE.unpack(host_probe_raw)
+    (
+        registry_magic,
+        registry_abi,
+        registry_capacity,
+        registry_next_sequence,
+        registry_dropped,
+        _registry_lock,
+    ) = KERNEL_REGISTRY_HEADER.unpack_from(registry_raw)
+    registrations = []
+    registrations_by_handle: dict[int, list[str]] = {}
+    if (
+        registry_magic == KERNEL_REGISTRY_MAGIC
+        and registry_abi == KERNEL_REGISTRY_ABI_VERSION
+        and registry_capacity == KERNEL_REGISTRY_CAPACITY
+    ):
+        count = min(registry_next_sequence, registry_capacity)
+        for index in range(count):
+            fields = KERNEL_REGISTRATION.unpack_from(
+                registry_raw,
+                KERNEL_REGISTRY_HEADER.size + index * KERNEL_REGISTRATION.size,
+            )
+            committed, handle, stub, device_function, mode, tid, stub_raw, device_raw = fields
+            if committed != index + 1:
+                continue
+            stub_name = stub_raw.split(b"\0", 1)[0].decode("utf-8", errors="replace")
+            device_name = device_raw.split(b"\0", 1)[0].decode("utf-8", errors="replace")
+            registration = {
+                "sequence": committed,
+                "handle": pointer_text(handle),
+                "stub": pointer_text(stub),
+                "device_function": pointer_text(device_function),
+                "function_mode": mode,
+                "tid": tid,
+                "stub_name": stub_name,
+                "device_name": device_name,
+            }
+            registrations.append(registration)
+            registrations_by_handle.setdefault(handle, []).append(stub_name)
     records_offset = TRACE_HEADER.size + capacity * 4
     first_sequence = max(1, next_sequence - min(limit, capacity) + 1)
     records = []
@@ -337,7 +410,12 @@ def decode_raw_trace(
             "tid": tid,
             "kind": kind,
             "kind_name": KIND_NAMES.get(kind, f"UNKNOWN_{kind}"),
-            "record_phase": "scheduler" if kind in (37, 38) else "hook_attempt",
+            "record_phase": (
+                "scheduler" if kind in (37, 38)
+                else "registration" if kind in (39, 40)
+                else "sync" if kind in (41, 42, 43, 44)
+                else "hook_attempt"
+            ),
             "stream": pointer_text(stream_address),
             "object": pointer_text(object_address),
             "auxiliary": pointer_text(auxiliary),
@@ -350,6 +428,9 @@ def decode_raw_trace(
             name = string_reader(object_address)
             if name:
                 entry["object_name"] = name
+        kernel_names = registrations_by_handle.get(object_address, [])
+        if kernel_names:
+            entry["kernel_names"] = sorted(set(kernel_names))
         records.append(entry)
     return {
         "available": True,
@@ -368,6 +449,29 @@ def decode_raw_trace(
             "begin_ns": begin_ns,
             "begin_sequence": begin_sequence,
             "stream": pointer_text(sync_stream),
+        },
+        "host_sync_probe": {
+            "active": bool(host_active),
+            "kind": host_kind,
+            "kind_name": KIND_NAMES.get(host_kind, f"UNKNOWN_{host_kind}"),
+            "tid": host_tid,
+            "timeout": host_timeout,
+            "begin_ns": host_begin_ns,
+            "begin_sequence": host_begin_sequence,
+            "stream": pointer_text(host_stream),
+        },
+        "kernel_registry": {
+            "available": (
+                registry_magic == KERNEL_REGISTRY_MAGIC
+                and registry_abi == KERNEL_REGISTRY_ABI_VERSION
+                and registry_capacity == KERNEL_REGISTRY_CAPACITY
+            ),
+            "magic": f"0x{registry_magic:016x}",
+            "abi_version": registry_abi,
+            "capacity": registry_capacity,
+            "next_sequence": registry_next_sequence,
+            "dropped": registry_dropped,
+            "registrations": registrations,
         },
         "runtime_state": {"unavailable": "GDB was built without Python support"},
         "records": records,
@@ -441,17 +545,20 @@ def collect_proc(pid: int, output: Path) -> None:
     atomic_json(output / "threads.json", threads)
 
 
-def collect_gdb(target: dict[str, Any], output: Path, trace_limit: int) -> dict[str, Any]:
-    pid = int(target["pid"])
-    gdb = shutil.which("gdb")
-    if not gdb:
-        return {"error": "gdb is not installed"}
+def build_gdb_capture_command(
+    gdb: str, pid: int, output: Path, trace_limit: int, python_supported: bool
+) -> list[str]:
     trace_path = output / "vcann-trace.json"
-    python_supported = gdb_python_supported(gdb)
     trace_raw = output / "vcann-trace.raw"
     probe_raw = output / "vcann-sync-probe.raw"
+    host_probe_raw = output / "vcann-host-sync-probe.raw"
+    registry_raw = output / "vcann-kernel-registry.raw"
     trace_raw_size = (
         TRACE_HEADER.size + TRACE_CAPACITY * 4 + TRACE_CAPACITY * TRACE_RECORD.size
+    )
+    registry_raw_size = (
+        KERNEL_REGISTRY_HEADER.size
+        + KERNEL_REGISTRY_CAPACITY * KERNEL_REGISTRATION.size
     )
     command = [gdb, "-nx", "-q", "-batch"]
     if python_supported and GDB_HELPER.exists():
@@ -483,24 +590,53 @@ def collect_gdb(target: dict[str, Any], output: Path, trace_limit: int) -> dict[
                 "-ex",
                 f"dump binary memory {probe_raw} &g_vcann_sync_probe "
                 f"((char *)&g_vcann_sync_probe + {SYNC_PROBE.size})",
+                "-ex",
+                f"dump binary memory {host_probe_raw} &g_vcann_host_sync_probe "
+                f"((char *)&g_vcann_host_sync_probe + {HOST_SYNC_PROBE.size})",
+                "-ex",
+                f"dump binary memory {registry_raw} &g_vcann_kernel_registry "
+                f"((char *)&g_vcann_kernel_registry + {registry_raw_size})",
             ]
         )
     command.extend(["-ex", "detach"])
+    return command
+
+
+def collect_gdb(target: dict[str, Any], output: Path, trace_limit: int) -> dict[str, Any]:
+    pid = int(target["pid"])
+    gdb = shutil.which("gdb")
+    if not gdb:
+        return {"error": "gdb is not installed"}
+    python_supported = gdb_python_supported(gdb)
+    trace_path = output / "vcann-trace.json"
+    trace_raw = output / "vcann-trace.raw"
+    probe_raw = output / "vcann-sync-probe.raw"
+    host_probe_raw = output / "vcann-host-sync-probe.raw"
+    registry_raw = output / "vcann-kernel-registry.raw"
+    command = build_gdb_capture_command(gdb, pid, output, trace_limit, python_supported)
     result = run_command(command)
     write_command(output / "gdb-native.txt", result)
     validate_target(target)
     os.kill(pid, signal.SIGSTOP)
     wait_stopped([target])
-    if not python_supported and trace_raw.exists() and probe_raw.exists():
+    if (
+        not python_supported
+        and trace_raw.exists()
+        and probe_raw.exists()
+        and host_probe_raw.exists()
+        and registry_raw.exists()
+    ):
         memory = None
         try:
             memory, read_string = process_string_reader(pid)
             trace = decode_raw_trace(
-                trace_raw.read_bytes(), probe_raw.read_bytes(), trace_limit, read_string
+                trace_raw.read_bytes(), probe_raw.read_bytes(), host_probe_raw.read_bytes(),
+                registry_raw.read_bytes(), trace_limit, read_string
             )
         except OSError as error:
             trace = decode_raw_trace(
-                trace_raw.read_bytes(), probe_raw.read_bytes(), trace_limit
+                trace_raw.read_bytes(), probe_raw.read_bytes(), host_probe_raw.read_bytes(),
+                registry_raw.read_bytes(), trace_limit
             )
             trace["string_read_error"] = str(error)
         finally:
@@ -536,7 +672,7 @@ def capture_target(target: dict[str, Any], output: Path, trace_limit: int) -> di
     return {"pid": target["pid"], "directory": str(directory), "logs": logs, "gdb": gdb_result}
 
 
-def trace_summary(path: Path) -> dict[str, Any]:
+def trace_summary(path: Path, qwen_layers: int = 64) -> dict[str, Any]:
     try:
         trace = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -548,6 +684,7 @@ def trace_summary(path: Path) -> dict[str, Any]:
     probe = trace.get("sync_probe", {})
     sync_stream = str(probe.get("stream", ""))
     records = trace.get("records", [])
+    annotate_qwen_states(records, qwen_layers)
     matching = [
         record
         for record in records
@@ -563,8 +700,11 @@ def trace_summary(path: Path) -> dict[str, Any]:
 
     def object_label(record: dict[str, Any]) -> str:
         return str(
-            record.get("object_name") or record.get("object_symbol") or record.get("object", "")
+            record.get("kernel_name") or record.get("object_name")
+            or record.get("object_symbol") or record.get("object", "")
         )
+
+    blocked = blocked_kernel_candidate(trace, records)
 
     return {
         "trace_state": "enabled",
@@ -581,7 +721,170 @@ def trace_summary(path: Path) -> dict[str, Any]:
         "first_attempt_after_sync_sequence": first_after.get("sequence"),
         "first_attempt_after_sync_kind": first_after.get("kind_name", ""),
         "first_attempt_after_sync_object": object_label(first_after),
+        "blocked_kernel": blocked.get("kernel_name", ""),
+        "blocked_layer": blocked.get("qwen_layer"),
+        "blocked_phase": blocked.get("qwen_phase", ""),
+        "blocked_sequence": blocked.get("sequence"),
+        "blocked_state_basis": blocked.get("qwen_state_basis", ""),
+        "unresolved_kernel_count": blocked.get("unresolved_kernel_count", 0),
+        "unresolved_kernel_window": blocked.get("unresolved_kernel_window", ""),
+        "unresolved_collectives": blocked.get("unresolved_collectives", ""),
+        "completion_evidence": blocked.get("completion_evidence", ""),
     }
+
+
+def normalize_kernel_name(name: str) -> str:
+    value = name.removeprefix(".ascend.meta.").removeprefix("aclrtlaunch_")
+    value = value.removesuffix("__")
+    return re.sub(r"_\d+_(?:mix_)?(?:aic|aiv)$", "", value)
+
+
+def record_kernel_name(record: dict[str, Any]) -> str:
+    names = [normalize_kernel_name(str(name)) for name in record.get("kernel_names", [])]
+    names = sorted({name for name in names if name})
+    return "+".join(names)
+
+
+def annotate_qwen_states(records: list[dict[str, Any]], layers: int) -> None:
+    states: dict[str, dict[str, Any]] = {}
+    basis = "trace_start"
+    kernel_kinds = {
+        "RT_KERNEL_LAUNCH", "RT_KERNEL_HANDLE", "RT_KERNEL_HANDLE_V2",
+        "RT_KERNEL_FLAG", "RT_KERNEL_FLAG_V2", "RT_FUNC_HANDLE",
+        "RT_FUNC_HANDLE_V2", "RT_FUNC_HANDLE_V3", "RT_VECTOR_HANDLE",
+        "RT_VECTOR_KERNEL", "RTS_KERNEL_HOST_ARGS", "RTS_KERNEL_CONFIG",
+        "RTS_KERNEL_DEV_ARGS",
+    }
+    for record in records:
+        if record.get("kind_name") == "DEVICE_SYNC_END":
+            states.clear()
+            basis = "after_completed_device_sync"
+            continue
+        if record.get("kind_name") not in kernel_kinds:
+            continue
+        kernel = record_kernel_name(record)
+        if not kernel:
+            continue
+        record["kernel_name"] = kernel
+        stream = str(record.get("stream", "0x0"))
+        state = states.setdefault(
+            stream,
+            {"layer": 0, "segment": "attention", "attn_matmuls": 0, "mlp_matmuls": 0},
+        )
+        record["qwen_layer"] = state["layer"]
+        record["qwen_state_basis"] = basis
+        if "allreduce" in kernel:
+            if state["segment"] == "attention":
+                record["qwen_phase"] = "ATTENTION_TP_ALLREDUCE"
+                state["segment"] = "mlp"
+            else:
+                record["qwen_phase"] = "MLP_TP_ALLREDUCE"
+                state["layer"] = (state["layer"] + 1) % layers
+                state["segment"] = "attention"
+                state["attn_matmuls"] = 0
+                state["mlp_matmuls"] = 0
+        elif "flash_attention" in kernel or kernel.startswith("attention_"):
+            record["qwen_phase"] = "ATTENTION"
+        elif "matmul" in kernel:
+            if state["segment"] == "attention":
+                record["qwen_phase"] = (
+                    "ATTENTION_QKV" if state["attn_matmuls"] == 0 else "ATTENTION_O"
+                )
+                state["attn_matmuls"] += 1
+            else:
+                record["qwen_phase"] = (
+                    "MLP_UP_GATE" if state["mlp_matmuls"] == 0 else "MLP_DOWN"
+                )
+                state["mlp_matmuls"] += 1
+        elif "rope" in kernel:
+            record["qwen_phase"] = "ATTENTION_ROPE_CACHE"
+        elif "silu" in kernel:
+            record["qwen_phase"] = "MLP_ACTIVATION"
+        elif "rmsnorm" in kernel or kernel.startswith("norm_"):
+            record["qwen_phase"] = "NORM"
+
+
+def blocked_kernel_candidate(
+    trace: dict[str, Any], records: list[dict[str, Any]]
+) -> dict[str, Any]:
+    def describe(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+        def description(record: dict[str, Any]) -> str:
+            return ":".join(
+                str(value) for value in (
+                    record.get("sequence", ""), record.get("kernel_name", ""),
+                    record.get("qwen_layer", "?"), record.get("qwen_phase", "UNKNOWN"),
+                )
+            )
+
+        def bounded(items: list[dict[str, Any]]) -> str:
+            if len(items) <= 32:
+                return ";".join(description(item) for item in items)
+            omitted = len(items) - 32
+            return ";".join(
+                [*(description(item) for item in items[:16]), f"...{omitted} omitted...",
+                 *(description(item) for item in items[-16:])]
+            )
+
+        collectives = [
+            record for record in candidates
+            if "allreduce" in str(record.get("kernel_name", "")).lower()
+        ]
+        return {
+            "unresolved_kernel_count": len(candidates),
+            "unresolved_kernel_window": bounded(candidates),
+            "unresolved_collectives": bounded(collectives),
+        }
+
+    probe = trace.get("sync_probe", {})
+    if probe.get("active"):
+        stream = str(probe.get("stream", ""))
+        begin = int(probe.get("begin_sequence") or 0)
+        prior_boundaries = [
+            record for record in records
+            if record.get("kind_name") == "SCHED_SYNC_END"
+            and record.get("stream") == stream
+            and int(record.get("sequence") or 0) < begin
+        ]
+        boundary = int(prior_boundaries[-1]["sequence"]) if prior_boundaries else 0
+        candidates = [
+            record for record in records
+            if record.get("stream") == stream
+            and boundary < int(record.get("sequence") or 0) < begin
+            and record.get("kernel_name")
+        ]
+        if candidates:
+            result = dict(candidates[0])
+            result.update(describe(candidates))
+            result["completion_evidence"] = (
+                "unresolved window starts after the last successful scheduler stream sync; "
+                "the first kernel is a boundary, not proof that it is still executing"
+                if boundary else "trace contains no prior successful scheduler sync; "
+                "the first visible kernel is only the unresolved-window boundary"
+            )
+            return result
+    host_probe = trace.get("host_sync_probe", {})
+    if host_probe.get("active"):
+        begin = int(host_probe.get("begin_sequence") or 0)
+        completed_syncs = [
+            int(record.get("sequence") or 0) for record in records
+            if record.get("kind_name") == "DEVICE_SYNC_END"
+            and int(record.get("sequence") or 0) < begin
+        ]
+        boundary = completed_syncs[-1] if completed_syncs else 0
+        candidates = [
+            record for record in records
+            if boundary < int(record.get("sequence") or 0) < begin
+            and record.get("kernel_name")
+        ]
+        if candidates:
+            result = dict(candidates[-1])
+            result.update(describe(candidates))
+            result["completion_evidence"] = (
+                "window follows the last completed device sync; reported kernel is last submitted "
+                "only because device sync provides no per-stream completion boundary"
+            )
+            return result
+    return {}
 
 
 def summarize_dirs(capture_dirs: Iterable[Path], output: Path) -> list[dict[str, Any]]:
@@ -599,7 +902,11 @@ def summarize_dirs(capture_dirs: Iterable[Path], output: Path) -> list[dict[str,
                 "rank_hint": target.get("rank_hint"),
                 "command": target.get("command", ""),
             }
-            row.update(trace_summary(directory / "vcann-trace.json"))
+            row.update(
+                trace_summary(
+                    directory / "vcann-trace.json", int(manifest.get("qwen_layers") or 64)
+                )
+            )
             rows.append(row)
     output.mkdir(parents=True, exist_ok=True)
     atomic_json(output / "vcann-summary.json", rows)
@@ -644,6 +951,8 @@ def command_capture(args: argparse.Namespace) -> int:
         raise CollectionError("model label may contain only letters, digits, dot, underscore, and dash")
     if args.trace_limit <= 0:
         raise CollectionError("trace limit must be positive")
+    if args.qwen_layers <= 0:
+        raise CollectionError("qwen layer count must be positive")
     if not shutil.which("gdb"):
         raise CollectionError("gdb is not installed")
     if not GDB_HELPER.exists():
@@ -651,7 +960,12 @@ def command_capture(args: argparse.Namespace) -> int:
     targets = select_targets(args.pid, args.expected_processes, args.include_no_device)
     atomic_json(
         output / "targets.json",
-        {"schema_version": SCHEMA_VERSION, "model": args.model, "targets": targets},
+        {
+            "schema_version": SCHEMA_VERSION,
+            "model": args.model,
+            "qwen_layers": args.qwen_layers,
+            "targets": targets,
+        },
     )
     stopped: list[dict[str, Any]] = []
     results = []
@@ -738,6 +1052,7 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--model", required=True)
     capture.add_argument("--output", required=True)
     capture.add_argument("--trace-limit", type=int, default=4096)
+    capture.add_argument("--qwen-layers", type=int, default=64)
     capture.add_argument("--resume-after", action="store_true")
     capture.set_defaults(func=command_capture)
     resume = commands.add_parser("resume", help="resume processes from a capture manifest")

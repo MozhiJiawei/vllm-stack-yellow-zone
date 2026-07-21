@@ -19,13 +19,19 @@ KIND_NAMES = {
     30: "EVENT_RECORD", 31: "EVENT_WAIT", 32: "NOTIFY_RECORD",
     33: "NOTIFY_WAIT", 34: "STREAM_DESTROY", 35: "STREAM_CAPTURE_BEGIN",
     36: "STREAM_CAPTURE_END", 37: "SCHED_SYNC_BEGIN", 38: "SCHED_SYNC_END",
+    39: "KERNEL_REGISTER", 40: "KERNEL_UNREGISTER",
+    41: "DEVICE_SYNC_BEGIN", 42: "DEVICE_SYNC_END",
+    43: "STREAM_SYNC_BEGIN", 44: "STREAM_SYNC_END",
 }
 STRING_OBJECT_KINDS = {7, 8, 10}
 SYMBOL_OBJECT_KINDS = {1, 2, 3, 4, 5, 11, 12, 13, 14, 15, 16, 17, 18, 19}
 SYMBOL_CACHE = {}
 TRACE_MAGIC = 0x5643414E4E545243
-TRACE_ABI_VERSION = 2
+TRACE_ABI_VERSION = 3
 TRACE_CAPACITY = 4096
+KERNEL_REGISTRY_MAGIC = 0x5643414E4E4B5247
+KERNEL_REGISTRY_ABI_VERSION = 1
+KERNEL_REGISTRY_CAPACITY = 512
 
 
 def number(value):
@@ -60,6 +66,14 @@ def string_for(address):
         return ""
 
 
+def fixed_string(value):
+    try:
+        char_pointer = gdb.lookup_type("char").pointer()
+        return value.address.cast(char_pointer).string(length=128, errors="replace")
+    except (gdb.error, UnicodeError, TypeError):
+        return ""
+
+
 class VcannTraceDump(gdb.Command):
     def __init__(self):
         super().__init__("vcann-trace-dump", gdb.COMMAND_DATA)
@@ -79,6 +93,8 @@ class VcannTraceDump(gdb.Command):
         try:
             trace = gdb.parse_and_eval("g_vcann_trace")
             probe = gdb.parse_and_eval("g_vcann_sync_probe")
+            host_probe = gdb.parse_and_eval("g_vcann_host_sync_probe")
+            registry = gdb.parse_and_eval("g_vcann_kernel_registry")
         except gdb.error as error:
             with open(output, "w", encoding="utf-8") as stream:
                 json.dump({"available": False, "error": str(error)}, stream, indent=2)
@@ -111,6 +127,36 @@ class VcannTraceDump(gdb.Command):
         first_sequence = max(1, next_sequence - min(limit, capacity) + 1)
         sync_active = bool(number(probe["active"]))
         sync_stream = number(probe["stream"]) if sync_active else 0
+        registrations = []
+        registrations_by_handle = {}
+        registry_magic = number(registry["magic"])
+        registry_abi = number(registry["abi_version"])
+        registry_capacity = number(registry["capacity"])
+        if (
+            registry_magic == KERNEL_REGISTRY_MAGIC
+            and registry_abi == KERNEL_REGISTRY_ABI_VERSION
+            and registry_capacity == KERNEL_REGISTRY_CAPACITY
+        ):
+            registration_count = min(number(registry["next_sequence"]), registry_capacity)
+            for index in range(registration_count):
+                registration = registry["entries"][index]
+                sequence = number(registration["committed_sequence"])
+                if sequence != index + 1:
+                    continue
+                handle = number(registration["handle"])
+                entry = {
+                    "sequence": sequence,
+                    "handle": pointer_text(handle),
+                    "stub": pointer_text(number(registration["stub"])),
+                    "device_function": pointer_text(number(registration["device_function"])),
+                    "function_mode": number(registration["function_mode"]),
+                    "tid": number(registration["tid"]),
+                    "stub_name": fixed_string(registration["stub_name"]),
+                    "device_name": fixed_string(registration["device_name"]),
+                }
+                registrations.append(entry)
+                registrations_by_handle.setdefault(handle, []).append(entry["stub_name"])
+
         records = []
         for sequence in range(first_sequence, next_sequence + 1):
             record = trace["records"][(sequence - 1) % capacity]
@@ -125,7 +171,12 @@ class VcannTraceDump(gdb.Command):
                 "tid": number(record["tid"]),
                 "kind": kind,
                 "kind_name": KIND_NAMES.get(kind, f"UNKNOWN_{kind}"),
-                "record_phase": "scheduler" if kind in (37, 38) else "hook_attempt",
+                "record_phase": (
+                    "scheduler" if kind in (37, 38)
+                    else "registration" if kind in (39, 40)
+                    else "sync" if kind in (41, 42, 43, 44)
+                    else "hook_attempt"
+                ),
                 "stream": pointer_text(stream_address),
                 "object": pointer_text(object_address),
                 "auxiliary": pointer_text(number(record["auxiliary"])),
@@ -142,6 +193,9 @@ class VcannTraceDump(gdb.Command):
                 name = string_for(object_address)
                 if name:
                     entry["object_name"] = name
+            kernel_names = registrations_by_handle.get(object_address, [])
+            if kernel_names:
+                entry["kernel_names"] = sorted(set(kernel_names))
             records.append(entry)
 
         runtime_state = {}
@@ -175,6 +229,29 @@ class VcannTraceDump(gdb.Command):
                 "begin_ns": number(probe["begin_ns"]),
                 "begin_sequence": number(probe["begin_sequence"]),
                 "stream": pointer_text(sync_stream),
+            },
+            "host_sync_probe": {
+                "active": bool(number(host_probe["active"])),
+                "kind": number(host_probe["kind"]),
+                "kind_name": KIND_NAMES.get(number(host_probe["kind"]), ""),
+                "tid": number(host_probe["tid"]),
+                "timeout": number(host_probe["timeout"]),
+                "begin_ns": number(host_probe["begin_ns"]),
+                "begin_sequence": number(host_probe["begin_sequence"]),
+                "stream": pointer_text(number(host_probe["stream"])),
+            },
+            "kernel_registry": {
+                "available": (
+                    registry_magic == KERNEL_REGISTRY_MAGIC
+                    and registry_abi == KERNEL_REGISTRY_ABI_VERSION
+                    and registry_capacity == KERNEL_REGISTRY_CAPACITY
+                ),
+                "magic": f"0x{registry_magic:016x}",
+                "abi_version": registry_abi,
+                "capacity": registry_capacity,
+                "next_sequence": number(registry["next_sequence"]),
+                "dropped": number(registry["dropped"]),
+                "registrations": registrations,
             },
             "runtime_state": runtime_state,
             "records": records,

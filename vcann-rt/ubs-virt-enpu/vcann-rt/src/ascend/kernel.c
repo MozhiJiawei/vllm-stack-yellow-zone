@@ -217,3 +217,27 @@ RUNTIME_HOOK_DEFINE(rtsLaunchUpdateTask, rtStream_t destStm, uint32_t destTaskId
     core_limiter(stm, NULL, NULL);
     return RUNTIME_HOOK_CALL(rt_library_entry, rtsLaunchUpdateTask, destStm, destTaskId, stm, cfg);
 }
+
+#ifdef VCANN_ENABLE_DEADLOCK_DIAGNOSTICS
+RUNTIME_HOOK_DEFINE(rtFunctionRegister, void *binHandle, const void *stubFunc, const char *stubName,
+                    const void *devFunc, uint32_t funcMode)
+{
+    runtime_hook_resolve(HOOK_rtFunctionRegister);
+    rtError_t ret = RUNTIME_HOOK_CALL(rt_library_entry, rtFunctionRegister, binHandle, stubFunc,
+                                      stubName, devFunc, funcMode);
+    if (ret == RT_ERROR_NONE) {
+        vcann_trace_kernel_register(binHandle, stubFunc, stubName, devFunc, funcMode);
+    }
+    return ret;
+}
+
+RUNTIME_HOOK_DEFINE(rtDevBinaryUnRegister, void *binHandle)
+{
+    runtime_hook_resolve(HOOK_rtDevBinaryUnRegister);
+    rtError_t ret = RUNTIME_HOOK_CALL(rt_library_entry, rtDevBinaryUnRegister, binHandle);
+    if (ret == RT_ERROR_NONE) {
+        vcann_trace_kernel_unregister(binHandle);
+    }
+    return ret;
+}
+#endif

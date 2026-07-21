@@ -57,6 +57,93 @@ TEST_F(DeadlockTraceTest, sync_probe_stays_active_until_sync_returns)
     EXPECT_EQ(g_vcann_trace.records[1].kind, static_cast<uint32_t>(VCANN_TRACE_SCHED_SYNC_END));
 }
 
+TEST_F(DeadlockTraceTest, copies_kernel_registration_names_and_handle)
+{
+    void *handle = reinterpret_cast<void *>(0x1111);
+    const void *stub = reinterpret_cast<const void *>(0x2222);
+    const void *device_function = reinterpret_cast<const void *>(0x3333);
+    char name[] = "flash_attention_bfloat16_t_1_mix_aic";
+
+    vcann_trace_kernel_register(handle, stub, name, device_function, 7);
+    name[0] = 'X';
+
+    ASSERT_EQ(g_vcann_kernel_registry.next_sequence, 1U);
+    const vcann_kernel_registration_t &entry = g_vcann_kernel_registry.entries[0];
+    EXPECT_EQ(entry.committed_sequence, 1U);
+    EXPECT_EQ(entry.handle, reinterpret_cast<uintptr_t>(handle));
+    EXPECT_EQ(entry.stub, reinterpret_cast<uintptr_t>(stub));
+    EXPECT_EQ(entry.device_function, reinterpret_cast<uintptr_t>(device_function));
+    EXPECT_EQ(entry.function_mode, 7U);
+    EXPECT_STREQ(entry.stub_name, "flash_attention_bfloat16_t_1_mix_aic");
+    EXPECT_STREQ(entry.device_name, "flash_attention_bfloat16_t_1_mix_aic");
+    ASSERT_EQ(g_vcann_trace.next_sequence, 1U);
+    EXPECT_EQ(g_vcann_trace.records[0].kind,
+              static_cast<uint32_t>(VCANN_TRACE_KERNEL_REGISTER));
+}
+
+TEST_F(DeadlockTraceTest, host_sync_probe_stays_active_until_call_returns)
+{
+    rtStream_t stream = reinterpret_cast<rtStream_t>(0x1234);
+    vcann_trace_host_sync_begin(VCANN_TRACE_STREAM_SYNC_BEGIN, stream, 55);
+    EXPECT_EQ(g_vcann_host_sync_probe.active, 1U);
+    EXPECT_EQ(g_vcann_host_sync_probe.kind,
+              static_cast<uint32_t>(VCANN_TRACE_STREAM_SYNC_BEGIN));
+    EXPECT_EQ(g_vcann_host_sync_probe.stream, reinterpret_cast<uintptr_t>(stream));
+    EXPECT_EQ(g_vcann_host_sync_probe.timeout, 55);
+    vcann_trace_host_sync_end(VCANN_TRACE_STREAM_SYNC_END, stream, RT_ERROR_NONE);
+    EXPECT_EQ(g_vcann_host_sync_probe.active, 0U);
+    EXPECT_EQ(g_vcann_trace.records[1].kind,
+              static_cast<uint32_t>(VCANN_TRACE_STREAM_SYNC_END));
+}
+
+TEST_F(DeadlockTraceTest, unregister_removes_stale_handle_mapping)
+{
+    void *handle = reinterpret_cast<void *>(0x1111);
+    vcann_trace_kernel_register(handle, nullptr, "matmul_bfloat16_t", nullptr, 0);
+
+    vcann_trace_kernel_unregister(handle);
+
+    EXPECT_EQ(g_vcann_kernel_registry.entries[0].handle, 0U);
+    ASSERT_EQ(g_vcann_trace.next_sequence, 2U);
+    EXPECT_EQ(g_vcann_trace.records[1].kind,
+              static_cast<uint32_t>(VCANN_TRACE_KERNEL_UNREGISTER));
+}
+
+TEST_F(DeadlockTraceTest, registry_overflow_is_bounded)
+{
+    for (uint32_t index = 0; index < VCANN_KERNEL_REGISTRY_CAPACITY + 3; ++index) {
+        vcann_trace_kernel_register(reinterpret_cast<void *>(static_cast<uintptr_t>(index + 1)),
+                                    nullptr, "kernel", nullptr, 0);
+    }
+    EXPECT_EQ(g_vcann_kernel_registry.next_sequence, VCANN_KERNEL_REGISTRY_CAPACITY);
+    EXPECT_EQ(g_vcann_kernel_registry.dropped, 3U);
+}
+
+TEST_F(DeadlockTraceTest, concurrent_kernel_registration_commits_every_slot)
+{
+    constexpr uint32_t thread_count = 4;
+    constexpr uint32_t registrations_per_thread = VCANN_KERNEL_REGISTRY_CAPACITY / thread_count;
+    std::vector<std::thread> writers;
+    for (uint32_t thread = 0; thread < thread_count; ++thread) {
+        writers.emplace_back([thread] {
+            for (uint32_t index = 0; index < registrations_per_thread; ++index) {
+                uintptr_t handle = 1 + thread * registrations_per_thread + index;
+                vcann_trace_kernel_register(reinterpret_cast<void *>(handle), nullptr,
+                                            "kernel", nullptr, 0);
+            }
+        });
+    }
+    for (std::thread &writer : writers) {
+        writer.join();
+    }
+
+    ASSERT_EQ(g_vcann_kernel_registry.next_sequence, VCANN_KERNEL_REGISTRY_CAPACITY);
+    EXPECT_EQ(g_vcann_kernel_registry.dropped, 0U);
+    for (uint32_t index = 0; index < VCANN_KERNEL_REGISTRY_CAPACITY; ++index) {
+        EXPECT_EQ(g_vcann_kernel_registry.entries[index].committed_sequence, index + 1);
+    }
+}
+
 TEST(DeadlockTraceDisabledTest, disabled_trace_does_not_advance_ring)
 {
     unsetenv("ENPU_DEADLOCK_TRACE");

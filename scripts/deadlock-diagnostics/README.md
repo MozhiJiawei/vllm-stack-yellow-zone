@@ -1,69 +1,93 @@
 # vCANN-RT deadlock capture
 
-This diagnostic path does not patch or import vLLM. A small optional probe in
-`libvruntime.so` records kernel, event, and scheduler transitions in a fixed
-in-memory ring. After a hang, the collector freezes processes that loaded
-`libvruntime.so`, attaches GDB, and exports the ring and scheduler sync state.
+This diagnostic path is implemented in `libvruntime.so`; it does not patch or
+import vLLM.  An opt-in fixed-memory probe records Runtime submissions,
+synchronization state, and the kernel names registered by xLite.  After a hang,
+the collector freezes the workload, attaches GDB, and exports native stacks and
+the probe ABI.
 
-## Build the diagnostic runtime
+## Build and enable
 
-Build inside the same CANN environment used for the deployed runtime:
+Build in the same CANN environment as the deployed runtime:
 
 ```bash
 cd vcann-rt/ubs-virt-enpu/vcann-rt
 ENABLE_DEADLOCK_DIAGNOSTICS=1 ./make_build.sh
 ```
 
-This retains the normal `-O2` optimization, compiles in the probe, and adds
-debugger symbols; it does not change the scheduling policy. A normal build
-without `ENABLE_DEADLOCK_DIAGNOSTICS=1` contains neither the probe calls nor
-the trace buffer. Install the resulting `build/libvruntime.so` in both workload
-containers.
-
-The diagnostic build still defaults to inactive. Enable the in-memory ring
-before starting each workload:
+Install `build/libvruntime.so` in the workload containers, then set the switch
+before starting the workload:
 
 ```bash
 export ENPU_DEADLOCK_TRACE=1
 ```
 
-Do not enable `ENPU_LOG_LEVEL=4` for the primary reproduction. DEBUG logging is
-per-task and can perturb a timing-sensitive hang. The ring performs no file
-I/O or allocation in the task submission path. It uses a per-slot lock with no
-global submission lock; contention is only possible after the 4096-record ring
-wraps. The collector exports the full ring by default.
+Without the CMake option, the probe code and symbols are absent.  With the
+option but without the environment variable, the hot-path macros only perform
+one unlikely enable check.  The enabled probe remains `-O2`, performs no file
+I/O or allocation on submission, and uses a 4096-entry per-process trace plus a
+512-entry fixed kernel registry.  It does not change the scheduling policy.
 
-GDB must be installed in the workload image and the container must permit
-ptrace. With containerd this normally requires the task to be created with
-`CAP_SYS_PTRACE` and a seccomp policy that permits `ptrace`; verify those before
-the reproduction.
+Do not enable `ENPU_LOG_LEVEL=4` for the primary reproduction because per-task
+DEBUG logging can perturb timing.  GDB must be present and the container must
+allow `ptrace` (normally `CAP_SYS_PTRACE` plus a permitting seccomp policy).
 
-## Verify target discovery
+## What is captured
 
-Copy `collect_vcann_deadlock.py` and `vcann_trace_gdb.py` into a container, then
-run:
+The diagnostic build intercepts xLite's registration and launch path:
+
+- `rtFunctionRegister` copies the registered kernel name into stable probe
+  storage and maps the binary handle used later by
+  `rtKernelLaunchWithHandleV2`;
+- launch records retain stream, handle, tiling key, block count, and argument
+  metadata without dereferencing opaque Runtime objects;
+- application `rtDeviceSynchronize*`/`rtStreamSynchronize` calls and vCANN's
+  scheduler `rtStreamSynchronize` are recorded as begin/end pairs;
+- the collector reconstructs the native Qwen3 dense layer phases from the
+  registered xLite names.  A completed device sync (the reproducer warm-up) is
+  the exact layer-0 sequence anchor.
+
+The output distinguishes evidence from inference.  A launch record proves the
+host called Runtime, not that the device completed the kernel.  A blocked
+scheduler sync bounds the unresolved ordered window after the preceding
+successful scheduler sync; `blocked_kernel` is the first candidate in that
+window and `completion_evidence` states this limitation.  A blocked device sync
+has no per-stream completion boundary, so its reported candidate is explicitly
+labelled “last submitted only”.  Native stacks, the candidate window, kernel
+names, Qwen layer/phase, and XCCL/vCANN logs must be considered together.
+
+## Preflight and capture
+
+Copy `collect_vcann_deadlock.py` and `vcann_trace_gdb.py` into the workload
+container.  Verify discovery before reproducing:
 
 ```bash
 python3 /tmp/collect-vcann-deadlock.py preflight --expected-processes 8
 ```
 
-`preflight` also reports the GDB path, whether that GDB supports Python, helper
-presence, Yama ptrace scope, and the collector process capability/seccomp status
-from `/proc/self/status`. GDB Python support is optional: without it, GDB dumps
-the two fixed vCANN ABI objects and the container's regular Python decodes them.
+Automatic discovery requires both `libvruntime.so` in `/proc/PID/maps` and an
+open `/dev/davinciN` descriptor.  Repeated `--pid` arguments can resolve an
+ambiguous process set.  The collector validates process start times before
+every signal.
 
-Automatic discovery requires both:
+Capture one container after the stall is visible:
 
-- `libvruntime.so` appears in `/proc/PID/maps`;
-- the process has an open `/dev/davinciN` file descriptor.
+```bash
+python3 /tmp/collect-vcann-deadlock.py capture \
+  --model A \
+  --expected-processes 8 \
+  --qwen-layers 64 \
+  --output /tmp/vcann-capture-A
+```
 
-If the process count is ambiguous, pass each workload PID explicitly with
-repeated `--pid` arguments. The collector refuses a PID that has not loaded
-`libvruntime.so` and validates its process start time before every signal.
+By default the selected workers remain `SIGSTOP`-frozen.  Resume only after the
+capture is preserved:
 
-## Capture two ctr containers
+```bash
+python3 /tmp/collect-vcann-deadlock.py resume --capture-dir /tmp/vcann-capture-A
+```
 
-Run from the host after the deadlock is visible:
+For the existing two-`ctr` deployment, capture both sides from the host:
 
 ```bash
 scripts/deadlock-diagnostics/collect_two_ctr_containers.sh \
@@ -74,26 +98,38 @@ scripts/deadlock-diagnostics/collect_two_ctr_containers.sh \
   --output /tmp/vcann-deadlock-run-001
 ```
 
-Use `--pid-a 101,102,...` and `--pid-b 201,202,...` when automatic discovery is
-not unique. By default all selected workload processes remain SIGSTOP-frozen.
-Use `--resume-after` only when preserving the scene is not required.
+GDB Python support is optional.  When it is unavailable, GDB dumps the four
+fixed ABI objects (trace, scheduler probe, host-sync probe, and kernel
+registry), and the container's normal Python decodes them.
 
-The archive contains, for every process:
+## Minimal real-NPU verification
 
-- all native thread backtraces;
-- `g_vcann_sync_probe`, including vNPU, owner, turn, and synchronized stream;
-- the newest trace records, with symbol/name resolution when available;
-- `/proc` thread state and only diagnostic environment variables;
-- vCANN log files whose filename contains the exact PID.
+`verify_xlite_qwen_trace.py` uses the same native xLite model builder as the
+Qwen3-32B TP8 reproducer.  It runs one layer: all ranks complete a warm-up, then
+only rank 0 submits the diagnostic forward while ranks 1-7 deliberately withhold
+theirs.  This creates a bounded capture window; it is not evidence of a natural
+deadlock.
 
-Trace entries are hook-entry attempts recorded before `core_limiter`; they do
-not prove that the Runtime accepted or completed the operation. This placement
-keeps the original `core_limiter`-to-Runtime call interval unchanged.
-`vcann-summary.csv` highlights the synchronized stream, the last attempt before
-the scheduler entered `rtStreamSynchronize`, and the first attempt after that
-point. A post-sync attempt may still be waiting in `core_limiter`.
+```bash
+export ENPU_DEADLOCK_TRACE=1
+python3 scripts/deadlock-diagnostics/verify_xlite_qwen_trace.py \
+  --hold-seconds 600
+```
 
-A kernel handle is opaque in some CANN launch APIs; in that case the trace only
-provides its address. Name pointers are resolved by GDB on a best-effort basis
-and may already be stale. Exact xLite collective generations still require an
-xLite-side generation probe.
+After `CAPTURE_READY`, use a second shell in the same container:
+
+```bash
+python3 scripts/deadlock-diagnostics/collect_vcann_deadlock.py capture \
+  --model QWEN-TRACE-VERIFY \
+  --expected-processes 8 \
+  --qwen-layers 1 \
+  --output /tmp/qwen-trace-verify
+```
+
+A successful feature check has eight enabled traces.  Rank 0 must contain
+non-empty `kernel_names` including Qwen matmul, attention, and all-reduce names;
+its records must carry `qwen_layer: 0` and phases such as
+`ATTENTION_QKV`, `ATTENTION_TP_ALLREDUCE`, and `MLP_TP_ALLREDUCE`.  The sync
+probe should show the intentional wait.  Resume the capture or stop the verifier
+after inspecting the JSON; resuming cannot satisfy the deliberately missing
+collective ranks.

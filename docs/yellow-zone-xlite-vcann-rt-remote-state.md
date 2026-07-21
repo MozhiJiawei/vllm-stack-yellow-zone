@@ -1,0 +1,151 @@
+# 黄区 Qwen3-32B xLite + vCANN-RT 远端状态
+
+## 当前目标与断点
+
+- 目标：先在真实 NPU 上验证 ABI 3 能把 xLite kernel handle 解析为名称，并从一层 Qwen3 native forward 还原 layer/phase/sync 窗口；通过后再采自然死锁和真实 vLLM。
+- 当前断点：Issue 最后确认的是 `vcann-diag-smoke-01` 第一张快照仍冻结，尚无第二张快照、恢复或清理的确认。启动 ABI 3 最小验证前，必须先按精确 PID 清理这组旧 ABI 2 worker，不能在现有 NPU 占用上叠加新任务。
+- GDB 来源：宿主机二进制 `/root/isa/gdb_arm`（约 96 MiB），已复制为两个容器内的 `/usr/local/bin/gdb`；两侧均为 GDB 10.1，`ldd` 均无缺失库。该 GDB 不支持 Python scripting，但 ptrace、thread 列举和 detach 均正常。
+- 当前网络结论：容器直连 `ports.ubuntu.com` 因 DNS 解析失败；显式代理 `http://187.0.6.108:8888` 返回非 HTTP 状态行，两条路径均不可用于 apt。
+- 未完成：旧现场精确清理、ABI 3 runtime 远端编译、最小 Qwen trace 验收、自然死锁采集、真实 vLLM 接入。
+
+## 权威入口与协作规则
+
+- 同步仓：`https://github.com/MozhiJiawei/vllm-stack-yellow-zone`
+- 当前主线：以本文件所在的 `main` 提交为准；旧现场 runtime 来自 ABI 2，不可复用。
+- 远端操作与结果回传：`https://github.com/MozhiJiawei/vllm-stack-yellow-zone/issues/6`
+- 黄区唯一项目根目录：`/root/l00933108`
+- 本地工作区：`D:\Agent Repo\Insight-Repos\vllm-stack`
+- 聊天中的 `c` 表示：读取 Issue #6 最新回复，根据最新结果只给下一件事的完整命令。
+- 每轮 Issue 只推进一个动作；不提前堆叠后续步骤。
+- 只操作明确命名的实验容器、文件和进程；不扫描无关环境，不采集凭据。
+- 本文件只保留当前事实、约束、结论和下一步，不记录排障流水。
+
+## 当前远端基础设施
+
+- 主机：`node149`，aarch64，8 张 Ascend 910B4。
+- 容器运行时：containerd `2.3.3`，命令行使用 `ctr`，namespace 为 `k8s.io`；不再使用 Docker 流程。
+- 该版本没有 `ctr tasks info`；任务存在性必须通过 `ctr tasks ls` 的首列精确匹配。
+- 该版本的 `ctr tasks exec` 不支持 `--env`；临时环境变量必须在 exec 启动的 `/bin/bash -lc` 内设置，或通过 `/usr/bin/env` 作为容器内命令传入。
+- 本地镜像：`vllm:19`；现场无外网，不拉取 `quay.io/ascend/vllm-ascend:v0.19.1rc1`。
+- 宿主机 coordinator：Python `3.9.9`，测试端口已确认可用。
+- 容器 Python：`3.11.14`；torch `2.9.0+cpu`、torch-npu `2.9.0`；每个容器可见 8 个 NPU device index。
+- xLite wheel 源：`/root/isa/conf/xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl`。
+- 容器创建时的 `/workspace/xlite.whl` 简写挂载不作为安装入口。现场已有固定安装流程，会把源 wheel 以完整文件名复制进两个容器的 `/workspace/` 后安装；后续 AI 应直接复用该流程。
+
+## 固定双容器拓扑
+
+- 容器 A：`cont1_ljw`，vNPU `0-7`，HCCL socket range `61000-61050`，xLite port `23000`。
+- 容器 B：`cont2_ljw`，vNPU `8-15`，HCCL socket range `62000-62050`，xLite port `24000`。
+- 两个容器都映射物理设备 `/dev/davinci0-7` 以及 manager/devmm/hdc，使用 host network 和共享 `/opt/isa/shm`。
+- 两个容器都 bind mount `/root/l00933108`，因此宿主机同步后的脚本和产物直接可见。
+- 独立配置：`/root/l00933108/cont1_npu_info.config` 与 `/root/l00933108/cont2_npu_info.config`。
+- 最后确认的配置为每个 vNPU `aicore-quota=50`、`memory-quota=15000`；配置源原本使用 `scheduling-policy=2`（ELASTIC）。后续若文件被现场修改，必须以这两个实际文件为准，不能沿用旧回复推断。
+- 当前两个容器均以诊断 runtime 重建，并设置 `ENPU_DEADLOCK_TRACE=1`、`CAP_SYS_PTRACE`。
+
+### 容器启动基线
+
+- 使用 `ctr -n k8s.io run --detach --net-host`，镜像为本地 `vllm:19`，容器名固定为 `cont1_ljw`、`cont2_ljw`，入口为 `/bin/bash`。
+- 不使用 `--privileged`：现场 OCI runtime 无法识别其展开出的 `CAP_PERFMON`。诊断只显式增加 `--cap-add CAP_SYS_PTRACE`。
+- 两侧共同环境变量：`ASCEND_RUNTIME_OPTIONS=NODRV`、`ENPU_DEADLOCK_TRACE=1`、`HCCL_OP_EXPANSION_MODE=AIV`、`TASK_QUEUE_ENABLE=1`、`XLITE_DISABLE_XCCL=true`。
+- A 使用 `MASTER_PORT=29504`、`HCCL_NPU_SOCKET_PORT_RANGE=61000-61050`；B 使用 `MASTER_PORT=29510`、`HCCL_NPU_SOCKET_PORT_RANGE=62000-62050`。
+- 两侧必须挂载：`/dev/davinci0-7`、davinci manager/devmm/hdc、driver、Qwen3-4B/32B 模型目录、诊断 runtime、`enpu-monitor`、各自 config、`ld.so.preload`、`npu-smi`、`systemd-detect-virt`、共享 shm、`/root/l00933108` 和 xLite wheel。
+- runtime 源固定为 `/root/l00933108/libvruntime-deadlock-diag.so`，目标为 `/opt/enpu/vcann-rt/lib/libvruntime.so`。
+- A config 源为 `/root/l00933108/cont1_npu_info.config`；B config 源为 `/root/l00933108/cont2_npu_info.config`。不得让两个容器共享同一个可写 config 文件。
+- 当前可复用的完整 `ctr run` 命令保存在 Issue #6 评论：`https://github.com/MozhiJiawei/vllm-stack-yellow-zone/issues/6#issuecomment-5031233770`。后续修改必须以该可运行基线为起点，不能重新从 Docker 参数猜测。
+
+### xLite 安装基线
+
+- 使用现场已有流程，不直接对简写挂载 `/workspace/xlite.whl` 执行 pip。
+- 从 `ctr -n k8s.io t ls` 读取两个 task PID，通过 `/proc/<pid>/root/workspace/` 把宿主机 wheel 以完整文件名复制进容器，再分别执行 pip。
+- 固定 wheel：`xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl`；安装后版本应为 `0.1.0rc12`。
+
+```bash
+PID_C1=$(ctr -n k8s.io t ls | grep cont1_ljw | awk '{print $2}')
+PID_C2=$(ctr -n k8s.io t ls | grep cont2_ljw | awk '{print $2}')
+WHEEL=xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl
+cp "/root/isa/conf/$WHEEL" "/proc/$PID_C1/root/workspace/"
+cp "/root/isa/conf/$WHEEL" "/proc/$PID_C2/root/workspace/"
+ctr -n k8s.io t exec --exec-id 66 -t cont1_ljw bash -c "pip install $WHEEL"
+ctr -n k8s.io t exec --exec-id 66 -t cont2_ljw bash -c "pip install $WHEEL"
+```
+
+## 代码与诊断实现
+
+- vLLM：`b1388b1fbf5aaef47937fabe98931211684666a6`（v0.19.1）。
+- vLLM-Ascend：`da421afad7192dac64e39ae1d32305d57344f3cf`（v0.19.1rc1）。
+- vCANN-RT 基线：`fa7917ed233d3100756606bfcfe2d121ff361ab4`，仓库在其上增加当前诊断改动。
+- 已删除旧的 vLLM/site-packages 诊断链；定位能力全部位于 vCANN-RT 和独立采集工具中。
+- 诊断构建开关：`ENABLE_DEADLOCK_DIAGNOSTICS=1`。普通构建不包含 probe 调用、trace buffer 或相关符号。
+- 诊断构建的运行时开关：`ENPU_DEADLOCK_TRACE=1`。未设置时不记录。
+- trace 在 Runtime hook 入口、`core_limiter()` 之前记录“调用尝试”；它不证明 Runtime 已接受、设备已入队或算子已完成。
+- scheduler probe 标记进入/退出 `rtStreamSynchronize`，记录 vNPU、进入时的 owner、schedule turn 和 stream。
+- 环形缓冲每进程 4096 条；不做文件 I/O或动态分配，使用无全局锁的逐 slot 同步。
+- 诊断版仍为 `-O2`，保留 GDB 符号；GDB helper 校验 magic、ABI 和 capacity。
+
+### 当前诊断产物
+
+- 宿主共享产物 `/root/l00933108/libvruntime-deadlock-diag.so` 仍是上一版 ABI 2；不能与当前 ABI 3 collector 混用，下一次测试前必须重新编译覆盖。
+- 当前源码的关键符号为 `g_vcann_trace`、`g_vcann_sync_probe`、`g_vcann_host_sync_probe`、`g_vcann_kernel_registry`、`vcann_trace_record_enabled`。
+- 容器内挂载目标：`/opt/enpu/vcann-rt/lib/libvruntime.so`。
+- 采集入口：`scripts/deadlock-diagnostics/collect_two_ctr_containers.sh`。
+- 容器内采集器：`collect_vcann_deadlock.py`；GDB decoder：`vcann_trace_gdb.py`。
+- 现场 GDB 无 Python 时，GDB 导出 trace、scheduler probe、host-sync probe、kernel registry 四个固定 ABI 对象，由容器普通 Python 解码；支持 GDB Python 的环境沿用 helper 路径。
+
+### vCANN 诊断编译基线
+
+- 在 `cont1_ljw` 的 CANN 构建环境中编译，源码为 `/root/l00933108/vcann-rt/ubs-virt-enpu/vcann-rt`。
+- 必须先 source `/usr/local/Ascend/ascend-toolkit/set_env.sh`（若存在）并确认 `ASCEND_HOME_PATH` 非空；`ENPU_ASCEND_DRIVER_PATH` 未设置时构建脚本默认使用 `/usr/local/Ascend`。
+- 诊断编译命令为 `ENABLE_DEADLOCK_DIAGNOSTICS=1 bash make_build.sh`。
+- `build/CMakeCache.txt` 绑定绝对源码路径。若 cache 来自旧路径 `/workspace/vcann-rt`，必须先把整个 `build` 目录改名归档，再从空 build 目录构建；不能复用或只改 cache 文本。
+- 构建完成后确认 `build/libvruntime.so` 非空，复制到 `/root/l00933108/libvruntime-deadlock-diag.so`，并用 `readelf -sW` 验证上述诊断符号。
+
+```bash
+VCANN_SRC=/root/l00933108/vcann-rt/ubs-virt-enpu/vcann-rt
+cd "$VCANN_SRC"
+# 仅当现有 CMakeCache 来自其他绝对路径时：mv build "build.stale.$(date +%Y%m%d-%H%M%S)"
+if [ -f /usr/local/Ascend/ascend-toolkit/set_env.sh ]; then
+  source /usr/local/Ascend/ascend-toolkit/set_env.sh
+fi
+: "${ASCEND_HOME_PATH:?ASCEND_HOME_PATH is not set}"
+ENABLE_DEADLOCK_DIAGNOSTICS=1 bash make_build.sh
+cp -f build/libvruntime.so /root/l00933108/libvruntime-deadlock-diag.so
+readelf -sW /root/l00933108/libvruntime-deadlock-diag.so \
+  | grep -E 'g_vcann_trace|g_vcann_sync_probe|g_vcann_host_sync_probe|g_vcann_kernel_registry|vcann_trace_record_enabled'
+```
+
+## 当前测试基线
+
+- 测试脚本：`scripts/repro-tp8-xlite-xccl-deadlock-two-container.py`。
+- coordinator 在宿主机运行；A/B participant 分别在两个容器运行，控制面使用 host network 的 `127.0.0.1`。
+- workload 是 Qwen3-32B-like 原生 `Model.forward` 调用序列，不加载真实 vLLM 服务：TP=8、64 层、batch=16、hidden size=5120、intermediate size=25600、BF16、cached tokens=9216。
+- 已验证 aligned：16 个 worker 全部 `DONE`，`RESULT=NORMAL_CONTROL_PASSED`。
+- 已验证 crossed（未启用新诊断链时）：第一波和第二波相隔 5 秒，16 个 worker 最终全部 `DONE`，`RESULT=NO_DEADLOCK`。这是有效负结果，不是双容器同步失败。
+- 当前功能验收入口为 `scripts/deadlock-diagnostics/verify_xlite_qwen_trace.py`：单容器 TP8、Qwen3-32B 形状、1 层；全 rank warm-up 后只让 rank 0 提交第二次 forward，形成可控采集窗口。它只验证工具，不代表自然死锁。
+
+## 诊断结果能回答的问题
+
+- 哪些 worker 位于应用 device/stream sync 或 vCANN scheduler stream sync，及对应 stream、vNPU、owner 和 schedule turn。
+- xLite 在 `rtFunctionRegister` 注册的稳定 kernel 名称，以及 `rtKernelLaunchWithHandleV2` 的 handle 到名称映射。
+- Qwen3 dense forward 的 layer、attention/MLP 阶段和两次 TP AllReduce；warm-up 的成功 device sync 是 layer 0 锚点。
+- 上一次成功同步到当前阻塞同步之间的 unresolved kernel window，并单列其中的 collective 候选。
+- 其他线程是在 `core_limiter`、Runtime、futex 还是其他 host 路径等待。
+- A/B、16 个 rank 的调用序列是否出现稳定分组或分叉。
+
+launch hook 只能证明 host 调用了 Runtime。scheduler sync 可以界定 unresolved window，但不能单独证明窗口中的哪个 kernel 此刻仍在执行；device sync 只能给出最后提交项。输出中的 `completion_evidence` 必须与 native backtrace、vCANN/XCCL 日志和设备侧信息一起解释，不能把 `blocked_kernel` 字段当成设备完成回执。
+
+## 采集与现场保持约束
+
+- 自动发现目标要求进程同时加载 `libvruntime.so` 并打开 `/dev/davinciN`；每个容器预期 8 个 worker。
+- GDB 必须存在于容器中，且 ptrace 能力可用；新容器已添加 `CAP_SYS_PTRACE`，但 GDB 路径和实际 attach 尚未验证。
+- 双容器采集默认并发 `SIGSTOP` 16 个 worker，GDB detach 后继续保持冻结，并在宿主机生成合并 JSON/CSV 和 tar.gz。
+- 首次功能验收不使用 `--resume-after`；确认归档落盘后再按 manifest 发送 `SIGCONT`。
+- `SIGCONT` 只恢复调度，不会解除原有设备死锁；归档完成后可按测试清理流程结束进程。
+
+## 后续固定顺序
+
+1. 同步当前 main，重新编译 ABI 3 runtime，并确认四个全局诊断对象和记录函数符号。
+2. 在 `cont1_ljw` 运行最小 Qwen trace verifier；出现 `CAPTURE_READY` 后采集 8 个 worker，`--qwen-layers 1`。
+3. 内网检查 kernel registry 是否含 matmul、attention、allreduce，launch 记录是否带 `kernel_names`，Qwen layer/phase 和 sync probe 是否符合人为缺 rank 场景。
+4. 功能验收通过后，再用真实可复现死锁抓 A/B 两侧现场；不再用人为 hold 结果推断自然死锁根因。
+
+任何一步失败时，只处理该失败，不跳到下一步，也不为了“补信息”扩大远端采集范围。

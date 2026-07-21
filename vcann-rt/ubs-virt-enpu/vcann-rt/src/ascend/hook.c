@@ -70,6 +70,10 @@ rt_entry_t rt_library_entry[] = {
     {.name = "rtsLaunchRandomNumTask"},
     {.name = "rtsLaunchReduceAsyncTask"},
     {.name = "rtsLaunchUpdateTask"},
+#ifdef VCANN_ENABLE_DEADLOCK_DIAGNOSTICS
+    {.name = "rtFunctionRegister"},
+    {.name = "rtDevBinaryUnRegister"},
+#endif
     /* Event Part */
     {.name = "rtEventCreate"},
     {.name = "rtsEventCreate"},
@@ -99,6 +103,10 @@ rt_entry_t rt_library_entry[] = {
     {.name = "rtsCntNotifyWaitWithTimeout"},
     /* Other Part */
     {.name = "rtStreamSynchronize"},
+#ifdef VCANN_ENABLE_DEADLOCK_DIAGNOSTICS
+    {.name = "rtDeviceSynchronize"},
+    {.name = "rtDeviceSynchronizeWithTimeout"},
+#endif
     {.name = "rtStreamDestroy"},
     {.name = "rtDestroyStreamForce"},
     {.name = "rtGetDevice"},
@@ -106,3 +114,18 @@ rt_entry_t rt_library_entry[] = {
     {.name = "rtBeginPrefill"},
     {.name = "rtEndPrefill"},
 };
+
+#ifdef VCANN_ENABLE_DEADLOCK_DIAGNOSTICS
+void runtime_hook_resolve(rt_hook_enum_t entry)
+{
+    void *current = __atomic_load_n(&rt_library_entry[entry].func_ptr, __ATOMIC_ACQUIRE);
+    if (current != NULL) {
+        return;
+    }
+    void *resolved = dlsym(RTLD_NEXT, rt_library_entry[entry].name);
+    if (resolved != NULL) {
+        (void)__atomic_compare_exchange_n(&rt_library_entry[entry].func_ptr, &current, resolved,
+                                          false, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+    }
+}
+#endif
