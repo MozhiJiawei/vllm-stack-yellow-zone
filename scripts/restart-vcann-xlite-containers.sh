@@ -9,10 +9,12 @@ usage() {
   cat <<'EOF'
 Usage: restart-vcann-xlite-containers.sh [OPTIONS]
 
-By default, rebuild vCANN in the currently running build container and
-atomically replace the runtime used by new processes. Existing processes keep
-their already loaded runtime. Pass --restart to recreate cont1_ljw/cont2_ljw
-with the proven ctr configuration and install xLite and GDB.
+By default, rebuild vCANN in the selected build container and atomically
+replace the runtime used by new processes. If that task is not running, the
+script creates and later removes an isolated temporary build container from
+the configured image. Existing processes keep their already loaded runtime.
+Pass --restart to recreate cont1_ljw/cont2_ljw with the proven ctr
+configuration and install xLite and GDB.
 
 Options:
   --namespace NAME       containerd namespace (default: k8s.io)
@@ -148,6 +150,15 @@ delete_exact_container() {
   ctr -n "$namespace" containers delete "$container" >/dev/null 2>&1 || true
 }
 
+temporary_build_container=
+cleanup_temporary_build_container() {
+  if [[ -n "$temporary_build_container" ]]; then
+    log "remove temporary build container $temporary_build_container"
+    delete_exact_container "$temporary_build_container"
+  fi
+}
+trap cleanup_temporary_build_container EXIT
+
 require_command ctr
 require_command awk
 require_command grep
@@ -179,8 +190,27 @@ fi
 
 if ((skip_build == 0)); then
   build_status=$(task_field "$build_container" 3 2>/dev/null || true)
-  [[ "$build_status" == RUNNING ]] ||
-    die "build container task is not RUNNING: $build_container (use --skip-build only with a verified artifact)"
+  if [[ "$build_status" != RUNNING ]]; then
+    ctr -n "$namespace" images list -q | grep -Fx -- "$image" >/dev/null ||
+      die "image is not present in namespace $namespace: $image"
+    [[ -d /usr/local/Ascend/driver ]] || die 'Ascend driver directory not found'
+
+    temporary_build_container="${build_container}-vcann-build-$$-$RANDOM"
+    log "create temporary build container $temporary_build_container"
+    if ! ctr -n "$namespace" run \
+      --detach \
+      --mount type=bind,src=/usr/local/Ascend/driver/,dst=/usr/local/Ascend/driver/,options=rbind:ro \
+      --mount "type=bind,src=$repo_root,dst=$repo_root,options=rbind:rw" \
+      "$image" "$temporary_build_container" /bin/bash; then
+      delete_exact_container "$temporary_build_container"
+      temporary_build_container=
+      die "failed to create temporary build container from image: $image"
+    fi
+    build_container=$temporary_build_container
+    build_status=$(task_field "$build_container" 3 2>/dev/null || true)
+    [[ "$build_status" == RUNNING ]] ||
+      die "temporary build container task is not RUNNING: $build_container"
+  fi
 
   log "build diagnostic vCANN in $build_container"
   ctr -n "$namespace" tasks exec \

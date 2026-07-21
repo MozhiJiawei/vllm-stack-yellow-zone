@@ -44,7 +44,7 @@
 
 ### 容器启动基线
 
-- 宿主机统一入口为 `bash /root/l00933108/scripts/restart-vcann-xlite-containers.sh`。默认只在 `cont1_ljw` 编译并原子替换 runtime，不重启容器；已有进程继续使用旧映射，之后启动的新进程加载新 runtime。
+- 宿主机统一入口为 `bash /root/l00933108/scripts/restart-vcann-xlite-containers.sh`。默认优先在运行中的 `cont1_ljw` 编译并原子替换 runtime，不重启容器；若指定的编译 task 不在运行，脚本会基于本地 `vllm:19` 自动创建仅挂载代码和驱动的临时编译容器，完成或失败后精确删除。已有进程继续使用旧映射，之后启动的新进程加载新 runtime。
 - 只有显式增加 `--restart` 才精确删除并重建两个容器、安装 xLite/GDB 和执行完整 preflight。首次从旧单文件 mount 迁移到热替换目录 mount 必须执行一次 `--restart`。
 - 脚本始终先完成编译和符号校验，再考虑删除容器；编译失败不会破坏当前环境。若已单独验证现有 runtime 产物，可显式使用 `--skip-build`；不能在没有验证产物时绕过编译。
 - 使用 `ctr -n k8s.io run --detach --net-host`，镜像为本地 `vllm:19`，容器名固定为 `cont1_ljw`、`cont2_ljw`，入口为 `/bin/bash`。
