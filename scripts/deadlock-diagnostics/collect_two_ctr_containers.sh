@@ -93,7 +93,11 @@ copy_into() {
 for item in "$container_a:A" "$container_b:B"; do
   container=${item%:*}
   model=${item##*:}
-  ctr -n "$namespace" tasks info "$container" >/dev/null
+  if ! ctr -n "$namespace" tasks ls \
+    | awk -v name="$container" 'NR > 1 && $1 == name { found = 1 } END { exit !found }'; then
+    echo "running task not found: namespace=$namespace container=$container" >&2
+    exit 2
+  fi
   copy_into "$container" "$collector" "$container_collector" "vcann-copy-collector-$model-$run_id"
   copy_into "$container" "$gdb_helper" "$container_gdb_helper" "vcann-copy-gdb-$model-$run_id"
 done
