@@ -3,7 +3,7 @@
 ## 当前目标与断点
 
 - 目标：先在真实 NPU 上验证 ABI 3 能把 xLite kernel handle 解析为名称，并从一层 Qwen3 native forward 还原 layer/phase/sync 窗口；通过后再采自然死锁和真实 vLLM。
-- 当前断点：Issue 最后确认的是 `vcann-diag-smoke-01` 第一张快照仍冻结，尚无第二张快照、恢复或清理的确认。启动 ABI 3 最小验证前，必须先按精确 PID 清理这组旧 ABI 2 worker，不能在现有 NPU 占用上叠加新任务。
+- 当前断点：旧 Issue #6 最后确认的是 `vcann-diag-smoke-01` 第一张快照仍冻结，尚无第二张快照、恢复或清理的确认。启动 ABI 3 最小验证前，必须先按精确 PID 清理这组旧 ABI 2 worker，不能在现有 NPU 占用上叠加新任务。
 - GDB 来源：宿主机二进制 `/root/isa/gdb_arm`（约 96 MiB），已复制为两个容器内的 `/usr/local/bin/gdb`；两侧均为 GDB 10.1，`ldd` 均无缺失库。该 GDB 不支持 Python scripting，但 ptrace、thread 列举和 detach 均正常。
 - 当前网络结论：容器直连 `ports.ubuntu.com` 因 DNS 解析失败；显式代理 `http://187.0.6.108:8888` 返回非 HTTP 状态行，两条路径均不可用于 apt。
 - 未完成：旧现场精确清理、ABI 3 runtime 远端编译、最小 Qwen trace 验收、自然死锁采集、真实 vLLM 接入。
@@ -12,10 +12,10 @@
 
 - 同步仓：`https://github.com/MozhiJiawei/vllm-stack-yellow-zone`
 - 当前主线：以本文件所在的 `main` 提交为准；旧现场 runtime 来自 ABI 2，不可复用。
-- 远端操作与结果回传：`https://github.com/MozhiJiawei/vllm-stack-yellow-zone/issues/6`
+- 远端操作与结果回传：`https://github.com/MozhiJiawei/vllm-stack-yellow-zone/issues/7`
 - 黄区唯一项目根目录：`/root/l00933108`
 - 本地工作区：`D:\Agent Repo\Insight-Repos\vllm-stack`
-- 聊天中的 `c` 表示：读取 Issue #6 最新回复，根据最新结果只给下一件事的完整命令。
+- 聊天中的 `c` 表示：读取 Issue #7 最新回复，根据最新结果只给下一件事的完整命令。
 - 每轮 Issue 只推进一个动作；不提前堆叠后续步骤。
 - 只操作明确命名的实验容器、文件和进程；不扫描无关环境，不采集凭据。
 - 本文件只保留当前事实、约束、结论和下一步，不记录排障流水。
