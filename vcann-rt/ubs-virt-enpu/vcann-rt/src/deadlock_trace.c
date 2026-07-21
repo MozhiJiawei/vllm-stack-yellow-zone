@@ -16,6 +16,8 @@ _Static_assert(sizeof(uintptr_t) == 8, "deadlock trace ABI requires 64-bit point
 _Static_assert(sizeof(vcann_host_sync_probe_t) == 40, "host sync probe ABI changed");
 _Static_assert(sizeof(vcann_kernel_registration_t) == 296, "kernel registry entry ABI changed");
 
+#define VCANN_FUNCTION_MODE_ACL_HANDLE UINT32_MAX
+
 vcann_trace_buffer_t g_vcann_trace = {
     .magic = VCANN_TRACE_MAGIC,
     .abi_version = VCANN_TRACE_ABI_VERSION,
@@ -31,6 +33,7 @@ vcann_kernel_registry_t g_vcann_kernel_registry = {
 
 static _Thread_local uint32_t g_trace_tid;
 static volatile uint32_t g_trace_initialized;
+static volatile uint32_t g_kernel_registry_lock;
 
 static uint64_t trace_now_ns(void)
 {
@@ -96,6 +99,7 @@ void vcann_trace_init(void)
     g_vcann_kernel_registry.capacity = VCANN_KERNEL_REGISTRY_CAPACITY;
     __atomic_store_n(&g_vcann_kernel_registry.next_sequence, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&g_vcann_kernel_registry.dropped, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_kernel_registry_lock, 0, __ATOMIC_RELAXED);
     g_vcann_kernel_registry.reserved = 0;
     __atomic_store_n(&g_vcann_trace.enabled, enabled, __ATOMIC_RELEASE);
     __atomic_store_n(&g_trace_initialized, 1, __ATOMIC_RELEASE);
@@ -175,21 +179,44 @@ void vcann_trace_host_sync_end_enabled(vcann_trace_kind_t kind, rtStream_t strea
     __atomic_store_n(&g_vcann_host_sync_probe.active, 0, __ATOMIC_RELEASE);
 }
 
-void vcann_trace_kernel_register_enabled(void *handle, const void *stub, const char *stub_name,
+static void kernel_registry_lock(void)
+{
+    while (__atomic_exchange_n(&g_kernel_registry_lock, 1, __ATOMIC_ACQUIRE) != 0) {
+        /* Registration is infrequent and the protected section is fixed-size. */
+    }
+}
+
+static void kernel_registry_unlock(void)
+{
+    __atomic_store_n(&g_kernel_registry_lock, 0, __ATOMIC_RELEASE);
+}
+
+static vcann_kernel_registration_t *kernel_registry_slot_locked(uint64_t *sequence)
+{
+    uint64_t count = __atomic_load_n(&g_vcann_kernel_registry.next_sequence, __ATOMIC_RELAXED);
+    if (count > VCANN_KERNEL_REGISTRY_CAPACITY) {
+        count = VCANN_KERNEL_REGISTRY_CAPACITY;
+    }
+    for (uint64_t index = 0; index < count; ++index) {
+        vcann_kernel_registration_t *entry = &g_vcann_kernel_registry.entries[index];
+        if (entry->committed_sequence == index + 1 && entry->handle == 0) {
+            *sequence = index + 1;
+            return entry;
+        }
+    }
+    if (count >= VCANN_KERNEL_REGISTRY_CAPACITY) {
+        __atomic_fetch_add(&g_vcann_kernel_registry.dropped, 1, __ATOMIC_RELAXED);
+        return NULL;
+    }
+    *sequence = count + 1;
+    __atomic_store_n(&g_vcann_kernel_registry.next_sequence, *sequence, __ATOMIC_RELAXED);
+    return &g_vcann_kernel_registry.entries[count];
+}
+
+static void kernel_registry_write_locked(vcann_kernel_registration_t *entry, uint64_t sequence,
+                                         void *handle, const void *stub, const char *stub_name,
                                          const void *device_function, uint32_t function_mode)
 {
-    uint64_t previous = __atomic_load_n(&g_vcann_kernel_registry.next_sequence,
-                                        __ATOMIC_RELAXED);
-    do {
-        if (previous >= VCANN_KERNEL_REGISTRY_CAPACITY) {
-            __atomic_fetch_add(&g_vcann_kernel_registry.dropped, 1, __ATOMIC_RELAXED);
-            return;
-        }
-    } while (!__atomic_compare_exchange_n(&g_vcann_kernel_registry.next_sequence, &previous,
-                                           previous + 1, false, __ATOMIC_ACQ_REL,
-                                           __ATOMIC_RELAXED));
-    uint64_t sequence = previous + 1;
-    vcann_kernel_registration_t *entry = &g_vcann_kernel_registry.entries[sequence - 1];
     __atomic_store_n(&entry->committed_sequence, 0, __ATOMIC_RELAXED);
     entry->handle = (uintptr_t)handle;
     entry->stub = (uintptr_t)stub;
@@ -200,21 +227,88 @@ void vcann_trace_kernel_register_enabled(void *handle, const void *stub, const c
     /* device_function is opaque in some Runtime versions; never dereference it. */
     copy_kernel_name(entry->device_name, stub_name);
     __atomic_store_n(&entry->committed_sequence, sequence, __ATOMIC_RELEASE);
+}
+
+void vcann_trace_kernel_register_enabled(void *handle, const void *stub, const char *stub_name,
+                                         const void *device_function, uint32_t function_mode)
+{
+    uint64_t sequence = 0;
+    kernel_registry_lock();
+    vcann_kernel_registration_t *entry = kernel_registry_slot_locked(&sequence);
+    if (entry != NULL) {
+        kernel_registry_write_locked(entry, sequence, handle, stub, stub_name, device_function,
+                                     function_mode);
+    }
+    kernel_registry_unlock();
+    if (entry == NULL) {
+        return;
+    }
     vcann_trace_record_enabled(VCANN_TRACE_KERNEL_REGISTER, NULL, handle, stub, function_mode, 0, 0);
 }
 
-void vcann_trace_kernel_unregister_enabled(void *handle)
+void vcann_trace_kernel_map_handle_enabled(void *handle, const void *binary_handle,
+                                           const char *kernel_name)
 {
+    if (handle == NULL || kernel_name == NULL) {
+        return;
+    }
+    char truncated_name[VCANN_KERNEL_NAME_CAPACITY];
+    copy_kernel_name(truncated_name, kernel_name);
     uintptr_t address = (uintptr_t)handle;
+    bool duplicate = false;
+    uint64_t sequence = 0;
+    vcann_kernel_registration_t *slot = NULL;
+    kernel_registry_lock();
     uint64_t count = __atomic_load_n(&g_vcann_kernel_registry.next_sequence, __ATOMIC_ACQUIRE);
     if (count > VCANN_KERNEL_REGISTRY_CAPACITY) {
         count = VCANN_KERNEL_REGISTRY_CAPACITY;
     }
     for (uint64_t index = 0; index < count; ++index) {
         vcann_kernel_registration_t *entry = &g_vcann_kernel_registry.entries[index];
-        if (__atomic_load_n(&entry->handle, __ATOMIC_ACQUIRE) == address) {
+        if (__atomic_load_n(&entry->committed_sequence, __ATOMIC_ACQUIRE) == index + 1 &&
+            __atomic_load_n(&entry->handle, __ATOMIC_ACQUIRE) == address &&
+            entry->function_mode == VCANN_FUNCTION_MODE_ACL_HANDLE) {
+            if (__atomic_load_n(&entry->stub, __ATOMIC_ACQUIRE) ==
+                    (uintptr_t)binary_handle &&
+                memcmp(entry->stub_name, truncated_name, VCANN_KERNEL_NAME_CAPACITY) == 0) {
+                duplicate = true;
+                break;
+            }
+            /* The opaque handle was reused; invalidate the stale name first. */
+            __atomic_store_n(&entry->handle, 0, __ATOMIC_RELEASE);
+            break;
+        }
+    }
+    if (!duplicate) {
+        slot = kernel_registry_slot_locked(&sequence);
+        if (slot != NULL) {
+            kernel_registry_write_locked(slot, sequence, handle, binary_handle, truncated_name,
+                                         NULL, VCANN_FUNCTION_MODE_ACL_HANDLE);
+        }
+    }
+    kernel_registry_unlock();
+    if (slot != NULL) {
+        vcann_trace_record_enabled(VCANN_TRACE_KERNEL_REGISTER, NULL, handle, binary_handle,
+                                   VCANN_FUNCTION_MODE_ACL_HANDLE, 0, 0);
+    }
+}
+
+void vcann_trace_kernel_unregister_enabled(void *handle)
+{
+    uintptr_t address = (uintptr_t)handle;
+    kernel_registry_lock();
+    uint64_t count = __atomic_load_n(&g_vcann_kernel_registry.next_sequence, __ATOMIC_ACQUIRE);
+    if (count > VCANN_KERNEL_REGISTRY_CAPACITY) {
+        count = VCANN_KERNEL_REGISTRY_CAPACITY;
+    }
+    for (uint64_t index = 0; index < count; ++index) {
+        vcann_kernel_registration_t *entry = &g_vcann_kernel_registry.entries[index];
+        if (__atomic_load_n(&entry->handle, __ATOMIC_ACQUIRE) == address ||
+            (entry->function_mode == VCANN_FUNCTION_MODE_ACL_HANDLE &&
+             __atomic_load_n(&entry->stub, __ATOMIC_ACQUIRE) == address)) {
             __atomic_store_n(&entry->handle, 0, __ATOMIC_RELEASE);
         }
     }
+    kernel_registry_unlock();
     vcann_trace_record_enabled(VCANN_TRACE_KERNEL_UNREGISTER, NULL, handle, NULL, 0, 0, 0);
 }

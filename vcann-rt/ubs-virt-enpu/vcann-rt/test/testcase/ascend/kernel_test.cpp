@@ -14,11 +14,23 @@
 #include <runtime/rt.h>
 #include <sys/file.h>
 #include <mockcpp/mockcpp.hpp>
+#include "deadlock_trace.h"
 #include "log.h"
 #include "mem_limiter.h"
 #include "npu_manager.h"
 #include "runtime_stub.h"
 #include "securec.h"
+
+#ifdef VCANN_ENABLE_DEADLOCK_DIAGNOSTICS
+static rtError_t named_function_stub(void *binHandle, const char *kernelName,
+                                     void **funcHandle)
+{
+    (void)binHandle;
+    (void)kernelName;
+    *funcHandle = reinterpret_cast<void *>(0x1234);
+    return RT_ERROR_NONE;
+}
+#endif
 
 class KernelTest : public testing::Test {
 protected:
@@ -53,6 +65,50 @@ protected:
 private:
     int fd_ = -1;
 };
+
+#ifdef VCANN_ENABLE_DEADLOCK_DIAGNOSTICS
+TEST_F(KernelTest, aclrtBinaryGetFunctionRecordsReturnedHandleName)
+{
+    ASSERT_EQ(setenv("ENPU_DEADLOCK_TRACE", "1", 1), 0);
+    vcann_trace_init();
+    void *previous = rt_library_entry[HOOK_aclrtBinaryGetFunction].func_ptr;
+    rt_library_entry[HOOK_aclrtBinaryGetFunction].func_ptr =
+        reinterpret_cast<void *>(named_function_stub);
+
+    void *handle = nullptr;
+    rtError_t ret = aclrtBinaryGetFunction(reinterpret_cast<void *>(0x5678),
+                                            "flash_attention_bfloat16", &handle);
+
+    rt_library_entry[HOOK_aclrtBinaryGetFunction].func_ptr = previous;
+    EXPECT_EQ(ret, RT_ERROR_NONE);
+    EXPECT_EQ(handle, reinterpret_cast<void *>(0x1234));
+    ASSERT_EQ(g_vcann_kernel_registry.next_sequence, 1U);
+    EXPECT_EQ(g_vcann_kernel_registry.entries[0].handle,
+              reinterpret_cast<uintptr_t>(handle));
+    EXPECT_STREQ(g_vcann_kernel_registry.entries[0].stub_name,
+                 "flash_attention_bfloat16");
+    unsetenv("ENPU_DEADLOCK_TRACE");
+    vcann_trace_init();
+}
+
+TEST_F(KernelTest, aclrtBinaryGetFunctionPassesThroughWithTraceDisabled)
+{
+    unsetenv("ENPU_DEADLOCK_TRACE");
+    vcann_trace_init();
+    void *previous = rt_library_entry[HOOK_aclrtBinaryGetFunction].func_ptr;
+    rt_library_entry[HOOK_aclrtBinaryGetFunction].func_ptr =
+        reinterpret_cast<void *>(named_function_stub);
+
+    void *handle = nullptr;
+    rtError_t ret = aclrtBinaryGetFunction(reinterpret_cast<void *>(0x5678),
+                                            "flash_attention_bfloat16", &handle);
+
+    rt_library_entry[HOOK_aclrtBinaryGetFunction].func_ptr = previous;
+    EXPECT_EQ(ret, RT_ERROR_NONE);
+    EXPECT_EQ(handle, reinterpret_cast<void *>(0x1234));
+    EXPECT_EQ(g_vcann_kernel_registry.next_sequence, 0U);
+}
+#endif
 
 TEST_F(KernelTest, rtKernelLaunchTest)
 {

@@ -223,6 +223,7 @@ if ((skip_build == 0)); then
       mv -f "$artifact_tmp" "$runtime_artifact"
 
       for symbol in \
+        aclrtBinaryGetFunction \
         g_vcann_trace \
         g_vcann_sync_probe \
         g_vcann_host_sync_probe \
@@ -420,6 +421,7 @@ for container in "$container_a" "$container_b"; do
       test "$expected_runtime_sha256" = "$mounted_hash"
 
       for symbol in \
+        aclrtBinaryGetFunction \
         g_vcann_trace \
         g_vcann_sync_probe \
         g_vcann_host_sync_probe \

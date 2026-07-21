@@ -249,6 +249,8 @@ typedef enum tagRtMemInfoType
                            const void *reserve)                                                                        \
     RUNTIME_FUNCTION_ENTRY(rtsLaunchUpdateTask, rtStream_t destStm, uint32_t destTaskId, rtStream_t stm,               \
                            rtTaskUpdateCfg_t *cfg)                                                                     \
+    RUNTIME_FUNCTION_ENTRY(aclrtBinaryGetFunction, void *binHandle, const char *kernelName,                        \
+                           void **funcHandle)                                                                        \
     RUNTIME_FUNCTION_ENTRY(rtFunctionRegister, void *binHandle, const void *stubFunc, const char *stubName,           \
                            const void *devFunc, uint32_t funcMode)                                                     \
     RUNTIME_FUNCTION_ENTRY(rtDevBinaryUnRegister, void *binHandle)                                                     \

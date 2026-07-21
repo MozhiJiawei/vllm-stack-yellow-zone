@@ -157,6 +157,8 @@ void vcann_trace_host_sync_end_enabled(vcann_trace_kind_t kind, rtStream_t strea
                                        int32_t result);
 void vcann_trace_kernel_register_enabled(void *handle, const void *stub, const char *stub_name,
                                          const void *device_function, uint32_t function_mode);
+void vcann_trace_kernel_map_handle_enabled(void *handle, const void *binary_handle,
+                                           const char *kernel_name);
 void vcann_trace_kernel_unregister_enabled(void *handle);
 
 static inline bool vcann_trace_is_enabled(void)
@@ -200,6 +202,12 @@ static inline bool vcann_trace_is_enabled(void)
             vcann_trace_kernel_register_enabled(__VA_ARGS__); \
         } \
     } while (0)
+#define vcann_trace_kernel_map_handle(...) \
+    do { \
+        if (__builtin_expect(vcann_trace_is_enabled(), 0)) { \
+            vcann_trace_kernel_map_handle_enabled(__VA_ARGS__); \
+        } \
+    } while (0)
 #define vcann_trace_kernel_unregister(...) \
     do { \
         if (__builtin_expect(vcann_trace_is_enabled(), 0)) { \
@@ -221,6 +229,7 @@ static inline bool vcann_trace_is_enabled(void)
 #define vcann_trace_host_sync_begin(...) ((void)0)
 #define vcann_trace_host_sync_end(...) ((void)0)
 #define vcann_trace_kernel_register(...) ((void)0)
+#define vcann_trace_kernel_map_handle(...) ((void)0)
 #define vcann_trace_kernel_unregister(...) ((void)0)
 
 #endif

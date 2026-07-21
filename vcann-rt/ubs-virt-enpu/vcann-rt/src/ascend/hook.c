@@ -74,6 +74,7 @@ rt_entry_t rt_library_entry[] = {
     {.name = "rtsLaunchReduceAsyncTask"},
     {.name = "rtsLaunchUpdateTask"},
 #ifdef VCANN_ENABLE_DEADLOCK_DIAGNOSTICS
+    {.name = "aclrtBinaryGetFunction"},
     {.name = "rtFunctionRegister"},
     {.name = "rtDevBinaryUnRegister"},
 #endif

@@ -79,7 +79,7 @@
 ### 当前诊断产物
 
 - ABI 3 权威产物为 `/root/l00933108/runtime/vcann-deadlock/libvruntime.so`；兼容路径 `/root/l00933108/libvruntime-deadlock-diag.so` 是指向它的 symlink。当前远端尚未成功生成 ABI 3 产物。
-- 当前源码的关键符号为 `g_vcann_trace`、`g_vcann_sync_probe`、`g_vcann_host_sync_probe`、`g_vcann_kernel_registry`、`vcann_trace_record_enabled`。
+- 当前源码的关键符号为 `aclrtBinaryGetFunction`、`g_vcann_trace`、`g_vcann_sync_probe`、`g_vcann_host_sync_probe`、`g_vcann_kernel_registry`、`vcann_trace_record_enabled`。
 - 容器内挂载目标：`/opt/enpu/vcann-rt/hot/libvruntime.so`。
 - 采集入口：`scripts/deadlock-diagnostics/collect_two_ctr_containers.sh`。
 - 容器内采集器：`collect_vcann_deadlock.py`；GDB decoder：`vcann_trace_gdb.py`。
@@ -105,7 +105,7 @@
 ## 诊断结果能回答的问题
 
 - 哪些 worker 位于应用 device/stream sync 或 vCANN scheduler stream sync，及对应 stream、vNPU、owner 和 schedule turn。
-- xLite 在 `rtFunctionRegister` 注册的稳定 kernel 名称，以及 `rtKernelLaunchWithHandleV2` 的 handle 到名称映射。
+- `aclrtBinaryGetFunction` 返回的 function handle 到 kernel 名称映射；同时保留 `rtFunctionRegister` 注册信息，覆盖旧式 xLite/runtime 路径。
 - Qwen3 dense forward 的 layer、attention/MLP 阶段和两次 TP AllReduce；warm-up 的成功 device sync 是 layer 0 锚点。
 - 上一次成功同步到当前阻塞同步之间的 unresolved kernel window，并单列其中的 collective 候选。
 - 其他线程是在 `core_limiter`、Runtime、futex 还是其他 host 路径等待。

@@ -4,6 +4,7 @@
  */
 #include <gtest/gtest.h>
 #include <cstdlib>
+#include <string>
 #include <thread>
 #include <vector>
 #include "deadlock_trace.h"
@@ -107,6 +108,60 @@ TEST_F(DeadlockTraceTest, unregister_removes_stale_handle_mapping)
     ASSERT_EQ(g_vcann_trace.next_sequence, 2U);
     EXPECT_EQ(g_vcann_trace.records[1].kind,
               static_cast<uint32_t>(VCANN_TRACE_KERNEL_UNREGISTER));
+}
+
+TEST_F(DeadlockTraceTest, acl_handle_mapping_is_deduplicated_and_removed_with_binary)
+{
+    void *binary = reinterpret_cast<void *>(0x1111);
+    void *handle = reinterpret_cast<void *>(0x2222);
+    vcann_trace_kernel_map_handle(handle, binary, "flash_attention_bfloat16");
+    vcann_trace_kernel_map_handle(handle, binary, "flash_attention_bfloat16");
+
+    ASSERT_EQ(g_vcann_kernel_registry.next_sequence, 1U);
+    EXPECT_EQ(g_vcann_kernel_registry.entries[0].handle,
+              reinterpret_cast<uintptr_t>(handle));
+    EXPECT_EQ(g_vcann_kernel_registry.entries[0].stub,
+              reinterpret_cast<uintptr_t>(binary));
+
+    vcann_trace_kernel_unregister(binary);
+
+    EXPECT_EQ(g_vcann_kernel_registry.entries[0].handle, 0U);
+
+    vcann_trace_kernel_map_handle(handle, binary, "flash_attention_reloaded");
+    ASSERT_EQ(g_vcann_kernel_registry.next_sequence, 1U);
+    EXPECT_EQ(g_vcann_kernel_registry.entries[0].handle,
+              reinterpret_cast<uintptr_t>(handle));
+    EXPECT_STREQ(g_vcann_kernel_registry.entries[0].stub_name,
+                 "flash_attention_reloaded");
+}
+
+TEST_F(DeadlockTraceTest, acl_handle_mapping_deduplicates_long_names)
+{
+    std::string name(VCANN_KERNEL_NAME_CAPACITY + 32, 'x');
+    void *binary = reinterpret_cast<void *>(0x1111);
+    void *handle = reinterpret_cast<void *>(0x2222);
+    vcann_trace_kernel_map_handle(handle, binary, name.c_str());
+    vcann_trace_kernel_map_handle(handle, binary, name.c_str());
+
+    EXPECT_EQ(g_vcann_kernel_registry.next_sequence, 1U);
+}
+
+TEST_F(DeadlockTraceTest, concurrent_acl_handle_mapping_uses_one_slot)
+{
+    constexpr uint32_t thread_count = 8;
+    std::vector<std::thread> writers;
+    for (uint32_t index = 0; index < thread_count; ++index) {
+        writers.emplace_back([] {
+            vcann_trace_kernel_map_handle(reinterpret_cast<void *>(0x2222),
+                                          reinterpret_cast<void *>(0x1111),
+                                          "flash_attention_bfloat16");
+        });
+    }
+    for (std::thread &writer : writers) {
+        writer.join();
+    }
+
+    EXPECT_EQ(g_vcann_kernel_registry.next_sequence, 1U);
 }
 
 TEST_F(DeadlockTraceTest, registry_overflow_is_bounded)

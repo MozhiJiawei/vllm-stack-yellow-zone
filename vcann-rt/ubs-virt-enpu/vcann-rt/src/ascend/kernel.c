@@ -17,6 +17,10 @@
 #include "rts_stars.h"
 #include "runtime_hook.h"
 
+#ifdef VCANN_ENABLE_DEADLOCK_DIAGNOSTICS
+#include <acl/acl_rt.h>
+#endif
+
 RUNTIME_HOOK_DEFINE(rtKernelLaunch, const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize,
                     rtSmDesc_t *smDesc, rtStream_t stm)
 {
@@ -219,6 +223,24 @@ RUNTIME_HOOK_DEFINE(rtsLaunchUpdateTask, rtStream_t destStm, uint32_t destTaskId
 }
 
 #ifdef VCANN_ENABLE_DEADLOCK_DIAGNOSTICS
+/*
+ * CANN's aclnn path can acquire a named function handle through AscendCL and
+ * launch it later through rtLaunchKernelByFuncHandle*. That path does not
+ * necessarily call rtFunctionRegister, so retain the name at the ACL boundary
+ * where both the stable name and the returned launch handle are available.
+ */
+__attribute__((visibility("default"))) aclError aclrtBinaryGetFunction(
+    const aclrtBinHandle binHandle, const char *kernelName, aclrtFuncHandle *funcHandle)
+{
+    runtime_hook_resolve(HOOK_aclrtBinaryGetFunction);
+    aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, aclrtBinaryGetFunction, binHandle,
+                                     kernelName, funcHandle);
+    if (ret == ACL_SUCCESS && funcHandle != NULL && *funcHandle != NULL && kernelName != NULL) {
+        vcann_trace_kernel_map_handle(*funcHandle, binHandle, kernelName);
+    }
+    return ret;
+}
+
 RUNTIME_HOOK_DEFINE(rtFunctionRegister, void *binHandle, const void *stubFunc, const char *stubName,
                     const void *devFunc, uint32_t funcMode)
 {

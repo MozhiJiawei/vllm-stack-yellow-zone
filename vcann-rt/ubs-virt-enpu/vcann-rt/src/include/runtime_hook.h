@@ -104,6 +104,7 @@ typedef enum
     RUNTIME_HOOK_ENUM(rtsLaunchReduceAsyncTask),
     RUNTIME_HOOK_ENUM(rtsLaunchUpdateTask),
 #ifdef VCANN_ENABLE_DEADLOCK_DIAGNOSTICS
+    RUNTIME_HOOK_ENUM(aclrtBinaryGetFunction),
     RUNTIME_HOOK_ENUM(rtFunctionRegister),
     RUNTIME_HOOK_ENUM(rtDevBinaryUnRegister),
 #endif

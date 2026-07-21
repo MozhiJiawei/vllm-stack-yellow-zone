@@ -36,9 +36,10 @@ allow `ptrace` (normally `CAP_SYS_PTRACE` plus a permitting seccomp policy).
 
 The diagnostic build intercepts xLite's registration and launch path:
 
-- `rtFunctionRegister` copies the registered kernel name into stable probe
-  storage and maps the binary handle used later by
-  `rtKernelLaunchWithHandleV2`;
+- `aclrtBinaryGetFunction` and `rtFunctionRegister` copy registered kernel
+  names into stable probe storage. The ACL hook maps the returned function
+  handle used later by `rtLaunchKernelByFuncHandle*` without dereferencing an
+  opaque Runtime object;
 - launch records retain stream, handle, tiling key, block count, and argument
   metadata without dereferencing opaque Runtime objects;
 - application `rtDeviceSynchronize*`/`rtStreamSynchronize` calls and vCANN's
