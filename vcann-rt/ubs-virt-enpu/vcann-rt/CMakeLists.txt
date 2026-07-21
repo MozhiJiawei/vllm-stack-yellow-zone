@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.15)
 project(vcann-runtime)
 set(CMAKE_SKIP_RPATH TRUE)
+option(ENABLE_DEADLOCK_DIAGNOSTICS "Compile the opt-in vCANN-RT deadlock probe and debugger symbols" OFF)
 message(STATUS "CMakeList start ${CMAKE_CURRENT_SOURCE_DIR}")
 
 file(GLOB SRC_LIST
@@ -8,6 +9,7 @@ file(GLOB SRC_LIST
     src/ascend/*.c
     src/utils/*.c
 )
+list(REMOVE_ITEM SRC_LIST "${CMAKE_CURRENT_SOURCE_DIR}/src/deadlock_trace.c")
 
 set(SECURE_COMPILE_OPTIONS
     -O2
@@ -54,10 +56,14 @@ add_custom_command(
     COMMAND chmod 400 $<TARGET_FILE:vruntime>
 )
 
-target_link_options(vruntime PRIVATE
-    -Wl,-z,relro,-z,now,-z,noexecstack
-    -s
-)
+target_link_options(vruntime PRIVATE -Wl,-z,relro,-z,now,-z,noexecstack)
+if(ENABLE_DEADLOCK_DIAGNOSTICS)
+    target_sources(vruntime PRIVATE src/deadlock_trace.c)
+    target_compile_options(vruntime PRIVATE -g)
+    target_compile_definitions(vruntime PRIVATE VCANN_ENABLE_DEADLOCK_DIAGNOSTICS=1)
+else()
+    target_link_options(vruntime PRIVATE -s)
+endif()
 
 target_include_directories(vruntime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
 target_include_directories(vruntime SYSTEM PRIVATE ${INCLUDE_DIRS})

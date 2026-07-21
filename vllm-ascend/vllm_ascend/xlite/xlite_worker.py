@@ -24,12 +24,6 @@ class XliteWorker(NPUWorker):
 
     def init_device(self):
         """Override init_device to init xlite model runner"""
-        # The hook is inert unless VLLM_ASCEND_DEADLOCK_DIAG is enabled. Install
-        # it before NPU initialization so a worker remains inspectable if a
-        # later runtime or xLite call blocks.
-        from vllm_ascend.diagnostics.deadlock_dump import initialize_deadlock_diagnostics
-
-        initialize_deadlock_diagnostics(rank=self.rank, local_rank=self.local_rank)
         self.device = self._init_device()
         num_ubatches = 1
         init_workspace_manager(self.device, num_ubatches)

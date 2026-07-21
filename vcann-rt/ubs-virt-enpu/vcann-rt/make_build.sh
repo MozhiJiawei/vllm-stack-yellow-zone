@@ -19,14 +19,20 @@ BUILD_PATH="$CURRENT_PATH/build"
 mkdir -p "$BUILD_PATH"
 cd "$BUILD_PATH"
 
-CMAKE_CMD="cmake .."
+cmake_args=()
+if [[ ${ENABLE_DEADLOCK_DIAGNOSTICS:-0} == 1 ]]; then
+    cmake_args+=("-DENABLE_DEADLOCK_DIAGNOSTICS=ON")
+    echo "[INFO] Building diagnostic libvruntime.so with -O2 and debugger symbols."
+else
+    cmake_args+=("-DENABLE_DEADLOCK_DIAGNOSTICS=OFF")
+fi
 
-if ! eval "$CMAKE_CMD"; then
+if ! cmake .. "${cmake_args[@]}"; then
     echo "[ERROR] make_build:cmake failed.!"
     exit 1
 fi
 
-if ! make -j $(nproc); then
+if ! make -j "$(nproc)"; then
     echo "[ERROR] make_build:make failed."
     exit 1
 fi

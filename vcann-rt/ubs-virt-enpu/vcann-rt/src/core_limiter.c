@@ -10,6 +10,7 @@
 * See the Mulan PSL v2 for more details.
 */
 #include "core_limiter.h"
+#include "deadlock_trace.h"
 #include "common.h"
 #include "dcmi_wrapper.h"
 #include "hash_map.h"
@@ -220,7 +221,13 @@ void synchronize_and_clear_streams(void)
         // aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtGetDevice, &devID);
         // LOG_DEBUG("Get current Device %d returned with error code %d", devID, ret);
         LOG_DEBUG("Stream %p is being synchronized.", (void*)stm);
+        if (vcann_trace_is_enabled()) {
+            int32_t owner = atomic_load(&g_vnpu_sched_context->owner);
+            uint32_t turn = atomic_load(&g_vnpu_sched_context->vnpu_schedule_turn[g_vnpu_id]);
+            vcann_trace_sync_begin(stm, owner, turn, g_vnpu_id);
+        }
         RUNTIME_HOOK_CALL(rt_library_entry, rtStreamSynchronize, stm);
+        vcann_trace_sync_end(stm);
         LOG_DEBUG("Stream synchronization end.");
         rc = hashmap_remove(stream_map, (void *)stm);
         CHECK_COND_RETURN(rc == -1, "Failed to remove stream %p from the hash map.", (void *)stm);

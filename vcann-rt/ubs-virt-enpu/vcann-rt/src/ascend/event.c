@@ -11,6 +11,7 @@
 */
 
 #include "core_limiter.h"
+#include "deadlock_trace.h"
 #include "log.h"
 #include "npu_manager.h"
 #include "rts_event.h"
@@ -63,6 +64,7 @@ RUNTIME_HOOK_DEFINE(rtEventCreateExWithFlag, rtEvent_t *evt, uint32_t flag)
 
 RUNTIME_HOOK_DEFINE(rtStreamWaitEvent, rtStream_t stm, rtEvent_t evt)
 {
+    vcann_trace_record(VCANN_TRACE_EVENT_WAIT, stm, evt, NULL, 0, 0, 0);
     aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtStreamWaitEvent, stm, evt);
     if (ret == ACL_RT_SUCCESS && is_core_limit()) {
         add_stream(stm);
@@ -73,6 +75,7 @@ RUNTIME_HOOK_DEFINE(rtStreamWaitEvent, rtStream_t stm, rtEvent_t evt)
 
 RUNTIME_HOOK_DEFINE(rtEventRecord, rtEvent_t evt, rtStream_t stm)
 {
+    vcann_trace_record(VCANN_TRACE_EVENT_RECORD, stm, evt, NULL, 0, 0, 0);
     aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtEventRecord, evt, stm);
     if (ret == ACL_RT_SUCCESS && is_core_limit()) {
         add_stream(stm);
@@ -92,6 +95,7 @@ RUNTIME_HOOK_DEFINE(rtEventDestroy, rtEvent_t evt)
 
 RUNTIME_HOOK_DEFINE(rtStreamDestroy, rtStream_t stm)
 {
+    vcann_trace_record(VCANN_TRACE_STREAM_DESTROY, stm, NULL, NULL, 0, 0, 0);
     core_limiter(stm, remove_stream, NULL);
     aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtStreamDestroy, stm);
     return ret;
@@ -99,6 +103,7 @@ RUNTIME_HOOK_DEFINE(rtStreamDestroy, rtStream_t stm)
 
 RUNTIME_HOOK_DEFINE(rtDestroyStreamForce, rtStream_t stm)
 {
+    vcann_trace_record(VCANN_TRACE_STREAM_DESTROY, stm, NULL, NULL, 1, 0, 0);
     core_limiter(stm, remove_stream, NULL);
     aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtDestroyStreamForce, stm);
     return ret;
@@ -115,6 +120,7 @@ RUNTIME_HOOK_DEFINE(rtsNotifyCreate, rtNotify_t *notify, uint64_t flag)
 
 RUNTIME_HOOK_DEFINE(rtNotifyRecord, rtNotify_t notify, rtStream_t stm)
 {
+    vcann_trace_record(VCANN_TRACE_NOTIFY_RECORD, stm, notify, NULL, 0, 0, 0);
     aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtNotifyRecord, notify, stm);
     if (ret == ACL_RT_SUCCESS && is_core_limit()) {
         add_stream(stm);
@@ -134,6 +140,7 @@ RUNTIME_HOOK_DEFINE(rtNotifyDestroy, rtNotify_t notify)
 
 RUNTIME_HOOK_DEFINE(rtsNotifyWaitAndReset, rtNotify_t notify, rtStream_t stm, uint32_t timeout)
 {
+    vcann_trace_record(VCANN_TRACE_NOTIFY_WAIT, stm, notify, NULL, timeout, 0, 0);
     aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtsNotifyWaitAndReset, notify, stm, timeout);
     if (ret == ACL_RT_SUCCESS && is_core_limit()) {
         add_stream(stm);
@@ -144,6 +151,7 @@ RUNTIME_HOOK_DEFINE(rtsNotifyWaitAndReset, rtNotify_t notify, rtStream_t stm, ui
 
 RUNTIME_HOOK_DEFINE(rtStreamWaitEventWithTimeout, rtStream_t stm, rtEvent_t evt, uint32_t timeout)
 {
+    vcann_trace_record(VCANN_TRACE_EVENT_WAIT, stm, evt, NULL, timeout, 0, 0);
     aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtStreamWaitEventWithTimeout, stm, evt, timeout);
     if (ret == ACL_RT_SUCCESS && is_core_limit()) {
         add_stream(stm);
@@ -181,6 +189,7 @@ RUNTIME_HOOK_DEFINE(rtNotifyCreateWithFlag, int32_t deviceId, rtNotify_t *notify
 
 RUNTIME_HOOK_DEFINE(rtNotifyWait, rtNotify_t notify, rtStream_t stm)
 {
+    vcann_trace_record(VCANN_TRACE_NOTIFY_WAIT, stm, notify, NULL, 0, 0, 0);
     aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtNotifyWait, notify, stm);
     if (ret == ACL_RT_SUCCESS && is_core_limit()) {
         add_stream(stm);
@@ -191,6 +200,7 @@ RUNTIME_HOOK_DEFINE(rtNotifyWait, rtNotify_t notify, rtStream_t stm)
 
 RUNTIME_HOOK_DEFINE(rtNotifyWaitWithTimeOut, rtNotify_t notify, rtStream_t stm, uint32_t timeOut)
 {
+    vcann_trace_record(VCANN_TRACE_NOTIFY_WAIT, stm, notify, NULL, timeOut, 0, 0);
     aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtNotifyWaitWithTimeOut, notify, stm, timeOut);
     if (ret == ACL_RT_SUCCESS && is_core_limit()) {
         add_stream(stm);
@@ -221,6 +231,7 @@ RUNTIME_HOOK_DEFINE(rtCntNotifyCreateWithFlag, const int32_t deviceId, rtCntNoti
 RUNTIME_HOOK_DEFINE(rtCntNotifyRecord, rtCntNotify_t const inCntNotify, rtStream_t const stm,
                     const rtCntNtyRecordInfo_t *const info)
 {
+    vcann_trace_record(VCANN_TRACE_NOTIFY_RECORD, stm, inCntNotify, info, 0, 0, 0);
     aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtCntNotifyRecord, inCntNotify, stm, info);
     if (ret == ACL_RT_SUCCESS && is_core_limit()) {
         add_stream(stm);
@@ -232,6 +243,7 @@ RUNTIME_HOOK_DEFINE(rtCntNotifyRecord, rtCntNotify_t const inCntNotify, rtStream
 RUNTIME_HOOK_DEFINE(rtCntNotifyWaitWithTimeout, rtCntNotify_t const inCntNotify, rtStream_t const stm,
                     const rtCntNtyWaitInfo_t *const info)
 {
+    vcann_trace_record(VCANN_TRACE_NOTIFY_WAIT, stm, inCntNotify, info, 0, 0, 0);
     aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtCntNotifyWaitWithTimeout, inCntNotify, stm, info);
     if (ret == ACL_RT_SUCCESS && is_core_limit()) {
         add_stream(stm);
@@ -251,6 +263,7 @@ RUNTIME_HOOK_DEFINE(rtCntNotifyDestroy, rtCntNotify_t const inCntNotify)
 
 RUNTIME_HOOK_DEFINE(rtsCntNotifyRecord, rtCntNotify_t cntNotify, rtStream_t stm, rtCntNotifyRecordInfo_t *info)
 {
+    vcann_trace_record(VCANN_TRACE_NOTIFY_RECORD, stm, cntNotify, info, 0, 0, 0);
     aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtsCntNotifyRecord, cntNotify, stm, info);
     if (ret == ACL_RT_SUCCESS && is_core_limit()) {
         add_stream(stm);
@@ -261,6 +274,7 @@ RUNTIME_HOOK_DEFINE(rtsCntNotifyRecord, rtCntNotify_t cntNotify, rtStream_t stm,
 
 RUNTIME_HOOK_DEFINE(rtsCntNotifyWaitWithTimeout, rtCntNotify_t cntNotify, rtStream_t stm, rtCntNotifyWaitInfo_t *info)
 {
+    vcann_trace_record(VCANN_TRACE_NOTIFY_WAIT, stm, cntNotify, info, 0, 0, 0);
     aclError ret = RUNTIME_HOOK_CALL(rt_library_entry, rtsCntNotifyWaitWithTimeout, cntNotify, stm, info);
     if (ret == ACL_RT_SUCCESS && is_core_limit()) {
         add_stream(stm);

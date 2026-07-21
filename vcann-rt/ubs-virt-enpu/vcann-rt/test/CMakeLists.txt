@@ -17,6 +17,7 @@ include(${PROJECT_SOURCE_DIR}/scripts/cmake/mockcpp.cmake)
 
 set(VNPU_SRC_FILES
     ${PROJECT_SOURCE_DIR}/src/core_limiter.c
+    ${PROJECT_SOURCE_DIR}/src/deadlock_trace.c
     ${PROJECT_SOURCE_DIR}/src/mem_limiter.c
     ${PROJECT_SOURCE_DIR}/src/npu_manager.c
     ${PROJECT_SOURCE_DIR}/src/log.c
@@ -45,6 +46,7 @@ set(VNPU_TESTCASE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/testcase/utils/hash_map_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/testcase/npu_manager_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/testcase/core_limiter_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/testcase/deadlock_trace_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/testcase/log_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/testcase/mem_limiter_test.cpp
 )
@@ -86,6 +88,7 @@ endforeach()
 target_compile_definitions(vnpu_test
     PRIVATE
     _GNU_SOURCE
+    VCANN_ENABLE_DEADLOCK_DIAGNOSTICS=1
 )
 
 target_compile_options(vnpu_test PRIVATE

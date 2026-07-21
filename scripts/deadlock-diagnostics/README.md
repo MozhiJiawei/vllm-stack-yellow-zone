@@ -1,69 +1,97 @@
-# vLLM Ascend deadlock snapshots
+# vCANN-RT deadlock capture
 
-These tools collect Python, Linux thread, and native stacks from two colocated
-TP8 xLite services. They do not start services or workloads.
+This diagnostic path does not patch or import vLLM. A small optional probe in
+`libvruntime.so` records kernel, event, and scheduler transitions in a fixed
+in-memory ring. After a hang, the collector freezes processes that loaded
+`libvruntime.so`, attaches GDB, and exports the ring and scheduler sync state.
 
-## Patch an installed vLLM Ascend wheel
+## Build the diagnostic runtime
 
-The source change is also provided as
-`patches/vllm-ascend-v0.19.1rc1-deadlock-diagnostics.patch`. Apply it to the
-installed package with the helper, then restart both services:
-
-```bash
-bash scripts/deadlock-diagnostics/apply_site_packages_patch.sh \
-  --patch patches/vllm-ascend-v0.19.1rc1-deadlock-diagnostics.patch
-```
-
-The helper discovers the active `site-packages` directory with Python, checks
-the installed version, and runs `patch --dry-run` before changing files. To
-restore the wheel files, run the same command with `--reverse` and restart the
-services again.
-
-## Capture a scene
-
-Enable diagnostics before starting each service. Use a common run ID and a
-different model ID in each container:
+Build inside the same CANN environment used for the deployed runtime:
 
 ```bash
-export VLLM_ASCEND_DEADLOCK_DIAG=1
-export VLLM_ASCEND_DEADLOCK_MODEL_ID=A  # B in the other container
-export VLLM_ASCEND_DEADLOCK_RUN_ID=run-001
-export VLLM_ASCEND_DEADLOCK_DIR=/tmp/vllm-deadlock-diag
+cd vcann-rt/ubs-virt-enpu/vcann-rt
+ENABLE_DEADLOCK_DIAGNOSTICS=1 ./make_build.sh
 ```
 
-After confirming the hang, collect both containers from the host:
+This retains the normal `-O2` optimization, compiles in the probe, and adds
+debugger symbols; it does not change the scheduling policy. A normal build
+without `ENABLE_DEADLOCK_DIAGNOSTICS=1` contains neither the probe calls nor
+the trace buffer. Install the resulting `build/libvruntime.so` in both workload
+containers.
+
+The diagnostic build still defaults to inactive. Enable the in-memory ring
+before starting each workload:
 
 ```bash
-scripts/deadlock-diagnostics/collect_two_containers.sh \
-  --container-a model-a --container-b model-b \
-  --run-id run-001 --output /tmp/deadlock-run-001
+export ENPU_DEADLOCK_TRACE=1
 ```
 
-The default capture sends SIGUSR1 at 0, 100, 500, and 2000 ms, then SIGSTOPs
-only the workers registered for the requested run. PID start times are checked
-before every signal. The workers remain frozen after collection.
+Do not enable `ENPU_LOG_LEVEL=4` for the primary reproduction. DEBUG logging is
+per-task and can perturb a timing-sensitive hang. The ring performs no file
+I/O or allocation in the task submission path. It uses a per-slot lock with no
+global submission lock; contention is only possible after the 4096-record ring
+wraps. The collector exports the full ring by default.
 
-To inspect or resume one container:
+GDB must be installed in the workload image and the container must permit
+ptrace. With containerd this normally requires the task to be created with
+`CAP_SYS_PTRACE` and a seccomp policy that permits `ptrace`; verify those before
+the reproduction.
+
+## Verify target discovery
+
+Copy `collect_vcann_deadlock.py` and `vcann_trace_gdb.py` into a container, then
+run:
 
 ```bash
-python3 /tmp/vllm-deadlock-snapshot.py status \
-  --run-id run-001 --model A
-python3 /tmp/vllm-deadlock-snapshot.py resume \
-  --run-id run-001 --model A
+python3 /tmp/collect-vcann-deadlock.py preflight --expected-processes 8
 ```
 
-Run `preflight` before the workload when ptrace availability is uncertain.
-Native stack failures are recorded without preventing Python and `/proc`
-collection.
+`preflight` also reports the GDB path, helper presence, Yama ptrace scope, and
+the collector process capability/seccomp status from `/proc/self/status`.
 
-For a second reproduction, trace only representative ranks selected from the
-first summary. For example:
+Automatic discovery requires both:
+
+- `libvruntime.so` appears in `/proc/PID/maps`;
+- the process has an open `/dev/davinciN` file descriptor.
+
+If the process count is ambiguous, pass each workload PID explicitly with
+repeated `--pid` arguments. The collector refuses a PID that has not loaded
+`libvruntime.so` and validates its process start time before every signal.
+
+## Capture two ctr containers
+
+Run from the host after the deadlock is visible:
 
 ```bash
-python3 /tmp/vllm-deadlock-snapshot.py trace \
-  --run-id run-001 --model A --rank 0 --rank 4 \
-  --duration 2 --output /tmp/deadlock-run-001-strace-A
+scripts/deadlock-diagnostics/collect_two_ctr_containers.sh \
+  --namespace default \
+  --container-a xlite-xccl-a \
+  --container-b xlite-xccl-b \
+  --run-id run-001 \
+  --output /tmp/vcann-deadlock-run-001
 ```
 
-The trace is limited to synchronization, runtime ioctl, polling, IPC, and
-read/write syscalls. It does not run during the default 16-rank capture.
+Use `--pid-a 101,102,...` and `--pid-b 201,202,...` when automatic discovery is
+not unique. By default all selected workload processes remain SIGSTOP-frozen.
+Use `--resume-after` only when preserving the scene is not required.
+
+The archive contains, for every process:
+
+- all native thread backtraces;
+- `g_vcann_sync_probe`, including vNPU, owner, turn, and synchronized stream;
+- the newest trace records, with symbol/name resolution when available;
+- `/proc` thread state and only diagnostic environment variables;
+- vCANN log files whose filename contains the exact PID.
+
+Trace entries are hook-entry attempts recorded before `core_limiter`; they do
+not prove that the Runtime accepted or completed the operation. This placement
+keeps the original `core_limiter`-to-Runtime call interval unchanged.
+`vcann-summary.csv` highlights the synchronized stream, the last attempt before
+the scheduler entered `rtStreamSynchronize`, and the first attempt after that
+point. A post-sync attempt may still be waiting in `core_limiter`.
+
+A kernel handle is opaque in some CANN launch APIs; in that case the trace only
+provides its address. Name pointers are resolved by GDB on a best-effort basis
+and may already be stale. Exact xLite collective generations still require an
+xLite-side generation probe.

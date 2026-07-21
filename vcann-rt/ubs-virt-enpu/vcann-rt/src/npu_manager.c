@@ -16,6 +16,7 @@
 #include "common.h"
 #include "config.h"
 #include "core_limiter.h"
+#include "deadlock_trace.h"
 #include "dcmi_wrapper.h"
 #include "include/common.h"
 #include "mem_limiter.h"
@@ -406,6 +407,7 @@ int enpu_load_multi_config(void)
 
 static void __enpu_global_init(void)
 {
+    vcann_trace_init();
     int rc = log_init();
     CHECK_COND_RETURN_LOG(rc != ENPU_SUCCESS, "Failed to init log module.");
 

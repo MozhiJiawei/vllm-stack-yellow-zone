@@ -128,6 +128,14 @@ git clone <ubs-virt-enpu-vcann-rt-url>
 bash make_build.sh
 ```
 
+如需在死锁现场通过GDB读取vCANN-RT内部调度状态，可构建保留调试符号、但仍使用`-O2`优化的诊断版本：
+
+```bash
+ENABLE_DEADLOCK_DIAGNOSTICS=1 bash make_build.sh
+```
+
+诊断版本的内存追踪默认关闭，仅当业务启动前设置`ENPU_DEADLOCK_TRACE=1`时启用。
+
 编译完成之后，会在`build`目录下面产生相应的编译产物。
 
 ## 部署
@@ -524,6 +532,7 @@ vCANN-RT支持两种方式启动业务容器：
 | `ENPU_ASCEND_DRIVER_PATH` | 编译 | `/usr/local/Ascend` | HDK driver安装路径。 |
 | `ENPU_LOG_LEVEL` | 运行 | `3` | 日志级别，FATAL(0), ERROR(1), WARN(2), INFO(3), DEBUG(4)。 |
 | `ENPU_ENABLE` | 运行 | `True` | vCANN-RT启动成功之后设置的进程级环境变量。 |
+| `ENPU_DEADLOCK_TRACE` | 运行 | 未设置 | 诊断构建中设置为 `1` 时启用内存环形追踪，用于死锁后通过 GDB 读取算子、事件和调度同步现场。 |
 
 ## 约束
 
