@@ -135,11 +135,22 @@ launch hook 只能证明 host 调用了 Runtime。scheduler sync 可以界定 un
 
 ## 采集与现场保持约束
 
-- 自动发现目标要求进程同时加载 `libvruntime.so` 并打开 `/dev/davinciN`；每个容器预期 8 个 worker。
-- GDB 必须存在于容器中，且 ptrace 能力可用；新容器已添加 `CAP_SYS_PTRACE`，但 GDB 路径和实际 attach 尚未验证。
+- 自动发现目标要求进程同时加载 `libvruntime.so` 并打开 `/dev/davinciN`；每个容器预期 8 个 worker。现场已验证部分 worker 的 device FD 不适合用于发现，返回 0 个目标时应从 participant 父进程精确取得 8 个 worker PID，再用 `--pid` 采集；不能全局放宽为 `--include-no-device`，否则会混入 PID 1、resource tracker 和旧孤儿进程。
+- GDB 基线已经验证：宿主机 `/root/isa/gdb_arm` 可复制到两个容器的 `/usr/local/bin/gdb`；GDB 10.1、`ldd` 无缺失库，具备 `CAP_SYS_PTRACE` 的容器可以 attach、列举线程和 detach。容器必须在创建时授予 ptrace 能力，运行后不能补加。
 - 双容器采集默认并发 `SIGSTOP` 16 个 worker，GDB detach 后继续保持冻结，并在宿主机生成合并 JSON/CSV 和 tar.gz。
 - 首次功能验收不使用 `--resume-after`；确认归档落盘后再按 manifest 发送 `SIGCONT`。
 - `SIGCONT` 只恢复调度，不会解除原有设备死锁；归档完成后可按测试清理流程结束进程。
+
+## 已验证的 GDB 采集经验
+
+- 现场 GDB 不支持 Python scripting 不代表采集失败。可靠回退路径是让 GDB 用多个独立的 `-ex 'dump binary memory ...'` 导出固定 ABI 对象，再由容器内普通 Python 解码；trace、scheduler probe、host-sync probe 和 kernel registry 已按此路径成功采齐。
+- runtime 与 collector 的 ABI 必须完全一致。ABI 2 进程不能交给 ABI 3 collector 解码；升级后要重新编译、替换 runtime 并重启 worker，不能只更新采集脚本。
+- 冻结和恢复以采集 manifest 为准。发送信号前同时校验 PID 和 `/proc/<pid>/stat` 的 starttime，防止 PID 复用；GDB detach 会让被调试进程短暂恢复，collector 必须再次 `SIGSTOP`，所以采集结束后 worker 仍应保持冻结。
+- 上次 16/16 worker 的原始内存、native backtrace、汇总 JSON 和归档均成功生成，证明采集链路可用。该快照是人为只释放第一波 worker 的功能测试，不是自然死锁证据。
+- native backtrace 中，应用主线程停在 `c10_npu::npuSynchronizeDevice -> aclrtSynchronizeDeviceWithTimeoutImpl`，scheduler 后台线程出现在 `check_and_borrow_timeslice`。前者描述上层正在等待设备同步，后者只是同一时刻的调度线程位置，不能互相替代。
+- `sync_active=false` 表示采样瞬间没有捕获到 `synchronize_and_clear_streams -> rtStreamSynchronize` 的活动窗口；此时 `sync_owner`、`sync_turn` 只是最近一次完成同步留下的值，不能解释成当前 owner。
+- trace 末端的 `RTS_KERNEL_HOST_ARGS` 与 `EVENT_WAIT` 成功区分了已进入 Runtime 的第一波 worker 和仍卡在 Python `multiprocessing.Event` 的第二波 worker。这证明工具能够还原人为调度状态；要定位具体算子，仍需 ABI 3 的 kernel registry、launch 名称和 Qwen phase 一起通过真实 NPU 验收。
+- 容器无外网时直接在内网解码和汇总，不依赖传出原始归档。containerd 2.3 用 `ctr tasks ls` 判断 task 是否存在；不要使用不存在的 `ctr tasks info`。
 
 ## 后续固定顺序
 
