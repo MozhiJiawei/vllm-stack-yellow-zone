@@ -27,6 +27,7 @@ set(VNPU_SRC_FILES
     ${PROJECT_SOURCE_DIR}/src/ascend/hook.c
     ${PROJECT_SOURCE_DIR}/src/ascend/kernel.c
     ${PROJECT_SOURCE_DIR}/src/ascend/memory.c
+    ${PROJECT_SOURCE_DIR}/src/ascend/prefill.c
     ${PROJECT_SOURCE_DIR}/src/ascend/task.c
     ${PROJECT_SOURCE_DIR}/src/utils/config.c
     ${PROJECT_SOURCE_DIR}/src/utils/dcmi_wrapper.c

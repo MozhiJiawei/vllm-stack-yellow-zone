@@ -146,6 +146,34 @@ bool is_vnpu_in_prefill(int vnpu_id)
     return atomic_load(&g_vnpu_sched_context->prefill_state[vnpu_id].in_prefill);
 }
 
+int lock_vnpu_schedule_mutex(int vnpu_id)
+{
+    if (g_vnpu_sched_context == NULL || vnpu_id < 0 || vnpu_id >= MAX_VNPU) {
+        return EINVAL;
+    }
+
+    int rc = pthread_mutex_lock(&g_vnpu_sched_context->vnpu_schedule_mutex[vnpu_id]);
+    if (rc == EOWNERDEAD) {
+        LOG_INFO("The scheduling process for vNPU %d exited; taking over its robust mutex.", vnpu_id);
+        rc = pthread_mutex_consistent(&g_vnpu_sched_context->vnpu_schedule_mutex[vnpu_id]);
+    }
+    return rc;
+}
+
+void unlock_vnpu_schedule_mutex(int vnpu_id)
+{
+    if (g_vnpu_sched_context == NULL || vnpu_id < 0 || vnpu_id >= MAX_VNPU) {
+        return;
+    }
+    int rc = pthread_mutex_unlock(&g_vnpu_sched_context->vnpu_schedule_mutex[vnpu_id]);
+    CHECK_COND_RETURN(rc != 0, "Failed to unlock vNPU %d schedule mutex, error code=%d.", vnpu_id, rc);
+}
+
+bool vnpu_borrow_allowed(int owner)
+{
+    return owner != g_vnpu_id && !is_vnpu_in_prefill(owner);
+}
+
 inline bool vnpu_has_work(int vnpu_id)
 {
     return check_timeout(&g_vnpu_sched_context->last_kernel_time_ns[vnpu_id], VNPU_NO_TASK_TIMEOUT_PERIOD);
@@ -240,7 +268,7 @@ void compensate_delta_time(void)
     uint64_t begin = ns_now();
     synchronize_and_clear_streams();
     uint64_t elapsed = ns_now() - begin;
-    set_core_cur_timeslice(-(int64_t)elapsed);
+    set_core_cur_timeslice(get_core_cur_timeslice() - (int64_t)elapsed);
 }
 
 bool add_and_consume_time_slice(uint8_t *turn_id)
@@ -267,9 +295,6 @@ bool add_and_consume_time_slice(uint8_t *turn_id)
     // For Determining whether the current round of scheduling is complete for a container with multiple threads.
     *turn_id = atomic_load(&g_vnpu_sched_context->vnpu_schedule_turn[g_vnpu_id]);
 
-    int vnpu_id = atomic_load(&g_vnpu_sched_context->owner);
-    int next_vnpu_id = select_next_owner(vnpu_id);
-
     bool in_prefill = is_vnpu_in_prefill(g_vnpu_id);
     while (end > now || in_prefill) {
         now = ns_now();
@@ -289,7 +314,6 @@ bool add_and_consume_time_slice(uint8_t *turn_id)
     atomic_store(&g_sched_locking, true);
     pthread_mutex_lock(&g_sched_mutex);
     atomic_store(&g_sched_locking, false);
-    set_vnpu_and_idle(vnpu_id, next_vnpu_id);
 
     return true;
 }
@@ -394,11 +418,30 @@ void check_and_borrow_timeslice(int owner)
     if (owner == g_vnpu_id) {
         return;
     }
+
+    bool owner_mutex_locked = false;
+    if (owner >= 0 && owner < MAX_VNPU) {
+        // Hold the owner's process-shared mutex for the complete borrow window.
+        // rtBeginPrefill uses the same mutex, so no new prefill can overlap a
+        // borrow that has already started, and no new borrow can enter prefill.
+        int rc = lock_vnpu_schedule_mutex(owner);
+        CHECK_COND_RETURN(rc != 0, "Failed to lock owner vNPU %d schedule mutex, error code=%d.", owner, rc);
+        owner_mutex_locked = true;
+        if (!vnpu_borrow_allowed(owner)) {
+            unlock_vnpu_schedule_mutex(owner);
+            return;
+        }
+    }
+
     pthread_mutex_unlock(&g_sched_mutex);
     ns_sleep(BORROW_TIMESLICE_LENGTH); // borrow BORROW_TIMESLICE_LENGTH ns every time
     atomic_store(&g_sched_locking, true);
-    pthread_mutex_lock(&g_sched_mutex);
+    int rc = pthread_mutex_lock(&g_sched_mutex);
     atomic_store(&g_sched_locking, false);
+    if (owner_mutex_locked) {
+        unlock_vnpu_schedule_mutex(owner);
+    }
+    CHECK_COND_RETURN(rc != 0, "Failed to lock scheduler mutex after borrowing, error code=%d.", rc);
 }
 
 // Scheduling main thread
@@ -439,11 +482,8 @@ void *vnpu_scheduler_thread(void *arg)
 
 
         // Only one thread is accepted.
-        int rc = pthread_mutex_lock(&g_vnpu_sched_context->vnpu_schedule_mutex[g_vnpu_id]);
-        if (rc == EOWNERDEAD) {
-            LOG_INFO("The scheduling process has been detected to exit, and the scheduling is being taken over.");
-            pthread_mutex_consistent(&g_vnpu_sched_context->vnpu_schedule_mutex[g_vnpu_id]);
-        } else if (rc != 0) {
+        int rc = lock_vnpu_schedule_mutex(g_vnpu_id);
+        if (rc != 0) {
             LOG_WARN("Failed to obtain mutex lock, error code=%d.", rc);
             continue;
         }
@@ -454,10 +494,12 @@ void *vnpu_scheduler_thread(void *arg)
             // Multi-process in the same vNPU is an unrecommended scenario and should be avoided as much as possible.
             if (flag) {
                 compensate_delta_time();
+                int vnpu_id = atomic_load(&g_vnpu_sched_context->owner);
+                set_vnpu_and_idle(vnpu_id, select_next_owner(vnpu_id));
             }
             atomic_store(&g_vnpu_sched_context->vnpu_schedule_turn[g_vnpu_id], turn_id + 1);
         }
-        pthread_mutex_unlock(&g_vnpu_sched_context->vnpu_schedule_mutex[g_vnpu_id]);
+        unlock_vnpu_schedule_mutex(g_vnpu_id);
     }
     pthread_mutex_unlock(&g_sched_mutex);
     hashmap_destroy(stream_map);

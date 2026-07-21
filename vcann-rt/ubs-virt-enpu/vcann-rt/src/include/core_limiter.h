@@ -72,6 +72,9 @@ extern void set_event_record_status(void *evt, rtStream_t stm);
 extern void add_stream(rtStream_t stream);
 extern void remove_stream(void *unused, rtStream_t stm);
 extern void set_event_destroy_status(void *evt);
+extern int lock_vnpu_schedule_mutex(int vnpu_id);
+extern void unlock_vnpu_schedule_mutex(int vnpu_id);
+extern void synchronize_and_clear_streams(void);
 uint64_t ns_now(void);
 
 #if defined(__cplusplus)
