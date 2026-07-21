@@ -10,6 +10,9 @@
 * See the Mulan PSL v2 for more details.
 */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "runtime_hook.h"
 
 rt_entry_t rt_library_entry[] = {

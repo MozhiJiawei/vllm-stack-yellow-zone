@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Rebuild the diagnostic vCANN runtime and recreate the two known xLite test
-# containers. Run this script on the remote containerd host as root.
+# Rebuild and atomically replace the diagnostic vCANN runtime. The established
+# containers use a directory bind mount, so newly started processes see the new
+# library without a container restart. Pass --restart to recreate the pair.
 
 set -Eeuo pipefail
 
@@ -8,14 +9,17 @@ usage() {
   cat <<'EOF'
 Usage: restart-vcann-xlite-containers.sh [OPTIONS]
 
-Rebuild vCANN in the currently running build container, replace cont1_ljw and
-cont2_ljw with the proven ctr configuration, then install xLite and GDB.
+By default, rebuild vCANN in the currently running build container and
+atomically replace the runtime used by new processes. Existing processes keep
+their already loaded runtime. Pass --restart to recreate cont1_ljw/cont2_ljw
+with the proven ctr configuration and install xLite and GDB.
 
 Options:
   --namespace NAME       containerd namespace (default: k8s.io)
   --image REF            existing local image (default: vllm:19)
   --repo-root PATH       host/repository path (default: /root/l00933108)
   --build-container ID   running container used to compile (default: cont1_ljw)
+  --restart              recreate both containers after replacing the runtime
   --clean-build          remove only vcann-rt's build directory before building
   --skip-build           reuse the existing diagnostic runtime artifact
   --trace-enabled 0|1    ENPU_DEADLOCK_TRACE value (default: 1)
@@ -33,6 +37,7 @@ repo_root=/root/l00933108
 build_container=cont1_ljw
 clean_build=0
 skip_build=0
+restart_containers=0
 trace_enabled=1
 
 while (($#)); do
@@ -55,6 +60,10 @@ while (($#)); do
       ;;
     --clean-build)
       clean_build=1
+      shift
+      ;;
+    --restart)
+      restart_containers=1
       shift
       ;;
     --skip-build)
@@ -95,7 +104,11 @@ config_a=${CONFIG_A:-$repo_root/cont1_npu_info.config}
 config_b=${CONFIG_B:-$repo_root/cont2_npu_info.config}
 xlite_wheel=${XLITE_WHEEL:-/root/isa/conf/xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl}
 gdb_source=${GDB_SOURCE:-/root/isa/gdb_arm}
-runtime_artifact=$repo_root/libvruntime-deadlock-diag.so
+runtime_dir=$repo_root/runtime/vcann-deadlock
+runtime_artifact=$runtime_dir/libvruntime.so
+compat_artifact=$repo_root/libvruntime-deadlock-diag.so
+container_runtime_dir=/opt/enpu/vcann-rt/hot
+generated_preload=$runtime_dir/ld.so.preload
 vcann_src=$repo_root/vcann-rt/ubs-virt-enpu/vcann-rt
 container_a=cont1_ljw
 container_b=cont2_ljw
@@ -139,23 +152,30 @@ require_command ctr
 require_command awk
 require_command grep
 require_command install
+require_command ln
+require_command mkdir
 require_command sha256sum
 
 [[ -d "$repo_root" ]] || die "repository directory not found: $repo_root"
 [[ -d "$vcann_src" ]] || die "vCANN source directory not found: $vcann_src"
-require_file "$config_a"
-require_file "$config_b"
-require_file "$xlite_wheel"
-require_file "$gdb_source"
-require_file /root/isa/bins/enpu-monitor
-require_file /root/isa/bins/ld.so.preload
-[[ -d /usr/local/Ascend/driver ]] || die 'Ascend driver directory not found'
-[[ -d /cache/isa/Qwen3-4B ]] || die 'Qwen3-4B model directory not found'
-[[ -d /cache/isa/Qwen3-32B ]] || die 'Qwen3-32B model directory not found'
-[[ -d /opt/isa/shm ]] || die 'shared-memory directory not found: /opt/isa/shm'
+mkdir -p "$runtime_dir"
 
-ctr -n "$namespace" images list -q | grep -Fx -- "$image" >/dev/null ||
-  die "image is not present in namespace $namespace: $image"
+if ((restart_containers == 1)); then
+  require_command python3
+  require_file "$config_a"
+  require_file "$config_b"
+  require_file "$xlite_wheel"
+  require_file "$gdb_source"
+  require_file /root/isa/bins/enpu-monitor
+  require_file /root/isa/bins/ld.so.preload
+  [[ -d /usr/local/Ascend/driver ]] || die 'Ascend driver directory not found'
+  [[ -d /cache/isa/Qwen3-4B ]] || die 'Qwen3-4B model directory not found'
+  [[ -d /cache/isa/Qwen3-32B ]] || die 'Qwen3-32B model directory not found'
+  [[ -d /opt/isa/shm ]] || die 'shared-memory directory not found: /opt/isa/shm'
+
+  ctr -n "$namespace" images list -q | grep -Fx -- "$image" >/dev/null ||
+    die "image is not present in namespace $namespace: $image"
+fi
 
 if ((skip_build == 0)); then
   build_status=$(task_field "$build_container" 3 2>/dev/null || true)
@@ -169,8 +189,8 @@ if ((skip_build == 0)); then
       set -Eeuo pipefail
       repo_root=$1
       clean_build=$2
+      runtime_artifact=$3
       vcann_src=$repo_root/vcann-rt/ubs-virt-enpu/vcann-rt
-      runtime_artifact=$repo_root/libvruntime-deadlock-diag.so
 
       cd "$vcann_src"
       test "$(realpath "$vcann_src")" = \
@@ -213,13 +233,85 @@ if ((skip_build == 0)); then
       ls -lh "$runtime_artifact"
       sha256sum "$runtime_artifact"
       echo VCANN_DIAGNOSTIC_BUILD_OK
-    ' _ "$repo_root" "$clean_build"
+    ' _ "$repo_root" "$clean_build" "$runtime_artifact"
 else
   log 'reuse existing diagnostic vCANN artifact'
 fi
 
 require_file "$runtime_artifact"
 runtime_sha256=$(sha256sum "$runtime_artifact" | awk '{print $1}')
+ln -sfn runtime/vcann-deadlock/libvruntime.so "$compat_artifact"
+
+if ((restart_containers == 0)); then
+  log 'verify hot runtime visibility for new container processes'
+  migrated=1
+  for container in "$container_a" "$container_b"; do
+    status=$(task_field "$container" 3 2>/dev/null || true)
+    if [[ "$status" != RUNNING ]]; then
+      printf 'WARN: container task is not RUNNING: %s\n' "$container" >&2
+      migrated=0
+      continue
+    fi
+    if ! ctr -n "$namespace" tasks exec \
+      --exec-id "$(unique_exec_id check-hot-mount)" \
+      "$container" /bin/bash -lc \
+      'test -s /opt/enpu/vcann-rt/hot/libvruntime.so'; then
+      printf 'WARN: %s still uses the legacy single-file runtime mount\n' "$container" >&2
+      migrated=0
+    fi
+  done
+
+  if ((migrated == 1)); then
+    for container in "$container_a" "$container_b"; do
+      ctr -n "$namespace" tasks exec \
+        --exec-id "$(unique_exec_id verify-hot-runtime)" \
+        "$container" /bin/bash -lc '
+          set -Eeuo pipefail
+          expected_hash=$1
+          runtime=/opt/enpu/vcann-rt/hot/libvruntime.so
+          actual_hash=$(sha256sum "$runtime" | awk "{print \$1}")
+          test "$actual_hash" = "$expected_hash"
+          grep -F "$runtime" /proc/self/maps >/dev/null
+          echo "HOT_RUNTIME_READY container=$2 runtime_sha256=$actual_hash"
+        ' _ "$runtime_sha256" "$container"
+    done
+    printf 'RUNTIME_REPLACE_COMPLETE runtime=%s sha256=%s\n' \
+      "$runtime_artifact" "$runtime_sha256"
+  else
+    printf 'RUNTIME_REPLACED_RESTART_REQUIRED runtime=%s sha256=%s\n' \
+      "$runtime_artifact" "$runtime_sha256"
+  fi
+  exit 0
+fi
+
+preload_tmp=$generated_preload.tmp.$$
+python3 - /root/isa/bins/ld.so.preload "$preload_tmp" \
+  "$container_runtime_dir/libvruntime.so" <<'PY'
+import os
+import re
+import sys
+
+source, destination, replacement = sys.argv[1:]
+text = open(source, encoding="utf-8").read()
+count = 0
+output = []
+for line in text.splitlines(keepends=True):
+    parts = re.split(r"(\s+)", line)
+    for index in range(0, len(parts), 2):
+        token = parts[index]
+        if token.startswith("#"):
+            break
+        if token and os.path.basename(token) == "libvruntime.so":
+            parts[index] = replacement
+            count += 1
+    output.append("".join(parts))
+if count != 1:
+    raise SystemExit(f"expected exactly one libvruntime.so in {source}, found {count}")
+with open(destination, "w", encoding="utf-8") as stream:
+    stream.write("".join(output))
+PY
+chmod 0644 "$preload_tmp"
+mv -f "$preload_tmp" "$generated_preload"
 
 log 'delete exact old test containers'
 delete_exact_container "$container_a"
@@ -250,10 +342,10 @@ create_container() {
     --mount type=bind,src=/usr/local/Ascend/driver/,dst=/usr/local/Ascend/driver/,options=rbind:ro \
     --mount type=bind,src=/cache/isa/Qwen3-4B,dst=/opt/model/Qwen3-4B/,options=rbind:ro \
     --mount type=bind,src=/cache/isa/Qwen3-32B,dst=/opt/model/Qwen3-32B/,options=rbind:ro \
-    --mount "type=bind,src=$runtime_artifact,dst=/opt/enpu/vcann-rt/lib/libvruntime.so,options=rbind:rw" \
+    --mount "type=bind,src=$runtime_dir,dst=$container_runtime_dir,options=rbind:ro" \
     --mount type=bind,src=/root/isa/bins/enpu-monitor,dst=/opt/enpu/vcann-rt/tools/enpu-monitor,options=rbind:rw \
     --mount "type=bind,src=$config,dst=/etc/enpu/vcann-rt/npu_info.config,options=rbind:rw" \
-    --mount type=bind,src=/root/isa/bins/ld.so.preload,dst=/etc/ld.so.preload,options=rbind:rw \
+    --mount "type=bind,src=$generated_preload,dst=/etc/ld.so.preload,options=bind:ro" \
     --mount type=bind,src=/usr/local/sbin/npu-smi,dst=/usr/local/sbin/npu-smi,options=rbind:ro \
     --mount type=bind,src=/usr/bin/systemd-detect-virt,dst=/usr/bin/systemd-detect-virt,options=rbind:rw \
     --mount type=bind,src=/opt/isa/shm,dst=/dev/shm,options=rbind:rw \
@@ -298,7 +390,6 @@ for container in "$container_a" "$container_b"; do
       set -Eeuo pipefail
       wheel_name=$1
       expected_version=$2
-      expected_runtime_sha256=$3
       cd /workspace
       python3 -m pip install "./$wheel_name"
       python3 -c "import importlib.metadata as m; v=m.version(\"xlite\"); print(\"XLITE_VERSION=\" + v); assert v == \"$expected_version\""
@@ -317,13 +408,15 @@ for container in "$container_a" "$container_b"; do
       set -Eeuo pipefail
       expected_trace=$1
       expected_version=$2
+      expected_runtime_sha256=$3
+      runtime=/opt/enpu/vcann-rt/hot/libvruntime.so
 
       test "${ENPU_DEADLOCK_TRACE:-}" = "$expected_trace"
       python3 -c "import importlib.metadata as m; assert m.version(\"xlite\") == \"$expected_version\""
       command -v gdb >/dev/null
-      grep -F /opt/enpu/vcann-rt/lib/libvruntime.so /proc/self/maps >/dev/null
+      grep -F "$runtime" /proc/self/maps >/dev/null
 
-      mounted_hash=$(sha256sum /opt/enpu/vcann-rt/lib/libvruntime.so | awk "{print \$1}")
+      mounted_hash=$(sha256sum "$runtime" | awk "{print \$1}")
       test "$expected_runtime_sha256" = "$mounted_hash"
 
       for symbol in \
@@ -332,7 +425,7 @@ for container in "$container_a" "$container_b"; do
         g_vcann_host_sync_probe \
         g_vcann_kernel_registry \
         vcann_trace_record_enabled; do
-        readelf -sW /opt/enpu/vcann-rt/lib/libvruntime.so | grep -F " $symbol" >/dev/null
+        readelf -sW "$runtime" | grep -F " $symbol" >/dev/null
       done
 
       cap_eff=$(awk "/^CapEff:/ {print \$2}" /proc/self/status)

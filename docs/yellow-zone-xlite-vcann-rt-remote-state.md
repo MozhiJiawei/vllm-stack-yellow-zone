@@ -3,10 +3,10 @@
 ## 当前目标与断点
 
 - 目标：先在真实 NPU 上验证 ABI 3 能把 xLite kernel handle 解析为名称，并从一层 Qwen3 native forward 还原 layer/phase/sync 窗口；通过后再采自然死锁和真实 vLLM。
-- 当前断点：旧 Issue #6 最后确认的是 `vcann-diag-smoke-01` 第一张快照仍冻结，尚无第二张快照、恢复或清理的确认。启动 ABI 3 最小验证前，必须先按精确 PID 清理这组旧 ABI 2 worker，不能在现有 NPU 占用上叠加新任务。
+- 当前断点：旧 ABI 2 worker 已清理；第一次 ABI 3 编译因 `hook.c` 在 `<dlfcn.h>` 前未定义 `_GNU_SOURCE`、导致远端工具链不声明 `RTLD_NEXT` 而停止。失败发生在删除容器之前，所以 `cont1_ljw`、`cont2_ljw` 仍在，但仍是旧的单文件 runtime mount。
 - GDB 来源：宿主机二进制 `/root/isa/gdb_arm`（约 96 MiB），已复制为两个容器内的 `/usr/local/bin/gdb`；两侧均为 GDB 10.1，`ldd` 均无缺失库。该 GDB 不支持 Python scripting，但 ptrace、thread 列举和 detach 均正常。
 - 当前网络结论：容器直连 `ports.ubuntu.com` 因 DNS 解析失败；显式代理 `http://187.0.6.108:8888` 返回非 HTTP 状态行，两条路径均不可用于 apt。
-- 未完成：旧现场精确清理、ABI 3 runtime 远端编译、最小 Qwen trace 验收、自然死锁采集、真实 vLLM 接入。
+- 未完成：ABI 3 runtime 远端编译、首次热替换目录挂载迁移、最小 Qwen trace 验收、自然死锁采集、真实 vLLM 接入。
 
 ## 权威入口与协作规则
 
@@ -40,18 +40,19 @@
 - 两个容器都 bind mount `/root/l00933108`，因此宿主机同步后的脚本和产物直接可见。
 - 独立配置：`/root/l00933108/cont1_npu_info.config` 与 `/root/l00933108/cont2_npu_info.config`。
 - 最后确认的配置为每个 vNPU `aicore-quota=50`、`memory-quota=15000`；配置源原本使用 `scheduling-policy=2`（ELASTIC）。后续若文件被现场修改，必须以这两个实际文件为准，不能沿用旧回复推断。
-- 当前两个容器均以诊断 runtime 重建，并设置 `ENPU_DEADLOCK_TRACE=1`、`CAP_SYS_PTRACE`。
+- 当前两个容器设置了 `ENPU_DEADLOCK_TRACE=1`、`CAP_SYS_PTRACE`，但仍使用旧的单文件 runtime mount；下一次成功操作必须用 `--restart` 完成一次目录挂载迁移。
 
 ### 容器启动基线
 
-- 宿主机一键入口为 `bash /root/l00933108/scripts/restart-vcann-xlite-containers.sh`。该脚本是后续重启的权威入口，串联 ABI 3 诊断 runtime 编译、精确删除两个旧容器、按已验证参数重建、xLite/GDB 安装和诊断 preflight。
-- 脚本先借用仍在运行的 `cont1_ljw` 构建环境完成编译和符号校验，再删除两个旧容器；这个顺序保证编译失败时不破坏当前环境。若已单独验证现有 runtime 产物，可显式使用 `--skip-build`；不能在没有验证产物时绕过编译。
+- 宿主机统一入口为 `bash /root/l00933108/scripts/restart-vcann-xlite-containers.sh`。默认只在 `cont1_ljw` 编译并原子替换 runtime，不重启容器；已有进程继续使用旧映射，之后启动的新进程加载新 runtime。
+- 只有显式增加 `--restart` 才精确删除并重建两个容器、安装 xLite/GDB 和执行完整 preflight。首次从旧单文件 mount 迁移到热替换目录 mount 必须执行一次 `--restart`。
+- 脚本始终先完成编译和符号校验，再考虑删除容器；编译失败不会破坏当前环境。若已单独验证现有 runtime 产物，可显式使用 `--skip-build`；不能在没有验证产物时绕过编译。
 - 使用 `ctr -n k8s.io run --detach --net-host`，镜像为本地 `vllm:19`，容器名固定为 `cont1_ljw`、`cont2_ljw`，入口为 `/bin/bash`。
 - 不使用 `--privileged`：现场 OCI runtime 无法识别其展开出的 `CAP_PERFMON`。诊断只显式增加 `--cap-add CAP_SYS_PTRACE`。
 - 两侧共同环境变量：`ASCEND_RUNTIME_OPTIONS=NODRV`、`ENPU_DEADLOCK_TRACE=1`、`HCCL_OP_EXPANSION_MODE=AIV`、`TASK_QUEUE_ENABLE=1`、`XLITE_DISABLE_XCCL=true`。
 - A 使用 `MASTER_PORT=29504`、`HCCL_NPU_SOCKET_PORT_RANGE=61000-61050`；B 使用 `MASTER_PORT=29510`、`HCCL_NPU_SOCKET_PORT_RANGE=62000-62050`。
-- 两侧必须挂载：`/dev/davinci0-7`、davinci manager/devmm/hdc、driver、Qwen3-4B/32B 模型目录、诊断 runtime、`enpu-monitor`、各自 config、`ld.so.preload`、`npu-smi`、`systemd-detect-virt`、共享 shm 和 `/root/l00933108`。
-- runtime 源固定为 `/root/l00933108/libvruntime-deadlock-diag.so`，目标为 `/opt/enpu/vcann-rt/lib/libvruntime.so`。
+- 两侧必须挂载：`/dev/davinci0-7`、davinci manager/devmm/hdc、driver、Qwen3-4B/32B 模型目录、诊断 runtime 目录、`enpu-monitor`、各自 config、生成的 `ld.so.preload`、`npu-smi`、`systemd-detect-virt`、共享 shm 和 `/root/l00933108`。
+- runtime 源目录固定为 `/root/l00933108/runtime/vcann-deadlock`，容器目标为 `/opt/enpu/vcann-rt/hot`。脚本在目录内原子替换 `libvruntime.so`，目录 bind mount 能让后续新进程看到新 inode；生成的 preload 文件保留原 preload 中其他条目，只把唯一 `libvruntime.so` 改到 hot 路径。
 - A config 源为 `/root/l00933108/cont1_npu_info.config`；B config 源为 `/root/l00933108/cont2_npu_info.config`。不得让两个容器共享同一个可写 config 文件。
 - 完整 `ctr run` 参数已经固化在 `scripts/restart-vcann-xlite-containers.sh`；Issue #6 评论只作为历史成功证据，不再复制命令手工重建。
 
@@ -77,9 +78,9 @@
 
 ### 当前诊断产物
 
-- 宿主共享产物 `/root/l00933108/libvruntime-deadlock-diag.so` 仍是上一版 ABI 2；不能与当前 ABI 3 collector 混用，下一次测试前必须重新编译覆盖。
+- ABI 3 权威产物为 `/root/l00933108/runtime/vcann-deadlock/libvruntime.so`；兼容路径 `/root/l00933108/libvruntime-deadlock-diag.so` 是指向它的 symlink。当前远端尚未成功生成 ABI 3 产物。
 - 当前源码的关键符号为 `g_vcann_trace`、`g_vcann_sync_probe`、`g_vcann_host_sync_probe`、`g_vcann_kernel_registry`、`vcann_trace_record_enabled`。
-- 容器内挂载目标：`/opt/enpu/vcann-rt/lib/libvruntime.so`。
+- 容器内挂载目标：`/opt/enpu/vcann-rt/hot/libvruntime.so`。
 - 采集入口：`scripts/deadlock-diagnostics/collect_two_ctr_containers.sh`。
 - 容器内采集器：`collect_vcann_deadlock.py`；GDB decoder：`vcann_trace_gdb.py`。
 - 现场 GDB 无 Python 时，GDB 导出 trace、scheduler probe、host-sync probe、kernel registry 四个固定 ABI 对象，由容器普通 Python 解码；支持 GDB Python 的环境沿用 helper 路径。
@@ -90,7 +91,7 @@
 - 必须先 source `/usr/local/Ascend/ascend-toolkit/set_env.sh`（若存在）并确认 `ASCEND_HOME_PATH` 非空；`ENPU_ASCEND_DRIVER_PATH` 未设置时构建脚本默认使用 `/usr/local/Ascend`。
 - 诊断编译命令为 `ENABLE_DEADLOCK_DIAGNOSTICS=1 bash make_build.sh`。
 - `build/CMakeCache.txt` 绑定绝对源码路径。若 cache 来自旧路径 `/workspace/vcann-rt`，必须先把整个 `build` 目录改名归档，再从空 build 目录构建；不能复用或只改 cache 文本。
-- 构建完成后确认 `build/libvruntime.so` 非空，原子替换 `/root/l00933108/libvruntime-deadlock-diag.so`，并用 `readelf -sW` 逐一验证上述诊断符号。默认增量构建；只有明确需要时才给一键脚本增加 `--clean-build`。
+- 构建完成后确认 `build/libvruntime.so` 非空，原子替换 `/root/l00933108/runtime/vcann-deadlock/libvruntime.so`，并用 `readelf -sW` 逐一验证上述诊断符号。默认增量构建；只有明确需要时才给一键脚本增加 `--clean-build`。
 
 ## 当前测试基线
 
