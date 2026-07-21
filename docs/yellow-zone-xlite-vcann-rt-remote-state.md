@@ -44,30 +44,23 @@
 
 ### 容器启动基线
 
+- 宿主机一键入口为 `bash /root/l00933108/scripts/restart-vcann-xlite-containers.sh`。该脚本是后续重启的权威入口，串联 ABI 3 诊断 runtime 编译、精确删除两个旧容器、按已验证参数重建、xLite/GDB 安装和诊断 preflight。
+- 脚本先借用仍在运行的 `cont1_ljw` 构建环境完成编译和符号校验，再删除两个旧容器；这个顺序保证编译失败时不破坏当前环境。若已单独验证现有 runtime 产物，可显式使用 `--skip-build`；不能在没有验证产物时绕过编译。
 - 使用 `ctr -n k8s.io run --detach --net-host`，镜像为本地 `vllm:19`，容器名固定为 `cont1_ljw`、`cont2_ljw`，入口为 `/bin/bash`。
 - 不使用 `--privileged`：现场 OCI runtime 无法识别其展开出的 `CAP_PERFMON`。诊断只显式增加 `--cap-add CAP_SYS_PTRACE`。
 - 两侧共同环境变量：`ASCEND_RUNTIME_OPTIONS=NODRV`、`ENPU_DEADLOCK_TRACE=1`、`HCCL_OP_EXPANSION_MODE=AIV`、`TASK_QUEUE_ENABLE=1`、`XLITE_DISABLE_XCCL=true`。
 - A 使用 `MASTER_PORT=29504`、`HCCL_NPU_SOCKET_PORT_RANGE=61000-61050`；B 使用 `MASTER_PORT=29510`、`HCCL_NPU_SOCKET_PORT_RANGE=62000-62050`。
-- 两侧必须挂载：`/dev/davinci0-7`、davinci manager/devmm/hdc、driver、Qwen3-4B/32B 模型目录、诊断 runtime、`enpu-monitor`、各自 config、`ld.so.preload`、`npu-smi`、`systemd-detect-virt`、共享 shm、`/root/l00933108` 和 xLite wheel。
+- 两侧必须挂载：`/dev/davinci0-7`、davinci manager/devmm/hdc、driver、Qwen3-4B/32B 模型目录、诊断 runtime、`enpu-monitor`、各自 config、`ld.so.preload`、`npu-smi`、`systemd-detect-virt`、共享 shm 和 `/root/l00933108`。
 - runtime 源固定为 `/root/l00933108/libvruntime-deadlock-diag.so`，目标为 `/opt/enpu/vcann-rt/lib/libvruntime.so`。
 - A config 源为 `/root/l00933108/cont1_npu_info.config`；B config 源为 `/root/l00933108/cont2_npu_info.config`。不得让两个容器共享同一个可写 config 文件。
-- 当前可复用的完整 `ctr run` 命令保存在 Issue #6 评论：`https://github.com/MozhiJiawei/vllm-stack-yellow-zone/issues/6#issuecomment-5031233770`。后续修改必须以该可运行基线为起点，不能重新从 Docker 参数猜测。
+- 完整 `ctr run` 参数已经固化在 `scripts/restart-vcann-xlite-containers.sh`；Issue #6 评论只作为历史成功证据，不再复制命令手工重建。
 
 ### xLite 安装基线
 
-- 使用现场已有流程，不直接对简写挂载 `/workspace/xlite.whl` 执行 pip。
+- 使用现场已有流程，不依赖 wheel bind mount，也不直接对简写 `/workspace/xlite.whl` 执行 pip。
 - 从 `ctr -n k8s.io t ls` 读取两个 task PID，通过 `/proc/<pid>/root/workspace/` 把宿主机 wheel 以完整文件名复制进容器，再分别执行 pip。
 - 固定 wheel：`xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl`；安装后版本应为 `0.1.0rc12`。
-
-```bash
-PID_C1=$(ctr -n k8s.io t ls | grep cont1_ljw | awk '{print $2}')
-PID_C2=$(ctr -n k8s.io t ls | grep cont2_ljw | awk '{print $2}')
-WHEEL=xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl
-cp "/root/isa/conf/$WHEEL" "/proc/$PID_C1/root/workspace/"
-cp "/root/isa/conf/$WHEEL" "/proc/$PID_C2/root/workspace/"
-ctr -n k8s.io t exec --exec-id 66 -t cont1_ljw bash -c "pip install $WHEEL"
-ctr -n k8s.io t exec --exec-id 66 -t cont2_ljw bash -c "pip install $WHEEL"
-```
+- 同一阶段把 `/root/isa/gdb_arm` 安装为两侧 `/usr/local/bin/gdb`，并验证版本和动态库依赖；容器重建后不能假设上次手工复制的 GDB 仍存在。
 
 ## 代码与诊断实现
 
@@ -97,21 +90,7 @@ ctr -n k8s.io t exec --exec-id 66 -t cont2_ljw bash -c "pip install $WHEEL"
 - 必须先 source `/usr/local/Ascend/ascend-toolkit/set_env.sh`（若存在）并确认 `ASCEND_HOME_PATH` 非空；`ENPU_ASCEND_DRIVER_PATH` 未设置时构建脚本默认使用 `/usr/local/Ascend`。
 - 诊断编译命令为 `ENABLE_DEADLOCK_DIAGNOSTICS=1 bash make_build.sh`。
 - `build/CMakeCache.txt` 绑定绝对源码路径。若 cache 来自旧路径 `/workspace/vcann-rt`，必须先把整个 `build` 目录改名归档，再从空 build 目录构建；不能复用或只改 cache 文本。
-- 构建完成后确认 `build/libvruntime.so` 非空，复制到 `/root/l00933108/libvruntime-deadlock-diag.so`，并用 `readelf -sW` 验证上述诊断符号。
-
-```bash
-VCANN_SRC=/root/l00933108/vcann-rt/ubs-virt-enpu/vcann-rt
-cd "$VCANN_SRC"
-# 仅当现有 CMakeCache 来自其他绝对路径时：mv build "build.stale.$(date +%Y%m%d-%H%M%S)"
-if [ -f /usr/local/Ascend/ascend-toolkit/set_env.sh ]; then
-  source /usr/local/Ascend/ascend-toolkit/set_env.sh
-fi
-: "${ASCEND_HOME_PATH:?ASCEND_HOME_PATH is not set}"
-ENABLE_DEADLOCK_DIAGNOSTICS=1 bash make_build.sh
-cp -f build/libvruntime.so /root/l00933108/libvruntime-deadlock-diag.so
-readelf -sW /root/l00933108/libvruntime-deadlock-diag.so \
-  | grep -E 'g_vcann_trace|g_vcann_sync_probe|g_vcann_host_sync_probe|g_vcann_kernel_registry|vcann_trace_record_enabled'
-```
+- 构建完成后确认 `build/libvruntime.so` 非空，原子替换 `/root/l00933108/libvruntime-deadlock-diag.so`，并用 `readelf -sW` 逐一验证上述诊断符号。默认增量构建；只有明确需要时才给一键脚本增加 `--clean-build`。
 
 ## 当前测试基线
 
