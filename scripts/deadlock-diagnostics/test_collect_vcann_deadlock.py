@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import struct
 from pathlib import Path
 
 import pytest
@@ -116,3 +117,47 @@ def test_parser_accepts_explicit_pid_capture():
     assert args.pid == [123, 456]
     assert args.expected_processes == 2
     assert args.trace_limit == 4096
+
+
+def test_decode_raw_trace_without_gdb_python():
+    size = (
+        collector.TRACE_HEADER.size
+        + collector.TRACE_CAPACITY * 4
+        + collector.TRACE_CAPACITY * collector.TRACE_RECORD.size
+    )
+    trace = bytearray(size)
+    collector.TRACE_HEADER.pack_into(
+        trace,
+        0,
+        collector.TRACE_MAGIC,
+        collector.TRACE_ABI_VERSION,
+        collector.TRACE_CAPACITY,
+        1,
+        123,
+        1,
+    )
+    records_offset = collector.TRACE_HEADER.size + collector.TRACE_CAPACITY * 4
+    collector.TRACE_RECORD.pack_into(
+        trace,
+        records_offset,
+        1,
+        99,
+        0x1234,
+        0x5678,
+        0,
+        42,
+        14,
+        8,
+        64,
+        777,
+    )
+    probe = struct.pack("<IIiIQQQ", 1, 3, 1, 9, 100, 1, 0x1234)
+
+    result = collector.decode_raw_trace(bytes(trace), probe, 4096)
+
+    assert result["available"] is True
+    assert result["decoder"] == "raw-memory"
+    assert result["sync_probe"]["active"] is True
+    assert result["sync_probe"]["stream"] == "0x1234"
+    assert result["records"][0]["kind_name"] == "RT_VECTOR_HANDLE"
+    assert result["records"][0]["on_sync_stream"] is True

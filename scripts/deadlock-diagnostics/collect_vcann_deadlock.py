@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import functools
 import json
 import os
 import re
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import time
@@ -36,6 +38,28 @@ SAFE_ENV_NAMES = {
     "DEVICE_ID",
 }
 NPU_DEVICE = re.compile(r"/dev/davinci\d+$")
+TRACE_MAGIC = 0x5643414E4E545243
+TRACE_ABI_VERSION = 2
+TRACE_CAPACITY = 4096
+TRACE_HEADER = struct.Struct("<QIIIIQ")
+TRACE_RECORD = struct.Struct("<QQQQQQIIII")
+SYNC_PROBE = struct.Struct("<IIiIQQQ")
+KIND_NAMES = {
+    0: "INVALID", 1: "RT_KERNEL_LAUNCH", 2: "RT_KERNEL_HANDLE",
+    3: "RT_KERNEL_HANDLE_V2", 4: "RT_KERNEL_FLAG", 5: "RT_KERNEL_FLAG_V2",
+    6: "RT_KERNEL_EX", 7: "RT_KERNEL_FWK", 8: "RT_CPU_KERNEL",
+    9: "RT_AICPU_KERNEL", 10: "RT_AICPU_KERNEL_EX", 11: "RT_FUNC_HANDLE",
+    12: "RT_FUNC_HANDLE_V2", 13: "RT_FUNC_HANDLE_V3", 14: "RT_VECTOR_HANDLE",
+    15: "RT_VECTOR_KERNEL", 16: "RTS_KERNEL_HOST_ARGS", 17: "RTS_CPU_KERNEL",
+    18: "RTS_KERNEL_CONFIG", 19: "RTS_KERNEL_DEV_ARGS", 20: "RTS_RANDOM_TASK",
+    21: "RTS_REDUCE_TASK", 22: "RTS_UPDATE_TASK", 23: "RT_FFTS_TASK",
+    24: "RT_STARS_TASK", 25: "RT_CMO_TASK", 26: "RT_BARRIER_TASK",
+    27: "RT_MULTIPLE_TASK", 28: "RT_MODEL_EXECUTE", 29: "RT_MODEL_EXECUTE_SYNC",
+    30: "EVENT_RECORD", 31: "EVENT_WAIT", 32: "NOTIFY_RECORD",
+    33: "NOTIFY_WAIT", 34: "STREAM_DESTROY", 35: "STREAM_CAPTURE_BEGIN",
+    36: "STREAM_CAPTURE_END", 37: "SCHED_SYNC_BEGIN", 38: "SCHED_SYNC_END",
+}
+STRING_OBJECT_KINDS = {7, 8, 10}
 
 
 class CollectionError(RuntimeError):
@@ -233,6 +257,136 @@ def run_command(command: list[str], timeout: float = 90.0) -> dict[str, Any]:
         return {"command": command, "error": f"{type(error).__name__}: {error}"}
 
 
+def pointer_text(value: int) -> str:
+    return f"0x{value:x}" if value else "0x0"
+
+
+@functools.lru_cache(maxsize=None)
+def gdb_python_supported(gdb: str) -> bool:
+    marker = "VCANN_GDB_PYTHON_OK"
+    result = run_command(
+        [gdb, "-nx", "-q", "-batch", "-ex", f'python print("{marker}")'],
+        timeout=15.0,
+    )
+    return result.get("returncode") == 0 and marker in result.get("stdout", "")
+
+
+def decode_raw_trace(
+    trace_raw: bytes,
+    probe_raw: bytes,
+    limit: int,
+    string_reader: Any | None = None,
+) -> dict[str, Any]:
+    expected_trace_size = (
+        TRACE_HEADER.size + TRACE_CAPACITY * 4 + TRACE_CAPACITY * TRACE_RECORD.size
+    )
+    if len(trace_raw) != expected_trace_size or len(probe_raw) != SYNC_PROBE.size:
+        return {
+            "available": False,
+            "error": "unexpected raw vCANN trace size",
+            "observed": {"trace": len(trace_raw), "probe": len(probe_raw)},
+            "expected": {"trace": expected_trace_size, "probe": SYNC_PROBE.size},
+        }
+    magic, abi_version, capacity, enabled, process_id, next_sequence = (
+        TRACE_HEADER.unpack_from(trace_raw)
+    )
+    if (
+        magic != TRACE_MAGIC
+        or abi_version != TRACE_ABI_VERSION
+        or capacity != TRACE_CAPACITY
+    ):
+        return {
+            "available": False,
+            "error": "incompatible vCANN trace ABI",
+            "observed": {
+                "magic": f"0x{magic:016x}",
+                "abi_version": abi_version,
+                "capacity": capacity,
+            },
+        }
+    active, vnpu_id, owner, schedule_turn, begin_ns, begin_sequence, sync_stream = (
+        SYNC_PROBE.unpack(probe_raw)
+    )
+    if not active:
+        sync_stream = 0
+    records_offset = TRACE_HEADER.size + capacity * 4
+    first_sequence = max(1, next_sequence - min(limit, capacity) + 1)
+    records = []
+    for sequence in range(first_sequence, next_sequence + 1):
+        slot = (sequence - 1) % capacity
+        fields = TRACE_RECORD.unpack_from(
+            trace_raw, records_offset + slot * TRACE_RECORD.size
+        )
+        (
+            committed_sequence,
+            timestamp_ns,
+            stream_address,
+            object_address,
+            auxiliary,
+            value,
+            kind,
+            blocks,
+            args_size,
+            tid,
+        ) = fields
+        if committed_sequence != sequence:
+            continue
+        entry = {
+            "sequence": sequence,
+            "timestamp_ns": timestamp_ns,
+            "tid": tid,
+            "kind": kind,
+            "kind_name": KIND_NAMES.get(kind, f"UNKNOWN_{kind}"),
+            "record_phase": "scheduler" if kind in (37, 38) else "hook_attempt",
+            "stream": pointer_text(stream_address),
+            "object": pointer_text(object_address),
+            "auxiliary": pointer_text(auxiliary),
+            "value": value,
+            "blocks": blocks,
+            "args_size": args_size,
+            "on_sync_stream": bool(sync_stream and stream_address == sync_stream),
+        }
+        if string_reader is not None and kind in STRING_OBJECT_KINDS and object_address:
+            name = string_reader(object_address)
+            if name:
+                entry["object_name"] = name
+        records.append(entry)
+    return {
+        "available": True,
+        "decoder": "raw-memory",
+        "magic": f"0x{magic:016x}",
+        "abi_version": abi_version,
+        "capacity": capacity,
+        "enabled": bool(enabled),
+        "process_id": process_id,
+        "next_sequence": next_sequence,
+        "sync_probe": {
+            "active": bool(active),
+            "vnpu_id": vnpu_id,
+            "owner": owner,
+            "schedule_turn": schedule_turn,
+            "begin_ns": begin_ns,
+            "begin_sequence": begin_sequence,
+            "stream": pointer_text(sync_stream),
+        },
+        "runtime_state": {"unavailable": "GDB was built without Python support"},
+        "records": records,
+    }
+
+
+def process_string_reader(pid: int) -> tuple[int, Any]:
+    memory = os.open(f"/proc/{pid}/mem", os.O_RDONLY)
+
+    def read_string(address: int) -> str:
+        try:
+            raw = os.pread(memory, 160, address).split(b"\0", 1)[0]
+            return raw.decode("utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    return memory, read_string
+
+
 def write_command(path: Path, result: dict[str, Any]) -> None:
     with path.open("w", encoding="utf-8") as stream:
         stream.write("COMMAND: " + " ".join(result["command"]) + "\n")
@@ -289,11 +443,18 @@ def collect_proc(pid: int, output: Path) -> None:
 
 def collect_gdb(target: dict[str, Any], output: Path, trace_limit: int) -> dict[str, Any]:
     pid = int(target["pid"])
-    if not shutil.which("gdb"):
+    gdb = shutil.which("gdb")
+    if not gdb:
         return {"error": "gdb is not installed"}
     trace_path = output / "vcann-trace.json"
-    command = ["gdb", "-nx", "-q", "-batch"]
-    if GDB_HELPER.exists():
+    python_supported = gdb_python_supported(gdb)
+    trace_raw = output / "vcann-trace.raw"
+    probe_raw = output / "vcann-sync-probe.raw"
+    trace_raw_size = (
+        TRACE_HEADER.size + TRACE_CAPACITY * 4 + TRACE_CAPACITY * TRACE_RECORD.size
+    )
+    command = [gdb, "-nx", "-q", "-batch"]
+    if python_supported and GDB_HELPER.exists():
         command.extend(["-x", str(GDB_HELPER)])
     command.extend(
         [
@@ -311,17 +472,48 @@ def collect_gdb(target: dict[str, Any], output: Path, trace_limit: int) -> dict[
             "info sharedlibrary",
         ]
     )
-    if GDB_HELPER.exists():
+    if python_supported and GDB_HELPER.exists():
         command.extend(["-ex", f"vcann-trace-dump {trace_path} {trace_limit}"])
+    else:
+        command.extend(
+            [
+                "-ex",
+                f"dump binary memory {trace_raw} &g_vcann_trace "
+                f"((char *)&g_vcann_trace + {trace_raw_size})",
+                "-ex",
+                f"dump binary memory {probe_raw} &g_vcann_sync_probe "
+                f"((char *)&g_vcann_sync_probe + {SYNC_PROBE.size})",
+            ]
+        )
     command.extend(["-ex", "detach"])
     result = run_command(command)
     write_command(output / "gdb-native.txt", result)
     validate_target(target)
     os.kill(pid, signal.SIGSTOP)
     wait_stopped([target])
+    if not python_supported and trace_raw.exists() and probe_raw.exists():
+        memory = None
+        try:
+            memory, read_string = process_string_reader(pid)
+            trace = decode_raw_trace(
+                trace_raw.read_bytes(), probe_raw.read_bytes(), trace_limit, read_string
+            )
+        except OSError as error:
+            trace = decode_raw_trace(
+                trace_raw.read_bytes(), probe_raw.read_bytes(), trace_limit
+            )
+            trace["string_read_error"] = str(error)
+        finally:
+            if memory is not None:
+                os.close(memory)
+        atomic_json(trace_path, trace)
     summary = {
         key: result.get(key) for key in ("returncode", "error") if key in result
-    } | {"trace_created": trace_path.exists()}
+    } | {
+        "gdb_python_supported": python_supported,
+        "trace_decoder": "gdb-python" if python_supported else "raw-memory",
+        "trace_created": trace_path.exists(),
+    }
     if trace_path.exists():
         try:
             trace = json.loads(trace_path.read_text(encoding="utf-8"))
@@ -428,10 +620,12 @@ def command_discover(args: argparse.Namespace) -> int:
 
 def command_preflight(args: argparse.Namespace) -> int:
     targets = select_targets(args.pid, args.expected_processes, args.include_no_device)
+    gdb = shutil.which("gdb")
     checks = {
         "platform": sys.platform,
         "uid": os.getuid(),
-        "gdb": shutil.which("gdb"),
+        "gdb": gdb,
+        "gdb_python_supported": gdb_python_supported(gdb) if gdb else False,
         "gdb_helper": str(GDB_HELPER) if GDB_HELPER.exists() else None,
         "ptrace_scope": read_text(Path("/proc/sys/kernel/yama/ptrace_scope")).strip(),
         "self_status": read_text(Path("/proc/self/status")),

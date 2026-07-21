@@ -47,8 +47,10 @@ run:
 python3 /tmp/collect-vcann-deadlock.py preflight --expected-processes 8
 ```
 
-`preflight` also reports the GDB path, helper presence, Yama ptrace scope, and
-the collector process capability/seccomp status from `/proc/self/status`.
+`preflight` also reports the GDB path, whether that GDB supports Python, helper
+presence, Yama ptrace scope, and the collector process capability/seccomp status
+from `/proc/self/status`. GDB Python support is optional: without it, GDB dumps
+the two fixed vCANN ABI objects and the container's regular Python decodes them.
 
 Automatic discovery requires both:
 
