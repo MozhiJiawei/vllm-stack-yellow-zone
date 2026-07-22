@@ -114,6 +114,7 @@ deadlock.
 ```bash
 export ENPU_DEADLOCK_TRACE=1
 python3 scripts/deadlock-diagnostics/verify_xlite_qwen_trace.py \
+  --tp-size 8 \
   --hold-seconds 600
 ```
 
@@ -134,3 +135,8 @@ its records must carry `qwen_layer: 0` and phases such as
 probe should show the intentional wait.  Resume the capture or stop the verifier
 after inspecting the JSON; resuming cannot satisfy the deliberately missing
 collective ranks.
+
+For a container started with four NPUs, use `--tp-size 4` and pass
+`--expected-processes 4` to the collector. Device ordinals inside the container
+remain the dense local range `0..3`; the host-side physical IDs are selected by
+the container restart script.

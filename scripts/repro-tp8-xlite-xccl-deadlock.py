@@ -95,14 +95,30 @@ def make_model_forward(
     ModelConfig: Any,
     AttnMeta: Any,
     AttnMHA: Any,
+    tp_size: int = TP,
 ) -> tuple[Any, ...]:
     """Build a checkpoint-free native xLite Qwen3 dense decode forward."""
+    if tp_size <= 0:
+        raise ValueError(f"tp_size must be positive: {tp_size}")
+    if QWEN3_HEADS % tp_size or QWEN3_KV_HEADS % tp_size:
+        raise ValueError(
+            f"Qwen3 heads must divide evenly across TP={tp_size}: "
+            f"heads={QWEN3_HEADS} kv_heads={QWEN3_KV_HEADS}"
+        )
+    if intermediate_size % tp_size:
+        raise ValueError(
+            f"intermediate_size must divide evenly across TP={tp_size}: "
+            f"intermediate_size={intermediate_size}"
+        )
+
+    local_q_heads = QWEN3_HEADS // tp_size
+    local_kv_heads = QWEN3_KV_HEADS // tp_size
     max_blocks = (cached_tokens + 1 + BLOCK_SIZE - 1) // BLOCK_SIZE
     cache_blocks = batch * max_blocks
     dev = f"npu:{device}"
 
     config = ModelConfig()
-    config.vocab_size = TP
+    config.vocab_size = tp_size
     config.hidden_size = hidden_size
     config.n_layers = layers
     config.n_heads = QWEN3_HEADS
@@ -114,7 +130,7 @@ def make_model_forward(
     config.softmax_scale = HEAD_DIM ** -0.5
     config.n_dense_layers = layers
     config.intermediate_size = intermediate_size
-    config.def_tp_size = TP
+    config.def_tp_size = tp_size
     config.def_dp_size = 1
     config.moe_ep_size = 1
     config.moe_tp_size = 1
@@ -128,8 +144,8 @@ def make_model_forward(
     config.qk_norm = True
     config.attn_type = AttnMHA
 
-    local_intermediate = intermediate_size // TP
-    local_qkv = (Q_HEADS_TP8 + 2 * KV_HEADS_TP8) * HEAD_DIM
+    local_intermediate = intermediate_size // tp_size
+    local_qkv = (local_q_heads + 2 * local_kv_heads) * HEAD_DIM
     # The list length preserves the complete layer stack. Reusing storage keeps
     # this reproducer small without changing any native Model.forward operator.
     norm = torch.ones(hidden_size, dtype=dtype, device=dev)
@@ -137,7 +153,7 @@ def make_model_forward(
     k_norm = torch.ones(HEAD_DIM, dtype=dtype, device=dev)
     qkv = torch.zeros((local_qkv, hidden_size), dtype=dtype, device=dev)
     attn_out = torch.zeros(
-        (hidden_size, Q_HEADS_TP8 * HEAD_DIM), dtype=dtype, device=dev
+        (hidden_size, local_q_heads * HEAD_DIM), dtype=dtype, device=dev
     )
     up_gate = torch.zeros(
         (2 * local_intermediate, hidden_size), dtype=dtype, device=dev
@@ -166,7 +182,7 @@ def make_model_forward(
         raise RuntimeError(f"xLite tensor pool init failed: requested_mib={pool_mib}")
 
     k_cache = torch.zeros(
-        (cache_blocks, BLOCK_SIZE, KV_HEADS_TP8, HEAD_DIM),
+        (cache_blocks, BLOCK_SIZE, local_kv_heads, HEAD_DIM),
         dtype=dtype,
         device=dev,
     )

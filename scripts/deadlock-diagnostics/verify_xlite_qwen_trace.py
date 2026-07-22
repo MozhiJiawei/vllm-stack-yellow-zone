@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Create a minimal, intentional Qwen3/xLite capture window on one TP8 group.
+"""Create a minimal, intentional Qwen3/xLite capture window on one TP group.
 
-All eight ranks complete one native one-layer warm-up.  On the diagnostic
-forward only rank 0 submits work; ranks 1-7 deliberately withhold their calls.
+All ranks complete one native one-layer warm-up.  On the diagnostic forward
+only rank 0 submits work; the other ranks deliberately withhold their calls.
 Rank 0 therefore reaches an incomplete TP collective and remains available for
 the vCANN deadlock collector.  This is a diagnostics check, not a deadlock
 reproducer or a correctness benchmark.
@@ -22,7 +22,7 @@ import traceback
 from typing import Any
 
 
-TP = 8
+DEFAULT_TP = 8
 
 
 def load_reproducer() -> Any:
@@ -56,7 +56,7 @@ def worker(
 
         repro = load_reproducer()
         torch.npu.set_device(rank)
-        runtime = Runtime(rank, 0, rank, TP, 1)
+        runtime = Runtime(rank, 0, rank, args.tp_size, 1)
         dtype = torch.bfloat16
         forward_args = repro.make_model_forward(
             torch,
@@ -72,6 +72,7 @@ def worker(
             ModelConfig,
             AttnMeta,
             AttnMHA,
+            args.tp_size,
         )
         torch.npu.synchronize()
         messages.put(("READY", rank, os.getpid(), ""))
@@ -136,9 +137,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cached-tokens", type=int, default=9216)
     parser.add_argument("--setup-timeout", type=float, default=300)
     parser.add_argument("--hold-seconds", type=float, default=600)
+    parser.add_argument("--tp-size", type=int, default=DEFAULT_TP)
     args = parser.parse_args()
-    if args.batch <= 0 or args.cached_tokens <= 0:
-        parser.error("batch and cached-tokens must be positive")
+    if args.batch <= 0 or args.cached_tokens <= 0 or args.tp_size <= 0:
+        parser.error("batch, cached-tokens and tp-size must be positive")
     if args.setup_timeout <= 0 or args.hold_seconds <= 0:
         parser.error("timeouts must be positive")
     return args
@@ -162,15 +164,15 @@ def main() -> int:
             args=(rank, port, args, warmup, hold, messages),
             name=f"trace-verify-rank-{rank}",
         )
-        for rank in range(TP)
+        for rank in range(args.tp_size)
     ]
     for process in workers:
         process.start()
 
     try:
-        ready = wait_for(messages, "READY", TP, args.setup_timeout)
+        ready = wait_for(messages, "READY", args.tp_size, args.setup_timeout)
         warmup.set()
-        wait_for(messages, "WARM", TP, args.setup_timeout)
+        wait_for(messages, "WARM", args.tp_size, args.setup_timeout)
         hold.set()
         entered = wait_for(messages, "ENTER", 1, 30)
         time.sleep(5)
@@ -181,7 +183,8 @@ def main() -> int:
             flush=True,
         )
         print(
-            "Run collect_vcann_deadlock.py capture with --expected-processes 8; "
+            "Run collect_vcann_deadlock.py capture with "
+            f"--expected-processes {args.tp_size}; "
             "the verifier will preserve this intentional window until the hold expires.",
             flush=True,
         )
