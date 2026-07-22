@@ -1,205 +1,264 @@
+diff --git a/tests/ut/test_vcann.py b/tests/ut/test_vcann.py
+new file mode 100644
+index 0000000..e5313ff
+--- /dev/null
++++ b/tests/ut/test_vcann.py
+@@ -0,0 +1,130 @@
++import ctypes
++from types import SimpleNamespace
++
++import pytest
++
++from vllm_ascend import vcann
++from vllm_ascend.worker.worker import NPUWorker
++
++
++class FakeApi:
++    def __init__(self):
++        self.enabled = True
++        self.calls = []
++        self.enter_result = 0
++        self.end_result = 0
++
++    def enter(self, ready, enabled):
++        self.calls.append(("enter", ready))
++        ctypes.cast(enabled, ctypes.POINTER(ctypes.c_bool))[0] = self.enabled
++        return self.enter_result
++
++    def end(self):
++        self.calls.append(("end",))
++        return self.end_result
++
++
++def test_missing_abi_is_noop(monkeypatch):
++    monkeypatch.setattr(vcann, "_API", None)
++    assert not vcann.enter(True)
++    vcann.end()
++
++
++def test_non_elastic_enter_is_noop(monkeypatch):
++    api = FakeApi()
++    api.enabled = False
++    monkeypatch.setattr(vcann, "_API", api)
++
++    assert not vcann.enter(True)
++    assert [call[0] for call in api.calls] == ["enter"]
++
++
++def test_active_step_calls_two_abi(monkeypatch):
++    api = FakeApi()
++    monkeypatch.setattr(vcann, "_API", api)
++
++    assert vcann.enter(True)
++    vcann.end()
++    assert [call[0] for call in api.calls] == ["enter", "end"]
++
++
++def test_enter_failure_does_not_end(monkeypatch):
++    api = FakeApi()
++    api.enter_result = 7
++    monkeypatch.setattr(vcann, "_API", api)
++
++    with pytest.raises(RuntimeError, match="rtDetSchedEnter"):
++        vcann.enter(True)
++    assert [call[0] for call in api.calls] == ["enter"]
++
++
++def test_failed_body_cleanup_logs_end_failure(monkeypatch):
++    api = FakeApi()
++    api.end_result = 9
++    monkeypatch.setattr(vcann, "_API", api)
++
++    vcann.end(body_failed=True)
++    assert api.calls == [("end",)]
++
++
++def test_worker_ends_immediate_output_once(monkeypatch):
++    calls = []
++    output = object()
++    worker = object.__new__(NPUWorker)
++    worker._vcann_active = True
++    worker._execute_model = lambda _scheduler_output: output
++    monkeypatch.setattr(vcann, "end", lambda failed=False: calls.append(failed))
++
++    assert NPUWorker.execute_model(worker, object()) is output
++    assert calls == [False]
++    assert not worker._vcann_active
++
++
++def test_worker_keeps_guard_through_delayed_sampling(monkeypatch):
++    calls = []
++    output = object()
++    worker = object.__new__(NPUWorker)
++    worker._vcann_active = True
++    worker._execute_model = lambda _scheduler_output: None
++    worker.model_runner = SimpleNamespace(sample_tokens=lambda _grammar: output)
++    monkeypatch.setattr(vcann, "end", lambda failed=False: calls.append(failed))
++
++    assert NPUWorker.execute_model(worker, object()) is None
++    assert calls == []
++    assert NPUWorker.sample_tokens(worker, object()) is output
++    assert calls == [False]
++    assert not worker._vcann_active
++
++
++def test_worker_ends_failed_execution_once(monkeypatch):
++    calls = []
++
++    def failed_execute(_scheduler_output):
++        raise RuntimeError("model failed")
++
++    worker = object.__new__(NPUWorker)
++    worker._vcann_active = True
++    worker._execute_model = failed_execute
++    monkeypatch.setattr(vcann, "end", lambda failed=False: calls.append(failed))
++
++    with pytest.raises(RuntimeError, match="model failed"):
++        NPUWorker.execute_model(worker, object())
++    assert calls == [True]
++    assert not worker._vcann_active
++
++
++def test_worker_ends_failed_sampling_once(monkeypatch):
++    calls = []
++
++    def failed_sample(_grammar):
++        raise RuntimeError("sample failed")
++
++    worker = object.__new__(NPUWorker)
++    worker._vcann_active = True
++    worker.model_runner = SimpleNamespace(sample_tokens=failed_sample)
++    monkeypatch.setattr(vcann, "end", lambda failed=False: calls.append(failed))
++
++    with pytest.raises(RuntimeError, match="sample failed"):
++        NPUWorker.sample_tokens(worker, object())
++    assert calls == [True]
++    assert not worker._vcann_active
 diff --git a/vllm_ascend/vcann.py b/vllm_ascend/vcann.py
 new file mode 100644
-index 00000000..8325332a
+index 0000000..179e96d
 --- /dev/null
 +++ b/vllm_ascend/vcann.py
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,53 @@
 +# Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
-+#
 +# Licensed under the Apache License, Version 2.0 (the "License");
-+# you may not use this file except in compliance with the License.
-+# You may obtain a copy of the License at
-+#
-+#     http://www.apache.org/licenses/LICENSE-2.0
-+#
-+# Unless required by applicable law or agreed to in writing, software
-+# distributed under the License is distributed on an "AS IS" BASIS,
-+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-+# See the License for the specific language governing permissions and
-+# limitations under the License.
 +
 +import ctypes
-+from collections.abc import Iterator, Mapping
-+from contextlib import contextmanager
 +from typing import Any
 +
 +from vllm.logger import logger
 +
-+_VCANN_SUCCESS = 0
++_SUCCESS = 0
 +
 +
-+class _VcannPrefillApi:
++class _DetSchedApi:
 +    def __init__(self, library: Any) -> None:
-+        self.begin = library.rtBeginPrefill
-+        self.begin.argtypes = []
-+        self.begin.restype = ctypes.c_int
-+        self.end = library.rtEndPrefill
++        self.enter = library.rtDetSchedEnter
++        self.enter.argtypes = [ctypes.c_bool, ctypes.POINTER(ctypes.c_bool)]
++        self.enter.restype = ctypes.c_int
++        self.end = library.rtDetSchedEnd
 +        self.end.argtypes = []
 +        self.end.restype = ctypes.c_int
 +
 +
-+def _load_vcann_prefill_api() -> _VcannPrefillApi | None:
++def _load_api() -> _DetSchedApi | None:
 +    try:
-+        return _VcannPrefillApi(ctypes.CDLL(None))
++        return _DetSchedApi(ctypes.CDLL(None))
 +    except (AttributeError, OSError, TypeError):
-+        # The symbols exist only when libvruntime.so is preloaded. Keep native
-+        # vLLM-Ascend deployments unchanged when vCANN is not installed.
 +        return None
 +
 +
-+_VCANN_PREFILL_API = _load_vcann_prefill_api()
++_API = _load_api()
 +
 +
-+def batch_contains_prefill(attn_metadata: Any) -> bool:
-+    """Return whether any attention group in this model step has prefill work."""
-+    groups = attn_metadata if isinstance(attn_metadata, list) else [attn_metadata]
-+    visited: set[int] = set()
-+    for group in groups:
-+        if not isinstance(group, Mapping):
-+            continue
-+        for metadata in group.values():
-+            metadata_id = id(metadata)
-+            if metadata_id in visited:
-+                continue
-+            visited.add(metadata_id)
-+            num_prefills = getattr(metadata, "num_prefills", 0)
-+            if num_prefills is not None and num_prefills > 0:
-+                return True
-+    return False
++def enter(ready: bool) -> bool:
++    """Enter the current READY decision; unavailable/non-elastic is a no-op."""
++    if _API is None:
++        return False
++    enabled = ctypes.c_bool()
++    rc = _API.enter(ready, ctypes.byref(enabled))
++    if rc != _SUCCESS:
++        raise RuntimeError(f"rtDetSchedEnter failed with error code {rc}")
++    return enabled.value
 +
 +
-+@contextmanager
-+def vcann_prefill_guard(enabled: bool) -> Iterator[None]:
-+    """Keep the current vNPU owner for the complete model-forward prefill."""
-+    api = _VCANN_PREFILL_API
-+    if not enabled or api is None:
-+        yield
++def end(body_failed: bool = False) -> None:
++    if _API is None:
 +        return
-+
-+    result = api.begin()
-+    if result != _VCANN_SUCCESS:
-+        raise RuntimeError(f"rtBeginPrefill failed with error code {result}")
-+
-+    body_failed = False
-+    try:
-+        yield
-+    except BaseException:
-+        body_failed = True
-+        raise
-+    finally:
-+        result = api.end()
-+        if result != _VCANN_SUCCESS:
-+            message = f"rtEndPrefill failed with error code {result}"
-+            if body_failed:
-+                logger.error(message)
-+            else:
-+                raise RuntimeError(message)
-diff --git a/vllm_ascend/worker/model_runner_v1.py b/vllm_ascend/worker/model_runner_v1.py
-index 49b8ce6b..c931bcef 100644
---- a/vllm_ascend/worker/model_runner_v1.py
-+++ b/vllm_ascend/worker/model_runner_v1.py
-@@ -135,6 +135,7 @@ from vllm_ascend.utils import (
-     set_weight_prefetch_method,
-     should_skip_allreduce_across_dp_group,
- )
-+from vllm_ascend.vcann import batch_contains_prefill, vcann_prefill_guard
- from vllm_ascend.worker.npu_input_batch import NPUInputBatch
- from vllm_ascend.worker.pcp_utils import PCPManager
- 
-@@ -1644,6 +1645,7 @@ class NPUModelRunner(GPUModelRunner):
-                     num_scheduled_tokens_np=num_scheduled_tokens_np,
-                     cascade_attn_prefix_lens=cascade_attn_prefix_lens,
-                 )
-+                has_prefill = batch_contains_prefill(attn_metadata)
- 
-             (
-                 input_ids,
-@@ -1697,6 +1699,7 @@ class NPUModelRunner(GPUModelRunner):
-         # Run forward pass
-         clear_kv_metadata = self.speculative_config is None
-         with (
-+            vcann_prefill_guard(has_prefill),
-             record_function_or_nullcontext("forward"),
-             set_ascend_forward_context(
-                 attn_metadata,
-diff --git a/tests/ut/test_vcann.py b/tests/ut/test_vcann.py
-new file mode 100644
-index 00000000..174b8501
---- /dev/null
-+++ b/tests/ut/test_vcann.py
-@@ -0,0 +1,75 @@
-+from types import SimpleNamespace
-+
-+import pytest
++    rc = _API.end()
++    if rc == _SUCCESS:
++        return
++    message = f"rtDetSchedEnd failed with error code {rc}"
++    if body_failed:
++        logger.error(message)
++    else:
++        raise RuntimeError(message)
+diff --git a/vllm_ascend/worker/worker.py b/vllm_ascend/worker/worker.py
+index b1855f1..efdf104 100644
+--- a/vllm_ascend/worker/worker.py
++++ b/vllm_ascend/worker/worker.py
+@@ -48,6 +48,7 @@ from vllm.v1.worker.worker_base import WorkerBase
+ from vllm.v1.worker.workspace import init_workspace_manager
+
+ import vllm_ascend.envs as envs_ascend
 +from vllm_ascend import vcann
+ from vllm_ascend.ascend_config import get_ascend_config, init_ascend_config
+ from vllm_ascend.batch_invariant import init_batch_invariance
+ from vllm_ascend.cpu_binding import bind_cpus
+@@ -141,6 +142,7 @@ class NPUWorker(WorkerBase):
+
+         self.use_v2_model_runner = envs_vllm.VLLM_USE_V2_MODEL_RUNNER
+         self._pp_send_work: list[Handle] = []
++        self._vcann_active = False
+
+         ascend_compilation_config = get_ascend_config().ascend_compilation_config
+         if ascend_compilation_config.enable_npugraph_ex and ascend_compilation_config.enable_static_kernel:
+@@ -395,9 +397,33 @@ class NPUWorker(WorkerBase):
+
+         return int(self.available_kv_cache_memory_bytes)
+
++    def det_sched_enter(self, ready: bool) -> bool:
++        enabled = vcann.enter(ready)
++        self._vcann_active = ready and enabled
++        return enabled
 +
++    def _det_sched_end(self, body_failed: bool = False) -> None:
++        if not self._vcann_active:
++            return
++        self._vcann_active = False
++        vcann.end(body_failed)
 +
-+class FakePrefillApi:
-+    def __init__(self, begin_result=0, end_result=0):
-+        self.begin_result = begin_result
-+        self.end_result = end_result
-+        self.calls = []
+     def execute_model(
+         self,
+         scheduler_output: "SchedulerOutput",
++    ) -> ModelRunnerOutput | AsyncModelRunnerOutput | None:
++        try:
++            output = self._execute_model(scheduler_output)
++        except BaseException:
++            self._det_sched_end(body_failed=True)
++            raise
++        if output is not None:
++            self._det_sched_end()
++        return output
 +
-+    def begin(self):
-+        self.calls.append("begin")
-+        return self.begin_result
-+
-+    def end(self):
-+        self.calls.append("end")
-+        return self.end_result
-+
-+
-+def test_batch_contains_prefill_for_dict_and_ubatches():
-+    decode = SimpleNamespace(num_prefills=0)
-+    prefill = SimpleNamespace(num_prefills=1)
-+
-+    assert not vcann.batch_contains_prefill({"layer.0": decode})
-+    assert vcann.batch_contains_prefill({"layer.0": prefill})
-+    assert vcann.batch_contains_prefill([{"layer.0": decode}, {"layer.0": prefill}])
-+
-+
-+def test_prefill_guard_is_noop_without_vcann(monkeypatch):
-+    monkeypatch.setattr(vcann, "_VCANN_PREFILL_API", None)
-+
-+    with vcann.vcann_prefill_guard(True):
-+        pass
-+
-+
-+def test_prefill_guard_pairs_begin_and_end(monkeypatch):
-+    api = FakePrefillApi()
-+    monkeypatch.setattr(vcann, "_VCANN_PREFILL_API", api)
-+
-+    with vcann.vcann_prefill_guard(True):
-+        assert api.calls == ["begin"]
-+
-+    assert api.calls == ["begin", "end"]
-+
-+
-+def test_prefill_guard_ends_after_model_error(monkeypatch):
-+    api = FakePrefillApi()
-+    monkeypatch.setattr(vcann, "_VCANN_PREFILL_API", api)
-+
-+    with pytest.raises(ValueError, match="model failed"), vcann.vcann_prefill_guard(True):
-+        raise ValueError("model failed")
-+
-+    assert api.calls == ["begin", "end"]
-+
-+
-+def test_prefill_guard_does_not_end_after_failed_begin(monkeypatch):
-+    api = FakePrefillApi(begin_result=7)
-+    monkeypatch.setattr(vcann, "_VCANN_PREFILL_API", api)
-+
-+    with pytest.raises(RuntimeError, match="rtBeginPrefill failed"), vcann.vcann_prefill_guard(True):
-+        pass
-+
-+    assert api.calls == ["begin"]
-+
-+
-+def test_prefill_guard_reports_failed_end(monkeypatch):
-+    api = FakePrefillApi(end_result=9)
-+    monkeypatch.setattr(vcann, "_VCANN_PREFILL_API", api)
-+
-+    with pytest.raises(RuntimeError, match="rtEndPrefill failed"), vcann.vcann_prefill_guard(True):
-+        pass
-+
-+    assert api.calls == ["begin", "end"]
++    def _execute_model(
++        self,
++        scheduler_output: "SchedulerOutput",
+     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | None:
+         # enable msMonitor to monitor the performance of vllm-ascend
+         if envs_ascend.MSMONITOR_USE_DAEMON:
+@@ -459,7 +485,13 @@ class NPUWorker(WorkerBase):
+
+     @torch.inference_mode()
+     def sample_tokens(self, grammar_output: "GrammarOutput") -> ModelRunnerOutput | AsyncModelRunnerOutput:
+-        return self.model_runner.sample_tokens(grammar_output)
++        try:
++            output = self.model_runner.sample_tokens(grammar_output)
++        except BaseException:
++            self._det_sched_end(body_failed=True)
++            raise
++        self._det_sched_end()
++        return output
+
+     def load_model(self) -> None:
+         if self.vllm_config.model_config.enable_sleep_mode:

@@ -22,6 +22,7 @@ set(VNPU_SRC_FILES
     ${PROJECT_SOURCE_DIR}/src/npu_manager.c
     ${PROJECT_SOURCE_DIR}/src/log.c
     ${PROJECT_SOURCE_DIR}/src/ascend/device.c
+    ${PROJECT_SOURCE_DIR}/src/ascend/deterministic_sched.c
     ${PROJECT_SOURCE_DIR}/src/ascend/event.c
     ${PROJECT_SOURCE_DIR}/src/ascend/graph.c
     ${PROJECT_SOURCE_DIR}/src/ascend/hook.c
@@ -47,6 +48,7 @@ set(VNPU_TESTCASE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/testcase/utils/hash_map_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/testcase/npu_manager_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/testcase/core_limiter_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/testcase/deterministic_sched_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/testcase/deadlock_trace_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/testcase/log_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/testcase/mem_limiter_test.cpp

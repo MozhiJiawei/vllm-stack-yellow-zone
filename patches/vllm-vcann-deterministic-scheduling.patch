@@ -1,0 +1,159 @@
+diff --git a/tests/v1/engine/test_engine_core.py b/tests/v1/engine/test_engine_core.py
+index ae67491..deb44d6 100644
+--- a/tests/v1/engine/test_engine_core.py
++++ b/tests/v1/engine/test_engine_core.py
+@@ -601,3 +601,61 @@ def test_encoder_instance_zero_kv_cache(
+         assert not engine_core.scheduler.ec_connector.is_producer, (
+             "Consumer instance EC connector should be consumer"
+         )
++
++
++@pytest.mark.parametrize("tp", [1, 2, 4, 8])
++def test_deterministic_enter_has_one_reply_per_tp_worker(tp):
++    calls = []
++    core = object.__new__(EngineCore)
++    core._det_sched_enabled = None
++    core._det_sched_tp = tp
++    core.model_executor = type(
++        "Executor",
++        (),
++        {
++            "collective_rpc": lambda _, method, args: (
++                calls.append((method, args)) or [True] * tp
++            )
++        },
++    )()
++
++    assert core._det_sched_enter(True)
++    assert calls == [("det_sched_enter", (True,))]
++
++
++def test_deterministic_enter_disables_when_abi_is_unavailable():
++    core = object.__new__(EngineCore)
++    core._det_sched_enabled = None
++    core._det_sched_tp = 2
++    core.model_executor = type(
++        "Executor", (), {"collective_rpc": lambda *_args, **_kwargs: [False, False]}
++    )()
++
++    assert not core._det_sched_enter(False)
++    assert core._det_sched_enabled is False
++
++
++def test_deterministic_enter_rejects_batch_queue():
++    core = object.__new__(EngineCore)
++    core._det_sched_enabled = None
++    core._det_sched_tp = 1
++    core.batch_queue = object()
++    core.model_executor = type(
++        "Executor", (), {"collective_rpc": lambda *_args, **_kwargs: [True]}
++    )()
++
++    with pytest.raises(RuntimeError, match="batch queue"):
++        core._det_sched_enter(True)
++
++
++@pytest.mark.parametrize("replies", [[True], [True, False]])
++def test_deterministic_enter_rejects_inconsistent_tp_replies(replies):
++    core = object.__new__(EngineCore)
++    core._det_sched_enabled = None
++    core._det_sched_tp = 2
++    core.model_executor = type(
++        "Executor", (), {"collective_rpc": lambda *_args, **_kwargs: replies}
++    )()
++
++    with pytest.raises(RuntimeError):
++        core._det_sched_enter(True)
+diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
+index 0fa5957..dd7c7c0 100644
+--- a/vllm/v1/engine/core.py
++++ b/vllm/v1/engine/core.py
+@@ -214,6 +214,10 @@ class EngineCore:
+
+         self.aborts_queue = queue.Queue[list[str]]()
+
++        # Optional vCANN scheduling is discovered by the worker RPC itself.
++        self._det_sched_enabled: bool | None = None
++        self._det_sched_tp = vllm_config.parallel_config.tensor_parallel_size
++
+         self._idle_state_callbacks: list[Callable] = []
+
+         # Mark the startup heap as static so that it's ignored by GC.
+@@ -377,6 +381,34 @@ class EngineCore:
+         )
+         self._iteration_index += 1
+
++    def _det_sched_enter(self, runnable: bool) -> bool:
++        """Publish the current READY state once on every TP worker."""
++        if self._det_sched_enabled is False:
++            return False
++
++        enabled = self.model_executor.collective_rpc(
++            "det_sched_enter", args=(runnable,)
++        )
++        if len(enabled) != self._det_sched_tp:
++            raise RuntimeError(
++                f"deterministic scheduling expected {self._det_sched_tp} TP workers, "
++                f"got {len(enabled)}"
++            )
++        if any(enabled) and not all(enabled):
++            raise RuntimeError("mixed vCANN deterministic runtime detected")
++        if not any(enabled):
++            self._det_sched_enabled = False
++            return False
++        if getattr(self, "batch_queue", None) is not None:
++            raise RuntimeError(
++                "deterministic v1 does not support PP or concurrent batch queues"
++            )
++        if self._det_sched_tp not in (1, 2, 4, 8):
++            raise RuntimeError("deterministic elastic scheduling supports TP1/2/4/8")
++
++        self._det_sched_enabled = True
++        return True
++
+     def step(self) -> tuple[dict[int, EngineCoreOutputs], bool]:
+         """Schedule, execute, and make output.
+
+@@ -387,8 +419,12 @@ class EngineCore:
+         # Check for any requests remaining in the scheduler - unfinished,
+         # or finished and not yet removed from the batch.
+         if not self.scheduler.has_requests():
++            self._det_sched_enter(False)
+             return {}, False
+         scheduler_output = self.scheduler.schedule()
++        runnable = scheduler_output.total_num_scheduled_tokens > 0
++        if self._det_sched_enter(runnable) and not runnable:
++            return {}, False
+         future = self.model_executor.execute_model(scheduler_output, non_block=True)
+         grammar_output = self.scheduler.get_grammar_bitmask(scheduler_output)
+         with (
+@@ -1158,8 +1194,13 @@ class EngineCoreProc(EngineCore):
+                     logger.debug("EngineCore waiting for work.")
+                     waited = True
+             block = self.process_input_queue_block
++            if self._det_sched_enabled is None:
++                self._det_sched_enter(False)
+             try:
+-                req = self.input_queue.get(block=block)
++                if block and self._det_sched_enabled:
++                    req = self.input_queue.get(timeout=0.001)
++                else:
++                    req = self.input_queue.get(block=block)
+                 self._handle_client_request(*req)
+             except queue.Empty:
+                 break
+diff --git a/vllm/v1/worker/worker_base.py b/vllm/v1/worker/worker_base.py
+index 041fff6..25e103e 100644
+--- a/vllm/v1/worker/worker_base.py
++++ b/vllm/v1/worker/worker_base.py
+@@ -137,6 +137,10 @@ class WorkerBase:
+         """
+         raise NotImplementedError
+
++    def det_sched_enter(self, ready: bool) -> bool:
++        """Enter optional vCANN deterministic scheduling."""
++        return False
++
+     def sample_tokens(
+         self, grammar_output: GrammarOutput
+     ) -> ModelRunnerOutput | AsyncModelRunnerOutput:

@@ -28,6 +28,8 @@ typedef struct {
 } rt_entry_t;
 
 typedef rtError_t (*rt_symbol_t)();
+extern bool core_limiter_take_pending(void);
+extern void core_limiter_release(void);
 
 #define RUNTIME_HOOK_ENUM(x) HOOK_##x
 
@@ -38,10 +40,13 @@ typedef rtError_t (*rt_symbol_t)();
 #define RUNTIME_HOOK_CALL(table, symbol, ...)                                \
     ({                                                                       \
         rt_symbol_t _entry = (rt_symbol_t)RUNTIME_FIND_ENTRY(table, symbol); \
+        bool _release_gate = core_limiter_take_pending();                    \
         if (!_entry) {                                                       \
             fprintf(stderr, "HOOK ERROR: %s - %s\n", #symbol, dlerror());    \
         }                                                                    \
-        _entry ? _entry(__VA_ARGS__) : ACL_ERROR_FAILURE;                    \
+        rtError_t _result = _entry ? _entry(__VA_ARGS__) : ACL_ERROR_FAILURE; \
+        if (_release_gate) core_limiter_release();                           \
+        _result;                                                             \
     })
 
 typedef enum

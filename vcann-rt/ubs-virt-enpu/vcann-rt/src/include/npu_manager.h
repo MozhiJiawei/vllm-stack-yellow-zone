@@ -35,6 +35,23 @@ extern "C" {
 #define MB_TO_B (1024 * 1024)
 #define MAX_DEVICE_LIST_NUM 64
 #define MAX_NPU_DEVICES 16  // Maximum number of NPU devices supported
+#define DET_SCHED_PARTICIPANTS 2
+
+typedef enum {
+    DET_SNAPSHOT_UNKNOWN = 0,
+    DET_SNAPSHOT_IDLE = 1,
+    DET_SNAPSHOT_READY = 2,
+} det_snapshot_t;
+
+typedef enum {
+    DET_STATE_DISABLED = 0,
+    DET_STATE_PARK = 1,
+    DET_STATE_GRANTED_0 = 2,
+    DET_STATE_RUNNING_0 = 3,
+    DET_STATE_GRANTED_1 = 4,
+    DET_STATE_RUNNING_1 = 5,
+    DET_STATE_FAILED = 6,
+} det_sched_state_t;
 
 typedef enum
 {
@@ -59,6 +76,11 @@ typedef struct shared_memory {
     atomic_int slide_window_len;
     atomic_uint_fast64_t last_slide_window_time_ns;
     prefill_state_t prefill_state[MAX_VNPU];
+    pthread_mutex_t det_mutex;
+    atomic_int det_participants[DET_SCHED_PARTICIPANTS];
+    int det_snapshot[DET_SCHED_PARTICIPANTS];
+    atomic_int det_state;
+    uint64_t det_weighted_turn;
 } vnpu_time_slice_sched_t;
 
 // NPU information structure per device
