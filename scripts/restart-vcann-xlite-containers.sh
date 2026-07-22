@@ -21,6 +21,7 @@ Options:
   --image REF            existing local image (default: vllm:19)
   --repo-root PATH       host/repository path (default: /root/l00933108)
   --build-container ID   running container used to compile (default: cont1_ljw)
+  --physical-npus LIST   comma-separated physical NPU IDs (default: 0,1,2,3,4,5,6,7)
   --restart              recreate both containers after replacing the runtime
   --clean-build          remove only vcann-rt's build directory before building
   --skip-build           reuse the existing diagnostic runtime artifact
@@ -29,7 +30,7 @@ Options:
 
 Environment overrides:
   CONFIG_A, CONFIG_B, XLITE_WHEEL, XLITE_EXPECTED_VERSION,
-  GDB_SOURCE, PRELOAD_SOURCE
+  GDB_SOURCE, PRELOAD_SOURCE, PHYSICAL_NPUS
 EOF
 }
 
@@ -37,6 +38,7 @@ namespace=k8s.io
 image=vllm:19
 repo_root=/root/l00933108
 build_container=cont1_ljw
+physical_npus=${PHYSICAL_NPUS:-0,1,2,3,4,5,6,7}
 clean_build=0
 skip_build=0
 restart_containers=0
@@ -58,6 +60,10 @@ while (($#)); do
       ;;
     --build-container)
       build_container=${2:-}
+      shift 2
+      ;;
+    --physical-npus)
+      physical_npus=${2:-}
       shift 2
       ;;
     --clean-build)
@@ -89,8 +95,8 @@ while (($#)); do
 done
 
 if [[ -z "$namespace" || -z "$image" || -z "$repo_root" ||
-      -z "$build_container" ]]; then
-  printf 'ERROR: namespace, image, repo-root and build-container must be non-empty\n' >&2
+      -z "$build_container" || -z "$physical_npus" ]]; then
+  printf 'ERROR: namespace, image, repo-root, build-container and physical-npus must be non-empty\n' >&2
   exit 2
 fi
 if [[ "$trace_enabled" != 0 && "$trace_enabled" != 1 ]]; then
@@ -116,6 +122,32 @@ vcann_src=$repo_root/vcann-rt/ubs-virt-enpu/vcann-rt
 container_a=cont1_ljw
 container_b=cont2_ljw
 expected_xlite_version=${XLITE_EXPECTED_VERSION:-0.1.0rc12}
+
+declare -a physical_npu_ids=()
+declare -a device_args=()
+declare -A seen_physical_npus=()
+if [[ ! "$physical_npus" =~ ^[0-7](,[0-7]){0,7}$ ]]; then
+  printf 'ERROR: --physical-npus must be 1-8 comma-separated IDs in the range 0-7\n' >&2
+  exit 2
+fi
+IFS=',' read -r -a physical_npu_ids <<< "$physical_npus"
+if ((${#physical_npu_ids[@]} == 0 || ${#physical_npu_ids[@]} > 8)); then
+  printf 'ERROR: --physical-npus must contain between 1 and 8 IDs\n' >&2
+  exit 2
+fi
+for physical_id in "${physical_npu_ids[@]}"; do
+  if [[ ! "$physical_id" =~ ^[0-7]$ ]]; then
+    printf 'ERROR: invalid physical NPU ID: %s (expected 0-7)\n' "$physical_id" >&2
+    exit 2
+  fi
+  if [[ -n "${seen_physical_npus[$physical_id]:-}" ]]; then
+    printf 'ERROR: duplicate physical NPU ID: %s\n' "$physical_id" >&2
+    exit 2
+  fi
+  seen_physical_npus[$physical_id]=1
+  device_args+=(--device "/dev/davinci$physical_id")
+done
+npu_count=${#physical_npu_ids[@]}
 
 log() {
   printf '\n===== %s =====\n' "$*"
@@ -151,6 +183,32 @@ delete_exact_container() {
   ctr -n "$namespace" containers delete "$container" >/dev/null 2>&1 || true
 }
 
+generate_vcann_config() {
+  local destination=$1
+  local virtual_offset=$2
+  local temporary=$destination.tmp.$$
+  local index physical_id virtual_id
+
+  [[ -d "$(dirname "$destination")" ]] ||
+    die "config parent directory not found: $(dirname "$destination")"
+  : >"$temporary"
+  for ((index = 0; index < npu_count; ++index)); do
+    physical_id=${physical_npu_ids[$index]}
+    virtual_id=$((virtual_offset + physical_id))
+    printf '%s\n' \
+      "[DEVICE-$index]" \
+      "physical-npu-id=$physical_id" \
+      "virtual-npu-id=$virtual_id" \
+      'aicore-quota=50' \
+      'memory-quota=15000' \
+      "shm-id=shim$physical_id" \
+      'scheduling-policy=2' \
+      '' >>"$temporary"
+  done
+  chmod 0644 "$temporary"
+  mv -f "$temporary" "$destination"
+}
+
 temporary_build_container=
 cleanup_temporary_build_container() {
   if [[ -n "$temporary_build_container" ]]; then
@@ -166,6 +224,7 @@ require_command grep
 require_command install
 require_command ln
 require_command mkdir
+require_command dirname
 require_command sha256sum
 
 [[ -d "$repo_root" ]] || die "repository directory not found: $repo_root"
@@ -174,8 +233,6 @@ mkdir -p "$runtime_dir"
 
 if ((restart_containers == 1)); then
   require_command python3
-  require_file "$config_a"
-  require_file "$config_b"
   require_file "$xlite_wheel"
   require_file "$gdb_source"
   require_file /root/isa/bins/enpu-monitor
@@ -184,6 +241,11 @@ if ((restart_containers == 1)); then
   [[ -d /cache/isa/Qwen3-4B ]] || die 'Qwen3-4B model directory not found'
   [[ -d /cache/isa/Qwen3-32B ]] || die 'Qwen3-32B model directory not found'
   [[ -d /opt/isa/shm ]] || die 'shared-memory directory not found: /opt/isa/shm'
+
+  for physical_id in "${physical_npu_ids[@]}"; do
+    [[ -e "/dev/davinci$physical_id" ]] ||
+      die "physical NPU device not found: /dev/davinci$physical_id"
+  done
 
   ctr -n "$namespace" images list -q | grep -Fx -- "$image" >/dev/null ||
     die "image is not present in namespace $namespace: $image"
@@ -345,6 +407,12 @@ PY
 chmod 0644 "$preload_tmp"
 mv -f "$preload_tmp" "$generated_preload"
 
+log "generate vCANN configs for physical NPUs: $physical_npus"
+generate_vcann_config "$config_a" 0
+generate_vcann_config "$config_b" 8
+require_file "$config_a"
+require_file "$config_b"
+
 log 'delete exact old test containers'
 delete_exact_container "$container_a"
 delete_exact_container "$container_b"
@@ -366,10 +434,7 @@ create_container() {
     --env XLITE_DISABLE_XCCL=true \
     --cap-add CAP_SYS_PTRACE \
     --detach \
-    --device /dev/davinci0 --device /dev/davinci1 \
-    --device /dev/davinci2 --device /dev/davinci3 \
-    --device /dev/davinci4 --device /dev/davinci5 \
-    --device /dev/davinci6 --device /dev/davinci7 \
+    "${device_args[@]}" \
     --device /dev/davinci_manager --device /dev/devmm_svm --device /dev/hisi_hdc \
     --mount type=bind,src=/usr/local/Ascend/driver/,dst=/usr/local/Ascend/driver/,options=rbind:ro \
     --mount type=bind,src=/cache/isa/Qwen3-4B,dst=/opt/model/Qwen3-4B/,options=rbind:ro \
@@ -441,6 +506,7 @@ for container in "$container_a" "$container_b"; do
       expected_trace=$1
       expected_version=$2
       expected_runtime_sha256=$3
+      expected_physical_npus=$4
       runtime=/opt/enpu/vcann-rt/hot/libvruntime.so
 
       test "${ENPU_DEADLOCK_TRACE:-}" = "$expected_trace"
@@ -465,11 +531,19 @@ for container in "$container_a" "$container_b"; do
       python3 -c "v=int(\"$cap_eff\", 16); assert v & (1 << 19)"
       grep -Eq "virtual-npu-id|aicore-quota|memory-quota|scheduling-policy" \
         /etc/enpu/vcann-rt/npu_info.config
-      echo "DIAGNOSTIC_PREFLIGHT_OK container=$4 runtime_sha256=$mounted_hash"
-    ' _ "$trace_enabled" "$expected_xlite_version" "$runtime_sha256" "$container"
+      actual_physical_npus=$(sed -n "s/^physical-npu-id=//p" \
+        /etc/enpu/vcann-rt/npu_info.config | paste -sd, -)
+      test "$actual_physical_npus" = "$expected_physical_npus"
+      IFS=, read -r -a physical_ids <<< "$expected_physical_npus"
+      for physical_id in "${physical_ids[@]}"; do
+        test -e "/dev/davinci$physical_id"
+      done
+      echo "DIAGNOSTIC_PREFLIGHT_OK container=$5 physical_npus=$actual_physical_npus runtime_sha256=$mounted_hash"
+    ' _ "$trace_enabled" "$expected_xlite_version" "$runtime_sha256" "$physical_npus" "$container"
 done
 
 log 'restart complete'
 ctr -n "$namespace" containers list | grep -E "^($container_a|$container_b)[[:space:]]"
 ctr -n "$namespace" tasks list | grep -E "^($container_a|$container_b)[[:space:]]"
-printf 'RESTART_COMPLETE runtime=%s trace=%s\n' "$runtime_artifact" "$trace_enabled"
+printf 'RESTART_COMPLETE runtime=%s trace=%s physical_npus=%s\n' \
+  "$runtime_artifact" "$trace_enabled" "$physical_npus"

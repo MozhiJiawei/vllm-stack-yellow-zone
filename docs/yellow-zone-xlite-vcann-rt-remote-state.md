@@ -54,6 +54,7 @@
 - 两侧必须挂载：`/dev/davinci0-7`、davinci manager/devmm/hdc、driver、Qwen3-4B/32B 模型目录、诊断 runtime 目录、`enpu-monitor`、各自 config、生成的 `ld.so.preload`、`npu-smi`、`systemd-detect-virt`、共享 shm 和 `/root/l00933108`。
 - runtime 源目录固定为 `/root/l00933108/runtime/vcann-deadlock`，容器目标为 `/opt/enpu/vcann-rt/hot`。脚本在目录内原子替换 `libvruntime.so`，目录 bind mount 能让后续新进程看到新 inode；生成的 preload 文件保留原 preload 中其他条目，只把唯一 `libvruntime.so` 改到 hot 路径。
 - A config 源为 `/root/l00933108/cont1_npu_info.config`；B config 源为 `/root/l00933108/cont2_npu_info.config`。不得让两个容器共享同一个可写 config 文件。
+- `--physical-npus` 接收 `0–7` 范围内的物理卡 ID 列表，默认 `0,1,2,3,4,5,6,7`；例如 `--physical-npus 4,5,6,7` 只挂载 `/dev/davinci4-7`。`--restart` 时脚本原子生成两份 config：section 使用连续的 `DEVICE-0..N-1`，A 保持 `virtual-npu-id=physical-npu-id`，B 保持 `virtual-npu-id=physical-npu-id+8`，两侧 `shm-id` 按物理 ID 保持一致。
 - preload 模板源固定归档为 `/root/l00933108/ld.so.preload`，脚本据此生成 runtime 目录下的挂载文件；可通过 `PRELOAD_SOURCE` 覆盖，不再依赖 `/root/isa/bins/ld.so.preload`。
 - 完整 `ctr run` 参数已经固化在 `scripts/restart-vcann-xlite-containers.sh`；Issue #6 评论只作为历史成功证据，不再复制命令手工重建。
 
