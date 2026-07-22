@@ -2,7 +2,7 @@ diff --git a/tests/v1/engine/test_engine_core.py b/tests/v1/engine/test_engine_c
 index ae67491..deb44d6 100644
 --- a/tests/v1/engine/test_engine_core.py
 +++ b/tests/v1/engine/test_engine_core.py
-@@ -601,3 +601,61 @@ def test_encoder_instance_zero_kv_cache(
+@@ -601,3 +601,80 @@ def test_encoder_instance_zero_kv_cache(
          assert not engine_core.scheduler.ec_connector.is_producer, (
              "Consumer instance EC connector should be consumer"
          )
@@ -26,6 +26,25 @@ index ae67491..deb44d6 100644
 +
 +    assert core._det_sched_enter(True)
 +    assert calls == [("det_sched_enter", (True,))]
++
++
++def test_deterministic_enter_skips_initial_idle_once():
++    calls = []
++    core = object.__new__(EngineCore)
++    core._det_sched_enabled = None
++    core._det_sched_initial_idle = True
++    core._det_sched_tp = 1
++    core.model_executor = type(
++        "Executor",
++        (),
++        {"collective_rpc": lambda *_args, **_kwargs: calls.append(1) or [True]},
++    )()
++
++    assert not core._det_sched_enter(False)
++    assert calls == []
++    assert not core._det_sched_initial_idle
++    assert core._det_sched_enter(False)
++    assert calls == [1]
 +
 +
 +def test_deterministic_enter_disables_when_abi_is_unavailable():
@@ -68,23 +87,28 @@ diff --git a/vllm/v1/engine/core.py b/vllm/v1/engine/core.py
 index 0fa5957..dd7c7c0 100644
 --- a/vllm/v1/engine/core.py
 +++ b/vllm/v1/engine/core.py
-@@ -214,6 +214,10 @@ class EngineCore:
+@@ -214,6 +214,11 @@ class EngineCore:
 
          self.aborts_queue = queue.Queue[list[str]]()
 
 +        # Optional vCANN scheduling is discovered by the worker RPC itself.
 +        self._det_sched_enabled: bool | None = None
++        self._det_sched_initial_idle = True
 +        self._det_sched_tp = vllm_config.parallel_config.tensor_parallel_size
 +
          self._idle_state_callbacks: list[Callable] = []
 
          # Mark the startup heap as static so that it's ignored by GC.
-@@ -377,6 +381,34 @@ class EngineCore:
+@@ -377,6 +382,38 @@ class EngineCore:
          )
          self._iteration_index += 1
 
 +    def _det_sched_enter(self, runnable: bool) -> bool:
 +        """Publish the current READY state once on every TP worker."""
++        if not runnable and getattr(self, "_det_sched_initial_idle", False):
++            self._det_sched_initial_idle = False
++            return False
++
 +        if self._det_sched_enabled is False:
 +            return False
 +
@@ -135,7 +159,7 @@ index 0fa5957..dd7c7c0 100644
 +                self._det_sched_enter(False)
              try:
 -                req = self.input_queue.get(block=block)
-+                if block and self._det_sched_enabled:
++                if block and self._det_sched_enabled is not False:
 +                    req = self.input_queue.get(timeout=0.001)
 +                else:
 +                    req = self.input_queue.get(block=block)
