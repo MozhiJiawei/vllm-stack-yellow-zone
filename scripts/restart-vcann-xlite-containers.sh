@@ -240,7 +240,7 @@ if ((restart_containers == 1)); then
   [[ -d /usr/local/Ascend/driver ]] || die 'Ascend driver directory not found'
   [[ -d /cache/isa/Qwen3-4B ]] || die 'Qwen3-4B model directory not found'
   [[ -d /cache/isa/Qwen3-32B ]] || die 'Qwen3-32B model directory not found'
-  [[ -d /opt/isa/shm ]] || die 'shared-memory directory not found: /opt/isa/shm'
+  install -d -m 1777 /opt/l00933108
 
   for physical_id in "${physical_npu_ids[@]}"; do
     [[ -e "/dev/davinci$physical_id" ]] ||
@@ -445,7 +445,7 @@ create_container() {
     --mount "type=bind,src=$generated_preload,dst=/etc/ld.so.preload,options=bind:ro" \
     --mount type=bind,src=/usr/local/sbin/npu-smi,dst=/usr/local/sbin/npu-smi,options=rbind:ro \
     --mount type=bind,src=/usr/bin/systemd-detect-virt,dst=/usr/bin/systemd-detect-virt,options=rbind:rw \
-    --mount type=bind,src=/opt/isa/shm,dst=/dev/shm,options=rbind:rw \
+    --mount type=bind,src=/opt/l00933108,dst=/dev/shm,options=rbind:rw \
     --mount "type=bind,src=$repo_root,dst=$repo_root,options=rbind:rw" \
     --net-host \
     "$image" "$container" /bin/bash
