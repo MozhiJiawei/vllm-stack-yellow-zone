@@ -29,7 +29,7 @@ Options:
 
 Environment overrides:
   CONFIG_A, CONFIG_B, XLITE_WHEEL, XLITE_EXPECTED_VERSION,
-  GDB_SOURCE
+  GDB_SOURCE, PRELOAD_SOURCE
 EOF
 }
 
@@ -104,6 +104,7 @@ fi
 
 config_a=${CONFIG_A:-$repo_root/cont1_npu_info.config}
 config_b=${CONFIG_B:-$repo_root/cont2_npu_info.config}
+preload_source=${PRELOAD_SOURCE:-$repo_root/ld.so.preload}
 xlite_wheel=${XLITE_WHEEL:-/root/isa/conf/xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl}
 gdb_source=${GDB_SOURCE:-/root/isa/gdb_arm}
 runtime_dir=$repo_root/runtime/vcann-deadlock
@@ -178,7 +179,7 @@ if ((restart_containers == 1)); then
   require_file "$xlite_wheel"
   require_file "$gdb_source"
   require_file /root/isa/bins/enpu-monitor
-  require_file /root/isa/bins/ld.so.preload
+  require_file "$preload_source"
   [[ -d /usr/local/Ascend/driver ]] || die 'Ascend driver directory not found'
   [[ -d /cache/isa/Qwen3-4B ]] || die 'Qwen3-4B model directory not found'
   [[ -d /cache/isa/Qwen3-32B ]] || die 'Qwen3-32B model directory not found'
@@ -316,7 +317,7 @@ if ((restart_containers == 0)); then
 fi
 
 preload_tmp=$generated_preload.tmp.$$
-python3 - /root/isa/bins/ld.so.preload "$preload_tmp" \
+python3 - "$preload_source" "$preload_tmp" \
   "$container_runtime_dir/libvruntime.so" <<'PY'
 import os
 import re
