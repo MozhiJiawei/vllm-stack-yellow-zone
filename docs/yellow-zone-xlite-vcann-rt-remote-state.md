@@ -75,6 +75,7 @@
 - 诊断构建的运行时开关：`ENPU_DEADLOCK_TRACE=1`。未设置时不记录。
 - 临时 hook 路径日志开关：`ENPU_DEADLOCK_TRACE_LOG=1`。仅在诊断 trace 已启用时使用，按 ERROR 输出 kernel 注册和 launch 命中；默认关闭，避免正常运行刷屏。
 - trace 在 Runtime hook 入口、`core_limiter()` 之前记录“调用尝试”；它不证明 Runtime 已接受、设备已入队或算子已完成。
+- CANN 8.5.1 的 xLite 路径先以 `aclrtBinaryGetFunction` 获得命名 handle，再经 `aclrtLaunchKernel*` 转换为无直接名称关联的 `rts*` handle；诊断链同时记录 ACL launch 边界，名称关联不得依赖两层 handle 地址相等。
 - scheduler probe 标记进入/退出 `rtStreamSynchronize`，记录 vNPU、进入时的 owner、schedule turn 和 stream。
 - 环形缓冲每进程 4096 条；不做文件 I/O或动态分配，使用无全局锁的逐 slot 同步。
 - 诊断版仍为 `-O2`，保留 GDB 符号；GDB helper 校验 magic、ABI 和 capacity。

@@ -47,12 +47,25 @@ static const char *trace_kind_name(vcann_trace_kind_t kind)
         "RTS_KERNEL_HOST_ARGS", "RTS_CPU_KERNEL", "RTS_KERNEL_CONFIG", "RTS_KERNEL_DEV_ARGS",
     };
     uint32_t value = (uint32_t)kind;
+    switch (kind) {
+        case VCANN_TRACE_ACL_KERNEL:
+            return "ACL_KERNEL";
+        case VCANN_TRACE_ACL_KERNEL_CONFIG:
+            return "ACL_KERNEL_CONFIG";
+        case VCANN_TRACE_ACL_KERNEL_V2:
+            return "ACL_KERNEL_V2";
+        case VCANN_TRACE_ACL_KERNEL_HOST_ARGS:
+            return "ACL_KERNEL_HOST_ARGS";
+        default:
+            break;
+    }
     return value < sizeof(names) / sizeof(names[0]) ? names[value] : "UNKNOWN";
 }
 
 static bool trace_kind_is_kernel_launch(vcann_trace_kind_t kind)
 {
-    return kind >= VCANN_TRACE_RT_KERNEL_LAUNCH && kind <= VCANN_TRACE_RTS_KERNEL_DEV_ARGS;
+    return (kind >= VCANN_TRACE_RT_KERNEL_LAUNCH && kind <= VCANN_TRACE_RTS_KERNEL_DEV_ARGS) ||
+           (kind >= VCANN_TRACE_ACL_KERNEL && kind <= VCANN_TRACE_ACL_KERNEL_HOST_ARGS);
 }
 
 static uint64_t trace_now_ns(void)

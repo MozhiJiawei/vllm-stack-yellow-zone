@@ -241,6 +241,52 @@ __attribute__((visibility("default"))) aclError aclrtBinaryGetFunction(
     return ret;
 }
 
+__attribute__((visibility("default"))) aclError aclrtLaunchKernel(
+    aclrtFuncHandle funcHandle, uint32_t blockDim, const void *argsData, size_t argsSize,
+    aclrtStream stream)
+{
+    runtime_hook_resolve(HOOK_aclrtLaunchKernel);
+    vcann_trace_record(VCANN_TRACE_ACL_KERNEL, (rtStream_t)stream, funcHandle, argsData,
+                       0, blockDim, (uint32_t)argsSize);
+    return RUNTIME_HOOK_CALL(rt_library_entry, aclrtLaunchKernel, funcHandle, blockDim,
+                             argsData, argsSize, stream);
+}
+
+__attribute__((visibility("default"))) aclError aclrtLaunchKernelWithConfig(
+    aclrtFuncHandle funcHandle, uint32_t blockDim, aclrtStream stream,
+    aclrtLaunchKernelCfg *cfg, aclrtArgsHandle argsHandle, void *reserve)
+{
+    runtime_hook_resolve(HOOK_aclrtLaunchKernelWithConfig);
+    vcann_trace_record(VCANN_TRACE_ACL_KERNEL_CONFIG, (rtStream_t)stream, funcHandle,
+                       argsHandle, 0, blockDim, 0);
+    return RUNTIME_HOOK_CALL(rt_library_entry, aclrtLaunchKernelWithConfig, funcHandle,
+                             blockDim, stream, cfg, argsHandle, reserve);
+}
+
+__attribute__((visibility("default"))) aclError aclrtLaunchKernelV2(
+    aclrtFuncHandle funcHandle, uint32_t blockDim, const void *argsData, size_t argsSize,
+    aclrtLaunchKernelCfg *cfg, aclrtStream stream)
+{
+    runtime_hook_resolve(HOOK_aclrtLaunchKernelV2);
+    vcann_trace_record(VCANN_TRACE_ACL_KERNEL_V2, (rtStream_t)stream, funcHandle, argsData,
+                       0, blockDim, (uint32_t)argsSize);
+    return RUNTIME_HOOK_CALL(rt_library_entry, aclrtLaunchKernelV2, funcHandle, blockDim,
+                             argsData, argsSize, cfg, stream);
+}
+
+__attribute__((visibility("default"))) aclError aclrtLaunchKernelWithHostArgs(
+    aclrtFuncHandle funcHandle, uint32_t blockDim, aclrtStream stream,
+    aclrtLaunchKernelCfg *cfg, void *hostArgs, size_t argsSize,
+    aclrtPlaceHolderInfo *placeHolderArray, size_t placeHolderNum)
+{
+    runtime_hook_resolve(HOOK_aclrtLaunchKernelWithHostArgs);
+    vcann_trace_record(VCANN_TRACE_ACL_KERNEL_HOST_ARGS, (rtStream_t)stream, funcHandle,
+                       hostArgs, placeHolderNum, blockDim, (uint32_t)argsSize);
+    return RUNTIME_HOOK_CALL(rt_library_entry, aclrtLaunchKernelWithHostArgs, funcHandle,
+                             blockDim, stream, cfg, hostArgs, argsSize, placeHolderArray,
+                             placeHolderNum);
+}
+
 RUNTIME_HOOK_DEFINE(rtFunctionRegister, void *binHandle, const void *stubFunc, const char *stubName,
                     const void *devFunc, uint32_t funcMode)
 {

@@ -67,6 +67,8 @@ KIND_NAMES = {
     39: "KERNEL_REGISTER", 40: "KERNEL_UNREGISTER",
     41: "DEVICE_SYNC_BEGIN", 42: "DEVICE_SYNC_END",
     43: "STREAM_SYNC_BEGIN", 44: "STREAM_SYNC_END",
+    45: "ACL_KERNEL", 46: "ACL_KERNEL_CONFIG", 47: "ACL_KERNEL_V2",
+    48: "ACL_KERNEL_HOST_ARGS",
 }
 STRING_OBJECT_KINDS = {7, 8, 10}
 
@@ -753,7 +755,8 @@ def annotate_qwen_states(records: list[dict[str, Any]], layers: int) -> None:
         "RT_KERNEL_FLAG", "RT_KERNEL_FLAG_V2", "RT_FUNC_HANDLE",
         "RT_FUNC_HANDLE_V2", "RT_FUNC_HANDLE_V3", "RT_VECTOR_HANDLE",
         "RT_VECTOR_KERNEL", "RTS_KERNEL_HOST_ARGS", "RTS_KERNEL_CONFIG",
-        "RTS_KERNEL_DEV_ARGS",
+        "RTS_KERNEL_DEV_ARGS", "ACL_KERNEL", "ACL_KERNEL_CONFIG", "ACL_KERNEL_V2",
+        "ACL_KERNEL_HOST_ARGS",
     }
     for record in records:
         if record.get("kind_name") == "DEVICE_SYNC_END":

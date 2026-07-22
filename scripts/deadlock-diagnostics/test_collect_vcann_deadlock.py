@@ -120,6 +120,11 @@ def test_parser_accepts_explicit_pid_capture():
     assert args.qwen_layers == 64
 
 
+def test_acl_launch_kinds_are_named_for_decoding():
+    assert collector.KIND_NAMES[45] == "ACL_KERNEL"
+    assert collector.KIND_NAMES[48] == "ACL_KERNEL_HOST_ARGS"
+
+
 def test_pythonless_gdb_command_exports_every_fixed_abi_object(tmp_path: Path):
     command = collector.build_gdb_capture_command(
         "/usr/bin/gdb", 123, tmp_path, 4096, python_supported=False

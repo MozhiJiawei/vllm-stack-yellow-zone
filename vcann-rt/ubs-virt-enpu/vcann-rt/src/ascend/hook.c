@@ -75,6 +75,10 @@ rt_entry_t rt_library_entry[] = {
     {.name = "rtsLaunchUpdateTask"},
 #ifdef VCANN_ENABLE_DEADLOCK_DIAGNOSTICS
     {.name = "aclrtBinaryGetFunction"},
+    {.name = "aclrtLaunchKernel"},
+    {.name = "aclrtLaunchKernelWithConfig"},
+    {.name = "aclrtLaunchKernelV2"},
+    {.name = "aclrtLaunchKernelWithHostArgs"},
     {.name = "rtFunctionRegister"},
     {.name = "rtDevBinaryUnRegister"},
 #endif

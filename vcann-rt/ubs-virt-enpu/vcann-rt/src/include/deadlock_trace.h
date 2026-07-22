@@ -70,6 +70,10 @@ typedef enum vcann_trace_kind {
     VCANN_TRACE_DEVICE_SYNC_END = 42,
     VCANN_TRACE_STREAM_SYNC_BEGIN = 43,
     VCANN_TRACE_STREAM_SYNC_END = 44,
+    VCANN_TRACE_ACL_KERNEL = 45,
+    VCANN_TRACE_ACL_KERNEL_CONFIG = 46,
+    VCANN_TRACE_ACL_KERNEL_V2 = 47,
+    VCANN_TRACE_ACL_KERNEL_HOST_ARGS = 48,
 } vcann_trace_kind_t;
 
 /* committed_sequence is published last; readers ignore partially written slots. */

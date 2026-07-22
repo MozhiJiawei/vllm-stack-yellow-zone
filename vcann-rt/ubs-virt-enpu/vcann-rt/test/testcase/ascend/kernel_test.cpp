@@ -30,6 +30,21 @@ static rtError_t named_function_stub(void *binHandle, const char *kernelName,
     *funcHandle = reinterpret_cast<void *>(0x1234);
     return RT_ERROR_NONE;
 }
+
+static rtError_t acl_host_launch_stub(void *funcHandle, uint32_t blockDim, void *stream,
+                                      void *cfg, void *hostArgs, size_t argsSize,
+                                      void *placeHolderArray, size_t placeHolderNum)
+{
+    (void)funcHandle;
+    (void)blockDim;
+    (void)stream;
+    (void)cfg;
+    (void)hostArgs;
+    (void)argsSize;
+    (void)placeHolderArray;
+    (void)placeHolderNum;
+    return RT_ERROR_NONE;
+}
 #endif
 
 class KernelTest : public testing::Test {
@@ -107,6 +122,34 @@ TEST_F(KernelTest, aclrtBinaryGetFunctionPassesThroughWithTraceDisabled)
     EXPECT_EQ(ret, RT_ERROR_NONE);
     EXPECT_EQ(handle, reinterpret_cast<void *>(0x1234));
     EXPECT_EQ(g_vcann_kernel_registry.next_sequence, 0U);
+}
+
+TEST_F(KernelTest, aclrtLaunchKernelWithHostArgsRecordsNamedAclHandle)
+{
+    ASSERT_EQ(setenv("ENPU_DEADLOCK_TRACE", "1", 1), 0);
+    vcann_trace_init();
+    void *handle = reinterpret_cast<void *>(0x1234);
+    vcann_trace_kernel_map_handle(handle, reinterpret_cast<void *>(0x5678),
+                                  "aiv_all_reduce_bfloat16_t");
+    void *previous = rt_library_entry[HOOK_aclrtLaunchKernelWithHostArgs].func_ptr;
+    rt_library_entry[HOOK_aclrtLaunchKernelWithHostArgs].func_ptr =
+        reinterpret_cast<void *>(acl_host_launch_stub);
+
+    rtError_t ret = aclrtLaunchKernelWithHostArgs(
+        handle, 8, reinterpret_cast<void *>(0x9abc), nullptr,
+        reinterpret_cast<void *>(0xdef0), 64, nullptr, 1);
+
+    rt_library_entry[HOOK_aclrtLaunchKernelWithHostArgs].func_ptr = previous;
+    EXPECT_EQ(ret, RT_ERROR_NONE);
+    ASSERT_EQ(g_vcann_trace.next_sequence, 2U);
+    const vcann_trace_record_t &record = g_vcann_trace.records[1];
+    EXPECT_EQ(record.kind, static_cast<uint32_t>(VCANN_TRACE_ACL_KERNEL_HOST_ARGS));
+    EXPECT_EQ(record.object, reinterpret_cast<uintptr_t>(handle));
+    EXPECT_EQ(record.stream, static_cast<uintptr_t>(0x9abc));
+    EXPECT_EQ(record.blocks, 8U);
+    EXPECT_EQ(record.args_size, 64U);
+    unsetenv("ENPU_DEADLOCK_TRACE");
+    vcann_trace_init();
 }
 #endif
 
