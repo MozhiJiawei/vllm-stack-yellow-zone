@@ -4,6 +4,7 @@
  */
 #define VCANN_DEADLOCK_TRACE_IMPLEMENTATION 1
 #include "deadlock_trace.h"
+#include "log.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -33,7 +34,26 @@ vcann_kernel_registry_t g_vcann_kernel_registry = {
 
 static _Thread_local uint32_t g_trace_tid;
 static volatile uint32_t g_trace_initialized;
+static volatile uint32_t g_trace_log_enabled;
 static volatile uint32_t g_kernel_registry_lock;
+
+static const char *trace_kind_name(vcann_trace_kind_t kind)
+{
+    static const char *const names[] = {
+        "INVALID", "RT_KERNEL_LAUNCH", "RT_KERNEL_HANDLE", "RT_KERNEL_HANDLE_V2",
+        "RT_KERNEL_FLAG", "RT_KERNEL_FLAG_V2", "RT_KERNEL_EX", "RT_KERNEL_FWK",
+        "RT_CPU_KERNEL", "RT_AICPU_KERNEL", "RT_AICPU_KERNEL_EX", "RT_FUNC_HANDLE",
+        "RT_FUNC_HANDLE_V2", "RT_FUNC_HANDLE_V3", "RT_VECTOR_HANDLE", "RT_VECTOR_KERNEL",
+        "RTS_KERNEL_HOST_ARGS", "RTS_CPU_KERNEL", "RTS_KERNEL_CONFIG", "RTS_KERNEL_DEV_ARGS",
+    };
+    uint32_t value = (uint32_t)kind;
+    return value < sizeof(names) / sizeof(names[0]) ? names[value] : "UNKNOWN";
+}
+
+static bool trace_kind_is_kernel_launch(vcann_trace_kind_t kind)
+{
+    return kind >= VCANN_TRACE_RT_KERNEL_LAUNCH && kind <= VCANN_TRACE_RTS_KERNEL_DEV_ARGS;
+}
 
 static uint64_t trace_now_ns(void)
 {
@@ -74,10 +94,12 @@ static void copy_kernel_name(char destination[VCANN_KERNEL_NAME_CAPACITY], const
 void vcann_trace_init(void)
 {
     uint32_t enabled = (uint32_t)trace_requested(getenv("ENPU_DEADLOCK_TRACE"));
+    uint32_t log_enabled = (uint32_t)trace_requested(getenv("ENPU_DEADLOCK_TRACE_LOG"));
     uint32_t process_id = (uint32_t)getpid();
     if (__atomic_load_n(&g_trace_initialized, __ATOMIC_ACQUIRE) != 0 &&
         g_vcann_trace.process_id == process_id &&
-        __atomic_load_n(&g_vcann_trace.enabled, __ATOMIC_ACQUIRE) == enabled) {
+        __atomic_load_n(&g_vcann_trace.enabled, __ATOMIC_ACQUIRE) == enabled &&
+        __atomic_load_n(&g_trace_log_enabled, __ATOMIC_ACQUIRE) == log_enabled) {
         return;
     }
     __atomic_store_n(&g_vcann_trace.enabled, 0, __ATOMIC_RELEASE);
@@ -101,6 +123,7 @@ void vcann_trace_init(void)
     __atomic_store_n(&g_vcann_kernel_registry.dropped, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&g_kernel_registry_lock, 0, __ATOMIC_RELAXED);
     g_vcann_kernel_registry.reserved = 0;
+    __atomic_store_n(&g_trace_log_enabled, log_enabled, __ATOMIC_RELEASE);
     __atomic_store_n(&g_vcann_trace.enabled, enabled, __ATOMIC_RELEASE);
     __atomic_store_n(&g_trace_initialized, 1, __ATOMIC_RELEASE);
 }
@@ -137,6 +160,14 @@ void vcann_trace_record_enabled(vcann_trace_kind_t kind, rtStream_t stream, cons
     record->tid = trace_tid();
     __atomic_store_n(&record->committed_sequence, sequence, __ATOMIC_RELEASE);
     __atomic_store_n(&g_vcann_trace.slot_locks[slot], 0, __ATOMIC_RELEASE);
+    if (__atomic_load_n(&g_trace_log_enabled, __ATOMIC_RELAXED) != 0 &&
+        trace_kind_is_kernel_launch(kind)) {
+        LOG_ERROR("DEADLOCK_TRACE_LAUNCH sequence=%llu kind=%s(%u) stream=%p object=%p auxiliary=%p "
+                  "value=%llu blocks=%u args_size=%u tid=%u",
+                  (unsigned long long)sequence, trace_kind_name(kind), (uint32_t)kind,
+                  (void *)stream, object, auxiliary, (unsigned long long)value, blocks,
+                  args_size, record->tid);
+    }
 }
 
 void vcann_trace_sync_begin_enabled(rtStream_t stream, int32_t owner, uint32_t schedule_turn,
@@ -244,6 +275,12 @@ void vcann_trace_kernel_register_enabled(void *handle, const void *stub, const c
         return;
     }
     vcann_trace_record_enabled(VCANN_TRACE_KERNEL_REGISTER, NULL, handle, stub, function_mode, 0, 0);
+    if (__atomic_load_n(&g_trace_log_enabled, __ATOMIC_RELAXED) != 0) {
+        LOG_ERROR("DEADLOCK_TRACE_REGISTER source=rtFunctionRegister name=%s handle=%p stub=%p "
+                  "device_function=%p function_mode=%u",
+                  stub_name != NULL ? stub_name : "", handle, stub, device_function,
+                  function_mode);
+    }
 }
 
 void vcann_trace_kernel_map_handle_enabled(void *handle, const void *binary_handle,
@@ -290,6 +327,11 @@ void vcann_trace_kernel_map_handle_enabled(void *handle, const void *binary_hand
     if (slot != NULL) {
         vcann_trace_record_enabled(VCANN_TRACE_KERNEL_REGISTER, NULL, handle, binary_handle,
                                    VCANN_FUNCTION_MODE_ACL_HANDLE, 0, 0);
+        if (__atomic_load_n(&g_trace_log_enabled, __ATOMIC_RELAXED) != 0) {
+            LOG_ERROR("DEADLOCK_TRACE_REGISTER source=aclrtBinaryGetFunction name=%s handle=%p "
+                      "binary_handle=%p",
+                      truncated_name, handle, binary_handle);
+        }
     }
 }
 

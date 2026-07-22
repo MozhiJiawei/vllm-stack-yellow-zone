@@ -73,6 +73,7 @@
 - 已删除旧的 vLLM/site-packages 诊断链；定位能力全部位于 vCANN-RT 和独立采集工具中。
 - 诊断构建开关：`ENABLE_DEADLOCK_DIAGNOSTICS=1`。普通构建不包含 probe 调用、trace buffer 或相关符号。
 - 诊断构建的运行时开关：`ENPU_DEADLOCK_TRACE=1`。未设置时不记录。
+- 临时 hook 路径日志开关：`ENPU_DEADLOCK_TRACE_LOG=1`。仅在诊断 trace 已启用时使用，按 ERROR 输出 kernel 注册和 launch 命中；默认关闭，避免正常运行刷屏。
 - trace 在 Runtime hook 入口、`core_limiter()` 之前记录“调用尝试”；它不证明 Runtime 已接受、设备已入队或算子已完成。
 - scheduler probe 标记进入/退出 `rtStreamSynchronize`，记录 vNPU、进入时的 owner、schedule turn 和 stream。
 - 环形缓冲每进程 4096 条；不做文件 I/O或动态分配，使用无全局锁的逐 slot 同步。

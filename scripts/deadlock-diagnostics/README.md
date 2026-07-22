@@ -136,6 +136,11 @@ probe should show the intentional wait.  Resume the capture or stop the verifier
 after inspecting the JSON; resuming cannot satisfy the deliberately missing
 collective ranks.
 
+For temporary hook-path debugging, also set `ENPU_DEADLOCK_TRACE_LOG=1`.
+Diagnostic builds then emit `DEADLOCK_TRACE_REGISTER` and
+`DEADLOCK_TRACE_LAUNCH` at ERROR level. This is intentionally noisy and remains
+off by default; use it only for a bounded reproducer run.
+
 For a container started with four NPUs, use `--tp-size 4` and pass
 `--expected-processes 4` to the collector. Device ordinals inside the container
 remain the dense local range `0..3`; the host-side physical IDs are selected by
