@@ -1,7 +1,7 @@
-# 黄区 Qwen3-4B TP4 双实例确定性调度远端状态
+# 黄区 Qwen3-4B TP4 双实例 elastic 调度远端状态
 
 更新时间：2026-07-23
-权威调测 Issue：<https://github.com/MozhiJiawei/vllm-stack-yellow-zone/issues/10>
+权威调测 Issue：<https://github.com/MozhiJiawei/vllm-stack-yellow-zone/issues/11>
 
 > **状态更新：本文原有 `d06d6a7` READY/IDLE 调度断点已废止。**
 > 下文保留的旧 patch、`rtDetSched*`、`shim4-7` 调度流程只用于历史
@@ -447,7 +447,7 @@ Failed to find function rtEndPrefill
 
 ## Issue 协作约定
 
-- 当前调测统一在 Issue #10 回传。
+- 当前调测统一在 Issue #11 回传。
 - 聊天中的 `c` 表示：使用 `gh-issue-comment-monitor` 只读取检查点之后的最新回复，根据最新结果在 Issue 中给出下一步动作。
 - 每轮只推进一个清晰动作。
 - 用户已明确要求启动和调测命令保持简单，优先复用本文已验证命令，不重新发明 watcher、后台服务包装或容器创建流程。
