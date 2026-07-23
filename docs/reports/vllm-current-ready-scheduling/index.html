@@ -79,6 +79,7 @@
       <tr><td>vLLM-Ascend worker</td><td><span class="ok">不修改</span></td><td>无 stream event、无设备同步、无 READY/End。</td></tr>
       <tr><td>vCANN runtime</td><td><span class="ok">不调用调度接口</span></td><td>只保留旧提交前能力；模型间仲裁全部在上层。</td></tr>
       <tr><td>控制通道</td><td>共享 mmap + C11 atomic + futex</td><td>热路径没有 TCP、UDS、轮询 sleep 或文件 I/O。</td></tr>
+      <tr><td>性能对照开关</td><td><code>VLLM_PAIR_SCHED_DEBUG_BYPASS=1</code></td><td>WorkerProc 在每个非空 forward 前读取一次；值为 1 时跳过 enter/leave。环境变量读取实测约 0.455 μs/次，仅用于 TTFT/TPOT A/B 测试。</td></tr>
     </tbody>
   </table>
 

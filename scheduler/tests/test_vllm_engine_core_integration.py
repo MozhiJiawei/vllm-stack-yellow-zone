@@ -146,6 +146,65 @@ def test_engine_core_source_has_no_pair_scheduler_hooks() -> None:
     assert "pair_forward_gate" not in source
 
 
+def test_worker_reads_debug_bypass_for_each_forward(monkeypatch) -> None:
+    _, WorkerProc = _load_vllm_classes()
+    trace: list[str] = []
+
+    class StopLoop(BaseException):
+        pass
+
+    class MQ:
+        def __init__(self):
+            self.calls = deque(
+                [
+                    ("0", ("execute_model", (_output("gated"),), {}, 0)),
+                    ("1", ("execute_model", (_output("bypassed"),), {}, 0)),
+                ]
+            )
+
+        def dequeue(self, indefinite=True):
+            assert indefinite
+            if not self.calls:
+                raise StopLoop
+            bypass, call = self.calls.popleft()
+            monkeypatch.setenv("VLLM_PAIR_SCHED_DEBUG_BYPASS", bypass)
+            return call
+
+    class Worker:
+        def execute_model(self, output):
+            trace.append(f"worker.execute:{output.name}")
+            return output.name
+
+    class Gate:
+        def enter_forward(self):
+            trace.append("gate.enter")
+            return 1, 9
+
+        def leave_forward(self, sequence, grant):
+            trace.append(f"gate.leave:{sequence}:{grant}")
+
+        def fail(self, reason):
+            trace.append(f"gate.fail:{reason}")
+
+    proc = WorkerProc.__new__(WorkerProc)
+    proc.rank = 0
+    proc.worker = Worker()
+    proc.rpc_broadcast_mq = MQ()
+    proc._pair_forward_gate = Gate()
+    proc.handle_output = lambda output: trace.append(f"output:{output}")
+    with pytest.raises(StopLoop):
+        proc.worker_busy_loop()
+
+    assert trace == [
+        "gate.enter",
+        "worker.execute:gated",
+        "gate.leave:1:9",
+        "output:gated",
+        "worker.execute:bypassed",
+        "output:bypassed",
+    ]
+
+
 @pytest.mark.parametrize("mode", ["off", "elastic"])
 def test_real_engine_core_preserves_native_async_queue(mode: str) -> None:
     os.environ["VLLM_PAIR_SCHED_MODE"] = mode

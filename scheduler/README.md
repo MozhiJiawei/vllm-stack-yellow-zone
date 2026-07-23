@@ -14,6 +14,7 @@ single forward lease. There is no automatic promotion.
 | Variable | Values / default |
 | --- | --- |
 | `VLLM_PAIR_SCHED_MODE` | `off` (default), `elastic` |
+| `VLLM_PAIR_SCHED_DEBUG_BYPASS` | unset (default); `1` skips per-forward gate enter/leave for performance A/B tests |
 | `VLLM_PAIR_SCHED_ROLE` | `primary`, `standby` |
 | `VLLM_PAIR_SCHED_INSTANCE_ID` | `A` for primary, `B` for standby |
 | `VLLM_PAIR_SCHED_PAIR_ID` | Required stable pair name |
@@ -37,6 +38,12 @@ grants. The completion contract is the host return of every worker's
 Sampling and all other RPC methods bypass the gate. EngineCore,
 AsyncScheduler, FutureWrapper, placeholders, and the batch queue are unchanged,
 so sampling futures may remain queued while the next batch is scheduled.
+
+For TTFT/TPOT comparisons, set `VLLM_PAIR_SCHED_DEBUG_BYPASS=1` in the worker
+process environment. `WorkerProc` reads it before every non-empty
+`execute_model` and skips `enter_forward`/`leave_forward` when it is `1`.
+Never use the bypass for normal co-card serving because A/B forwards may
+overlap.
 
 ## Inspection
 

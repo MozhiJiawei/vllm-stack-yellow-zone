@@ -57,7 +57,7 @@ index f9b771540..5a552eef0 100644
          if self.rpc_broadcast_mq is not None:
              self.rpc_broadcast_mq.shutdown()
          if self.worker_response_mq is not None:
-@@ -935,14 +962,26 @@ class WorkerProc:
+@@ -935,14 +962,30 @@ class WorkerProc:
              method, args, kwargs, output_rank = self.rpc_broadcast_mq.dequeue(
                  indefinite=True
              )
@@ -73,7 +73,11 @@ index f9b771540..5a552eef0 100644
 +                    and args
 +                    and args[0].total_num_scheduled_tokens > 0
 +                )
-+                if is_nonempty_forward and self._pair_forward_gate is not None:
++                if (
++                    is_nonempty_forward
++                    and self._pair_forward_gate is not None
++                    and os.environ.get("VLLM_PAIR_SCHED_DEBUG_BYPASS") != "1"
++                ):
 +                    forward_round = self._pair_forward_gate.enter_forward()
                  output = func(*args, **kwargs)
 +                if forward_round is not None:
