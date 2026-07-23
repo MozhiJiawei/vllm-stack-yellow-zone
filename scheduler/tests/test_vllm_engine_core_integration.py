@@ -8,6 +8,7 @@ import queue
 import sys
 import types
 from collections import deque
+from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -33,8 +34,9 @@ def _load_vllm_classes():
     platforms.builtin_platform_plugins["cuda"] = lambda: None
     from vllm.v1.engine.core import EngineCore
     from vllm.v1.executor.multiproc_executor import WorkerProc
+    from vllm.v1.executor.uniproc_executor import UniProcExecutor
 
-    return EngineCore, WorkerProc
+    return EngineCore, WorkerProc, UniProcExecutor
 
 
 class FakeFuture:
@@ -110,7 +112,7 @@ class FakeExecutor:
 
 
 def _engine(outputs: list[Any], trace: list[str], *, sampling_error: bool = False):
-    EngineCore, _ = _load_vllm_classes()
+    EngineCore, _, _ = _load_vllm_classes()
     engine = EngineCore.__new__(EngineCore)
     engine.scheduler = FakeScheduler(outputs, trace)
     engine.model_executor = FakeExecutor(trace, sampling_error=sampling_error)
@@ -140,14 +142,14 @@ def _output(name: str, tokens: int = 1, *, structured: bool = False):
 
 
 def test_engine_core_source_has_no_pair_scheduler_hooks() -> None:
-    EngineCore, _ = _load_vllm_classes()
+    EngineCore, _, _ = _load_vllm_classes()
     source = inspect.getsource(EngineCore)
     assert "PAIR_SCHED" not in source
     assert "pair_forward_gate" not in source
 
 
 def test_worker_reads_debug_bypass_for_each_forward(monkeypatch) -> None:
-    _, WorkerProc = _load_vllm_classes()
+    _, WorkerProc, _ = _load_vllm_classes()
     trace: list[str] = []
 
     class StopLoop(BaseException):
@@ -205,6 +207,118 @@ def test_worker_reads_debug_bypass_for_each_forward(monkeypatch) -> None:
     ]
 
 
+def test_real_uniproc_gates_only_nonempty_execute_model(monkeypatch) -> None:
+    _, _, UniProcExecutor = _load_vllm_classes()
+    trace: list[str] = []
+
+    class Gate:
+        def enter_forward(self):
+            trace.append("gate.enter")
+            return 1, 9
+
+        def leave_forward(self, sequence, grant):
+            trace.append(f"gate.leave:{sequence}:{grant}")
+
+        def fail(self, reason):
+            trace.append(f"gate.fail:{reason}")
+
+    executor = UniProcExecutor.__new__(UniProcExecutor)
+    executor._pair_forward_gate = Gate()
+
+    def collective_rpc(
+        method,
+        timeout=None,
+        args=(),
+        kwargs=None,
+        non_block=False,
+        single_value=False,
+    ):
+        name = getattr(args[0], "name", args[0]) if args else ""
+        trace.append(f"rpc:{method}:{name}")
+        future = Future()
+        future.set_result(name)
+        return future if non_block else name
+
+    executor.collective_rpc = collective_rpc
+
+    monkeypatch.setenv("VLLM_PAIR_SCHED_DEBUG_BYPASS", "0")
+    assert executor.execute_model(_output("gated"), non_block=True).result() == "gated"
+    monkeypatch.setenv("VLLM_PAIR_SCHED_DEBUG_BYPASS", "1")
+    assert executor.execute_model(_output("bypassed"), non_block=True).result() == (
+        "bypassed"
+    )
+    monkeypatch.setenv("VLLM_PAIR_SCHED_DEBUG_BYPASS", "0")
+    assert executor.execute_model(
+        _output("empty", tokens=0), non_block=True
+    ).result() == "empty"
+    assert executor.sample_tokens("grammar", non_block=True).result() == "grammar"
+
+    assert trace == [
+        "gate.enter",
+        "rpc:execute_model:gated",
+        "gate.leave:1:9",
+        "rpc:execute_model:bypassed",
+        "rpc:execute_model:empty",
+        "rpc:sample_tokens:grammar",
+    ]
+
+
+def test_uniproc_gate_factory_registers_one_worker(monkeypatch) -> None:
+    _load_vllm_classes()
+    from vllm.v1.executor import uniproc_executor
+
+    calls = []
+    sentinel = object()
+    module = SimpleNamespace(
+        create_worker_forward_gate_from_env=lambda **kwargs: (
+            calls.append(kwargs) or sentinel
+        )
+    )
+    monkeypatch.setitem(sys.modules, "vllm_pair_scheduler", module)
+    monkeypatch.setenv("VLLM_PAIR_SCHED_MODE", "elastic")
+    config = SimpleNamespace(
+        parallel_config=SimpleNamespace(
+            pipeline_parallel_size=1,
+            nnodes_within_dp=1,
+            world_size=1,
+        )
+    )
+
+    assert uniproc_executor._create_pair_worker_gate(config) is sentinel
+    assert calls == [{"worker_rank": 0, "worker_count": 1}]
+
+
+def test_real_uniproc_forward_exception_fails_pair(monkeypatch) -> None:
+    _, _, UniProcExecutor = _load_vllm_classes()
+    trace: list[str] = []
+
+    class Gate:
+        def enter_forward(self):
+            trace.append("gate.enter")
+            return 2, 10
+
+        def leave_forward(self, sequence, grant):
+            trace.append("gate.leave")
+
+        def fail(self, reason):
+            trace.append(f"gate.fail:{reason}")
+
+    executor = UniProcExecutor.__new__(UniProcExecutor)
+    executor._pair_forward_gate = Gate()
+
+    def collective_rpc(*args, **kwargs):
+        future = Future()
+        future.set_exception(RuntimeError("fake forward failed"))
+        return future
+
+    executor.collective_rpc = collective_rpc
+    monkeypatch.setenv("VLLM_PAIR_SCHED_DEBUG_BYPASS", "0")
+
+    with pytest.raises(RuntimeError, match="fake forward failed"):
+        executor.execute_model(_output("bad"), non_block=True)
+    assert trace == ["gate.enter", "gate.fail:201"]
+
+
 @pytest.mark.parametrize("mode", ["off", "elastic"])
 def test_real_engine_core_preserves_native_async_queue(mode: str) -> None:
     os.environ["VLLM_PAIR_SCHED_MODE"] = mode
@@ -260,7 +374,7 @@ def test_real_engine_core_sampling_exception_follows_native_path() -> None:
 
 
 def test_real_worker_proc_gates_only_nonempty_execute_model() -> None:
-    _, WorkerProc = _load_vllm_classes()
+    _, WorkerProc, _ = _load_vllm_classes()
     trace: list[str] = []
 
     class StopLoop(BaseException):
@@ -324,7 +438,7 @@ def test_real_worker_proc_gates_only_nonempty_execute_model() -> None:
 
 
 def test_real_worker_proc_forward_exception_fails_pair() -> None:
-    _, WorkerProc = _load_vllm_classes()
+    _, WorkerProc, _ = _load_vllm_classes()
     trace: list[str] = []
 
     class StopLoop(BaseException):

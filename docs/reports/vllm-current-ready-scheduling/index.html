@@ -15,14 +15,14 @@
     <div>
       <div class="eyebrow">Implementation review · Protocol v3 · 2026-07-23</div>
       <h1>Worker 边界<br>轻量 elastic 调度</h1>
-      <p class="lead">调度从 EngineCore 下沉到每个 vLLM WorkerProc 的 <code>execute_model</code> 调用边界。两个共卡实例的 forward 严格错开；sampling 与所有其他 RPC 不持有租约，vLLM 原生 async batch queue 完整保留。</p>
+      <p class="lead">调度从 EngineCore 下沉到 vLLM worker 的 <code>execute_model</code> 调用边界：TP1 覆盖 <code>UniProcExecutor</code> 的直接 worker 调用，TP≥2 覆盖每个 <code>WorkerProc</code>。两个共卡实例的 forward 严格错开；sampling 与所有其他 RPC 不持有租约，vLLM 原生 async batch queue 完整保留。</p>
     </div>
-    <aside class="card stamp"><span class="tag">当前本地实现</span><b>CPU / fake executor：PASS</b><span class="muted">真实黄区 TP4 / NPU timeline 尚未执行，因此整体状态仍是 NO-GO。</span></aside>
+    <aside class="card stamp"><span class="tag">当前本地实现</span><b>TP1 / TP4 控制流：PASS</b><span class="muted">黄区已证明 TP1 模型与 API 可启动；补齐 UniProc gate 的新 patch 尚待部署，NPU timeline 尚未执行，因此整体仍是 NO-GO。</span></aside>
   </section>
 
   <section class="kpis">
     <div class="card kpi"><strong>1 grant</strong><span>每实例每轮 forward</span></div>
-    <div class="card kpi"><strong>4 + 4 bits</strong><span>TP4 READY / COMPLETE</span></div>
+    <div class="card kpi"><strong>1 or 4 bits</strong><span>TP1 / TP4 READY、COMPLETE</span></div>
     <div class="card kpi"><strong>0</strong><span>EngineCore 调度改动</span></div>
     <div class="card kpi"><strong>100,000</strong><span>本地连续授权通过</span></div>
   </section>
@@ -32,14 +32,14 @@
     <article class="card instance a">
       <header><b>实例 A · primary control role</b><span class="tag">A</span></header>
       <div class="layer"><b>EngineCore / AsyncScheduler</b><br><span class="muted">原生 schedule、placeholder、FutureWrapper、batch queue</span></div>
-      <div class="layer"><b>WorkerProc × TP4</b><div class="workers"><span class="worker">A rank 0<br>coordinator</span><span class="worker">A rank 1</span><span class="worker">A rank 2</span><span class="worker">A rank 3</span></div></div>
+      <div class="layer"><b>TP1 UniProc / TP≥2 WorkerProc</b><div class="workers"><span class="worker">A rank 0<br>coordinator</span><span class="worker">A rank 1</span><span class="worker">A rank 2</span><span class="worker">A rank 3</span></div></div>
       <div class="layer"><code>enter_forward → worker.execute_model → leave_forward</code></div>
     </article>
     <div class="bridge">同机 mmap · atomics · futex</div>
     <article class="card instance b">
       <header><b>实例 B · standby control role</b><span class="tag warn">B</span></header>
       <div class="layer"><b>EngineCore / AsyncScheduler</b><br><span class="muted">与 MODE=off 完全相同的上层控制流</span></div>
-      <div class="layer"><b>WorkerProc × TP4</b><div class="workers"><span class="worker">B rank 0</span><span class="worker">B rank 1</span><span class="worker">B rank 2</span><span class="worker">B rank 3</span></div></div>
+      <div class="layer"><b>TP1 UniProc / TP≥2 WorkerProc</b><div class="workers"><span class="worker">B rank 0</span><span class="worker">B rank 1</span><span class="worker">B rank 2</span><span class="worker">B rank 3</span></div></div>
       <div class="layer"><code>sample_tokens / 空计划 / 其他 RPC → 直接执行</code></div>
     </article>
   </section>
@@ -75,18 +75,18 @@
     <thead><tr><th>组件</th><th>当前处理</th><th>影响</th></tr></thead>
     <tbody>
       <tr><td>EngineCore / AsyncScheduler</td><td><span class="ok">不修改</span></td><td>不再等待 execute future，不限制 <code>batch_queue</code>，消除旧 P1 sampling 空泡。</td></tr>
-      <tr><td>vLLM WorkerProc</td><td>单文件轻量 patch</td><td>模型加载与 MQ 初始化后建 gate；只包非空 <code>execute_model</code>；异常 fail-closed。</td></tr>
+      <tr><td>vLLM worker 边界</td><td>UniProc + WorkerProc 两个轻量 patch 点</td><td>TP1 在模型加载后建单 worker gate；TP≥2 在 MQ 初始化后建位图 gate。两者都只包非空 <code>execute_model</code>，异常 fail-closed。</td></tr>
       <tr><td>vLLM-Ascend worker</td><td><span class="ok">不修改</span></td><td>无 stream event、无设备同步、无 READY/End。</td></tr>
       <tr><td>vCANN runtime</td><td><span class="ok">不调用调度接口</span></td><td>只保留旧提交前能力；模型间仲裁全部在上层。</td></tr>
       <tr><td>控制通道</td><td>共享 mmap + C11 atomic + futex</td><td>热路径没有 TCP、UDS、轮询 sleep 或文件 I/O。</td></tr>
-      <tr><td>性能对照开关</td><td><code>VLLM_PAIR_SCHED_DEBUG_BYPASS=1</code></td><td>WorkerProc 在每个非空 forward 前读取一次；值为 1 时跳过 enter/leave。环境变量读取实测约 0.455 μs/次，仅用于 TTFT/TPOT A/B 测试。</td></tr>
+      <tr><td>性能对照开关</td><td><code>VLLM_PAIR_SCHED_DEBUG_BYPASS=1</code></td><td>UniProc 与 WorkerProc 都在每个非空 forward 前读取一次；值为 1 时跳过 enter/leave。环境变量读取实测约 0.455 μs/次，仅用于 TTFT/TPOT A/B 测试。</td></tr>
     </tbody>
   </table>
 
   <h2>5. 黄区串行启动</h2>
   <section class="grid2">
-    <article class="callout"><h3>A 完全就绪后才启动 B</h3><ol><li>启动 A / primary。</li><li><code>/v1/models</code> 成功。</li><li>inspector 为 RUNNING。</li><li>A registration mask = <code>0b1111</code>。</li><li>此时才启动 B。</li></ol></article>
-    <article class="callout"><h3>B 完全就绪后才开放业务</h3><ol><li><code>/v1/models</code> 成功。</li><li>inspector 为 RUNNING。</li><li>B registration mask = <code>0b1111</code>。</li><li>脚本输出 <code>PAIR_READY</code>。</li></ol><p class="muted">默认超时 900 秒；primary、owner worker 或 barrier 超时均要求 supervisor 整对重启。</p></article>
+    <article class="callout"><h3>A 完全就绪后才启动 B</h3><ol><li>启动 A / primary。</li><li><code>/v1/models</code> 成功。</li><li>inspector 为 RUNNING。</li><li>A registration mask：TP1 = <code>0b1</code>，TP4 = <code>0b1111</code>。</li><li>此时才启动 B。</li></ol></article>
+    <article class="callout"><h3>B 完全就绪后才开放业务</h3><ol><li><code>/v1/models</code> 成功。</li><li>inspector 为 RUNNING。</li><li>B registration mask：TP1 = <code>0b1</code>，TP4 = <code>0b1111</code>。</li><li>脚本输出 <code>PAIR_READY</code>。</li></ol><p class="muted">默认超时 900 秒；primary、owner worker 或 barrier 超时均要求 supervisor 整对重启。</p></article>
   </section>
 
   <h2>6. 当前验证结果</h2>
@@ -95,7 +95,7 @@
     <article class="card test"><strong class="ok">零 forward 重叠</strong><span>本地 TP4 双实例 fake WorkerProc 区间检查通过。</span></article>
     <article class="card test"><strong class="ok">sampling 可重叠</strong><span>A sampling 与 B forward 的主机区间实测重叠。</span></article>
     <article class="card test"><strong class="ok">100k rounds</strong><span>零重复 grant、零永久等待；同时发现并修复跨轮竞态。</span></article>
-    <article class="card test"><strong class="ok">真实 EngineCore 控制流</strong><span>v0.19.1 <code>step_with_batch_queue()</code> 直接运行，off / elastic 轨迹一致。</span></article>
+    <article class="card test"><strong class="ok">真实 vLLM 控制流</strong><span>v0.19.1 共 12 个集成用例通过：<code>step_with_batch_queue()</code> 原生轨迹不变，TP1 UniProc 与 TP≥2 WorkerProc 只 gate 非空 forward。</span></article>
     <article class="card test"><strong class="no">本机性能未过门槛</strong><span>Docker Desktop 固定 CPU 诊断：TP1 P99 324 μs；TP4 P99 1.11 ms。该环境不是黄区裸机，但不能据此宣称性能 PASS。</span></article>
     <article class="card test"><strong class="no">NPU 未验收</strong><span>集合通信 timeline、设备异步尾部、TPOT 回退与百万轮固定 CPU 指标待黄区。</span></article>
   </section>

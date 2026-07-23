@@ -1,9 +1,11 @@
 # vLLM pair scheduler
 
 `vllm-pair-scheduler` serializes the `model_forward` sections of two vLLM
-instances on the same Linux host. Protocol v3 gates `WorkerProc.execute_model`
-with a shared `mmap`, lock-free C11 atomics, and futex wakeups. It does not
-communicate with vCANN.
+instances on the same Linux host. Protocol v3 gates the worker
+`execute_model` call through `WorkerProc` for multiprocessing executors and
+through the direct `UniProcExecutor` worker call for TP1. It uses a shared
+`mmap`, lock-free C11 atomics, and futex wakeups and does not communicate with
+vCANN.
 
 The primary is a control-plane role, not an active/passive serving role. Both
 instances may execute requests, but only the primary coordinator grants the
@@ -40,10 +42,10 @@ AsyncScheduler, FutureWrapper, placeholders, and the batch queue are unchanged,
 so sampling futures may remain queued while the next batch is scheduled.
 
 For TTFT/TPOT comparisons, set `VLLM_PAIR_SCHED_DEBUG_BYPASS=1` in the worker
-process environment. `WorkerProc` reads it before every non-empty
-`execute_model` and skips `enter_forward`/`leave_forward` when it is `1`.
-Never use the bypass for normal co-card serving because A/B forwards may
-overlap.
+process environment. Both the TP1 `UniProcExecutor` path and the
+multiprocessing `WorkerProc` path read it before every non-empty
+`execute_model` and skip `enter_forward`/`leave_forward` when it is `1`. Never
+use the bypass for normal co-card serving because A/B forwards may overlap.
 
 ## Inspection
 
