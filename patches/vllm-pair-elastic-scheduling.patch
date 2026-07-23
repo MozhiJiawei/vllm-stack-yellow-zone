@@ -1,0 +1,86 @@
+diff --git a/vllm/v1/executor/multiproc_executor.py b/vllm/v1/executor/multiproc_executor.py
+index f9b771540..5a552eef0 100644
+--- a/vllm/v1/executor/multiproc_executor.py
++++ b/vllm/v1/executor/multiproc_executor.py
+@@ -64,6 +64,28 @@ from vllm.v1.worker.worker_base import WorkerWrapperBase
+ logger = init_logger(__name__)
+ 
+ 
++def _create_pair_worker_gate(vllm_config: VllmConfig, rank: int):
++    """Create the optional same-host gate after this worker has loaded."""
++    if os.environ.get("VLLM_PAIR_SCHED_MODE", "off").lower() == "off":
++        return None
++
++    parallel_config = vllm_config.parallel_config
++    if parallel_config.pipeline_parallel_size != 1:
++        raise ValueError("vLLM pair scheduling v3 does not support Pipeline Parallel")
++    if parallel_config.nnodes_within_dp != 1:
++        raise ValueError("vLLM pair scheduling v3 requires single-node workers")
++    worker_count = parallel_config.local_world_size
++    if worker_count > 64:
++        raise ValueError("vLLM pair scheduling v3 supports at most 64 local workers")
++
++    from vllm_pair_scheduler import create_worker_forward_gate_from_env
++
++    return create_worker_forward_gate_from_env(
++        worker_rank=rank % worker_count,
++        worker_count=worker_count,
++    )
++
++
+ class FutureWrapper(Future):
+     def __init__(
+         self,
+@@ -581,6 +603,7 @@ class WorkerProc:
+         is_driver_worker: bool,
+     ):
+         self.rank = rank
++        self._pair_forward_gate = None
+         wrapper = WorkerWrapperBase(rpc_rank=local_rank, global_rank=rank)
+         # TODO: move `init_worker` to executor level as a collective rpc call
+         all_kwargs: list[dict] = [
+@@ -629,6 +652,7 @@ class WorkerProc:
+         # Initialize message queues after init_device() since multi-node setups
+         # (nnodes_within_dp > 1) require distributed groups to be initialized
+         self._init_message_queues(input_shm_handle, vllm_config)
++        self._pair_forward_gate = _create_pair_worker_gate(vllm_config, rank)
+ 
+         # Enable environment variable cache (e.g. assume no more
+         # environment variable overrides after this point)
+@@ -742,6 +766,9 @@ class WorkerProc:
+         return cast(list[WorkerProcHandle], ready_proc_handles)
+ 
+     def shutdown(self):
++        if self._pair_forward_gate is not None:
++            self._pair_forward_gate.close()
++            self._pair_forward_gate = None
+         if self.rpc_broadcast_mq is not None:
+             self.rpc_broadcast_mq.shutdown()
+         if self.worker_response_mq is not None:
+@@ -935,14 +962,26 @@ class WorkerProc:
+             method, args, kwargs, output_rank = self.rpc_broadcast_mq.dequeue(
+                 indefinite=True
+             )
++            forward_round = None
+             try:
+                 if isinstance(method, str):
+                     func = getattr(self.worker, method)
+                 elif isinstance(method, bytes):
+                     func = partial(cloudpickle.loads(method), self.worker)
+ 
++                is_nonempty_forward = (
++                    method == "execute_model"
++                    and args
++                    and args[0].total_num_scheduled_tokens > 0
++                )
++                if is_nonempty_forward and self._pair_forward_gate is not None:
++                    forward_round = self._pair_forward_gate.enter_forward()
+                 output = func(*args, **kwargs)
++                if forward_round is not None:
++                    self._pair_forward_gate.leave_forward(*forward_round)
+             except Exception as e:
++                if forward_round is not None:
++                    self._pair_forward_gate.fail(201)
+                 # Notes have been introduced in python 3.11
+                 if hasattr(e, "add_note"):
+                     e.add_note(traceback.format_exc())

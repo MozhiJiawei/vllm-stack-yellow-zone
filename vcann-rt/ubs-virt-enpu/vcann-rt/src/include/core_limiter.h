@@ -29,10 +29,9 @@ using atomic_int = std::atomic<int>;
 extern "C" {
 #endif
 
-#define MAGIC_INITIALIZED 0x44543231U  // DT21: deterministic shared layout v1
+#define MAGIC_INITIALIZED 0x495A4544U  // IZED
 #define MAGIC_INITIALIZING 0x5A494E47U // ZING
 #define MAGIC_UNINITIALIZED 0x0
-#define DET_SCHED_NO_OWNER (-1)
 #define MAX_STREAMS_PER_PROCESS 128
 #define MAX_EVENT_PER_PROCESS 65000
 #define HUNDRED_PERCENT 100
@@ -61,16 +60,11 @@ typedef void (*core_function)(void *param, rtStream_t stream);
 
 extern vnpu_time_slice_sched_t *g_vnpu_sched_context;
 extern uint8_t g_vnpu_id;
-extern volatile int g_terminate;
-extern atomic_bool g_sched_locking;
 extern pthread_mutex_t g_sched_mutex;
 extern atomic_int hasModelExecuteSync;
 extern atomic_int waitEventCount;
 extern int aicore_limiter_initialize(void);
 extern void core_limiter(rtStream_t stream, core_function func, void *param);
-extern bool core_limiter_take_pending(void);
-extern void core_limiter_release(void);
-extern bool det_sched_gate(rtStream_t stream, core_function func, void *param);
 extern void set_stream_capture(void *param, rtStream_t stream);
 extern void set_event_create_status(void *evt);
 extern void set_event_wait_status(void *evt, rtStream_t stm);
@@ -78,21 +72,7 @@ extern void set_event_record_status(void *evt, rtStream_t stm);
 extern void add_stream(rtStream_t stream);
 extern void remove_stream(void *unused, rtStream_t stm);
 extern void set_event_destroy_status(void *evt);
-extern int lock_vnpu_schedule_mutex(int vnpu_id);
-extern void unlock_vnpu_schedule_mutex(int vnpu_id);
-extern void synchronize_and_clear_streams(void);
-extern int synchronize_and_clear_streams_checked(void);
-extern bool is_vnpu_alive(int vnpu_id);
-extern void ns_sleep(uint64_t ns);
-extern void det_sched_init(pthread_mutexattr_t *attr);
-extern bool det_sched_requested(void);
-extern bool det_sched_has_lease(void);
-extern void det_sched_fail_if_participant_lost(void);
-extern int det_sched_weighted_owner(int a, int b, int a_quota, int b_quota, uint64_t turn);
 uint64_t ns_now(void);
-
-rtError_t rtDetSchedEnter(bool ready, bool *enabled);
-rtError_t rtDetSchedEnd(void);
 
 #if defined(__cplusplus)
 }

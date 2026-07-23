@@ -39,8 +39,6 @@ extern pthread_mutex_t g_sched_mutex;
 
 // Internal helpers used by the stream/event capture state machine.
 bool is_vnpu_alive(int vnpu_id);
-bool is_vnpu_in_prefill(int vnpu_id);
-bool vnpu_borrow_allowed(int owner);
 bool check_timeout(atomic_uint_fast64_t *timestamp, uint64_t timeout_period);
 // restore_streams is external-linkage in core_limiter.c but not declared in any public header.
 void restore_streams(rtStream_t stream);
@@ -393,39 +391,4 @@ TEST_F(CoreLimiterTest, check_and_borrow_timeslice_dead)
     int dead = (g_vnpu_id + 1) % MAX_VNPU;
     check_and_borrow_timeslice(dead);
     SUCCEED();
-}
-
-// Prefill hooks publish and clear the state observed by the elastic scheduler.
-TEST_F(CoreLimiterTest, prefill_hooks_toggle_scheduler_state)
-{
-    atomic_store(&g_vnpu_sched_context->prefill_state[g_vnpu_id].in_prefill, false);
-
-    EXPECT_EQ(rtBeginPrefill(), ACL_RT_SUCCESS);
-    EXPECT_TRUE(is_vnpu_in_prefill(g_vnpu_id));
-    EXPECT_EQ(rtEndPrefill(), ACL_RT_SUCCESS);
-    EXPECT_FALSE(is_vnpu_in_prefill(g_vnpu_id));
-}
-
-// A duplicate begin must not create an unmatched scope or clear the active one.
-TEST_F(CoreLimiterTest, duplicate_prefill_begin_is_rejected)
-{
-    atomic_store(&g_vnpu_sched_context->prefill_state[g_vnpu_id].in_prefill, false);
-
-    ASSERT_EQ(rtBeginPrefill(), ACL_RT_SUCCESS);
-    EXPECT_EQ(rtBeginPrefill(), ACL_ERROR_FAILURE);
-    EXPECT_TRUE(is_vnpu_in_prefill(g_vnpu_id));
-    EXPECT_EQ(rtEndPrefill(), ACL_RT_SUCCESS);
-    EXPECT_FALSE(is_vnpu_in_prefill(g_vnpu_id));
-}
-
-// Elastic borrowing is disabled while the current owner publishes prefill.
-TEST_F(CoreLimiterTest, borrow_is_blocked_by_owner_prefill)
-{
-    int owner = (g_vnpu_id + 1) % MAX_VNPU;
-    atomic_store(&g_vnpu_sched_context->prefill_state[owner].in_prefill, true);
-    EXPECT_FALSE(vnpu_borrow_allowed(owner));
-
-    atomic_store(&g_vnpu_sched_context->prefill_state[owner].in_prefill, false);
-    EXPECT_TRUE(vnpu_borrow_allowed(owner));
-    EXPECT_FALSE(vnpu_borrow_allowed(g_vnpu_id));
 }

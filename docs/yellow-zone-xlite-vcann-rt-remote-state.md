@@ -3,9 +3,106 @@
 更新时间：2026-07-23
 权威调测 Issue：<https://github.com/MozhiJiawei/vllm-stack-yellow-zone/issues/10>
 
+> **状态更新：本文原有 `d06d6a7` READY/IDLE 调度断点已废止。**
+> 下文保留的旧 patch、`rtDetSched*`、`shim4-7` 调度流程只用于历史
+> 回溯，不得继续执行。当前入口是上层共享内存 elastic scheduler；
+> vCANN 不再参与模型间 forward 仲裁。
+
 ## 用途
 
-本文只记录本轮远端调测已经确认可复用的环境、脚本和命令，以及当前尚未完成的硬件断点。下一个远端调测 Agent 应从本文继续，不要回到旧 Issue #7 的 ABI3 死锁诊断流程，也不要重新手写容器创建命令。
+本文保留已经确认可复用的黄区硬件、容器和模型信息，并记录新上层调度
+方案的部署断点。不要回到旧 Issue #7 的 ABI3 诊断流程，不要手写容器
+创建命令，也不要继续应用旧 vLLM/vLLM-Ascend 协同调度 patch。
+
+## 当前新断点：Worker 边界共享内存 elastic v3
+
+协议已升级为 v3，旧 v2 generation 会被拒绝。调度点不再位于
+EngineCore：每个 `WorkerProc` 仅在非空 `execute_model` 调用前后进入
+共享内存 gate；EngineCore、AsyncScheduler、batch queue、placeholder
+和 FutureWrapper 保持 vLLM v0.19.1 原生控制流。TP4 每轮只产生一个
+实例级 grant，四个 worker 分别设置 READY/COMPLETE 位。sampling 和
+其他 RPC 完全绕过 gate。
+
+本地 Linux 测试已覆盖 TP1/TP2/TP4 位图屏障、A/B forward 零重叠、
+sampling 与对侧 forward 重叠、超时/迟到完成/缺 rank/重复 rank，
+以及 10 万轮授权。锁定的 vLLM 源码测试直接运行真实
+`EngineCore.step_with_batch_queue()` 和 WorkerProc busy loop，仅对执行器、
+forward 和 sampling 打桩；`MODE=off|elastic` 的原生 async 轨迹一致。
+
+Windows Docker Desktop 固定 CPU 仅作诊断：修复 futex lost-wakeup 后，
+TP1 20,000 轮 handoff P50/P99 为 131.93/324.45 微秒，TP4 5,000 轮为
+323.59/1107.22 微秒，尚未达到 150 微秒 P99 门槛。该虚拟化结果不能代替
+黄区裸机结论，也不能据此宣称性能通过；当前整体仍为 NO-GO。
+
+尚未宣称远端 NPU 通过。黄区必须从干净 runtime 重新开始，不能复用当前
+包含旧 deterministic scheduler 的 `libvruntime.so` 和已打旧 patch 的容器。
+
+### 唯一准备入口
+
+```bash
+cd /root/l00933108
+git pull --ff-only
+
+bash scripts/pair-scheduler/prepare-yellow-zone.sh \
+  --physical-npus 4,5,6,7
+```
+
+该入口复用 `restart-vcann-xlite-containers.sh` 重建已清理旧调度代码的
+runtime 和两个干净容器，在目标 CPython 3.11/aarch64 环境构建并安装
+scheduler wheel，只应用新 WorkerProc patch，检查 EngineCore 未改动及
+旧符号 tombstone，
+最后运行 normal、forward timeout 和 primary death CPU preflight。
+
+成功标志：
+
+```text
+PAIR_SCHEDULER_PREPARED
+```
+
+### 启动 TP4 双实例
+
+```bash
+bash scripts/pair-scheduler/start-yellow-zone.sh
+```
+
+该脚本保留既有 Qwen3-4B、TP4、xLite full graph、chunked prefill 和
+`--async-scheduling` 参数，并分别配置 A/primary 与 B/standby。A 必须
+同时满足 `/v1/models`、inspector RUNNING、A worker registration mask
+完整后才启动 B；B 满足相同条件后脚本才报告 `PAIR_READY`。默认启动
+超时为 900 秒。
+
+启动后检查：
+
+```bash
+curl -s http://127.0.0.1:10040/v1/models
+curl -s http://127.0.0.1:10041/v1/models
+
+ctr -n k8s.io tasks exec --exec-id "inspect-$RANDOM" cont1_ljw \
+  /bin/bash -lc \
+  "vllm-pair-scheduler-inspect \
+    --pair-id qwen3-4b-tp4-npu4-7 \
+    --shm-dir /dev/shm/vllm-pair-scheduler \
+    --json"
+```
+
+Inspector 退出码：RUNNING=0、FAILED=2、SHUTDOWN/STALE=3、读取错误=1。
+FAILED 后库不会杀死卡在 `execute_model` 的 worker；外部监管必须停止
+并整对拉起两个实例。
+
+### 新方案硬件验收闸门
+
+1. 两个 `/v1/models` 就绪，inspector 为 RUNNING，A/B registration
+   mask 都是 `0b1111`。
+2. 单边请求正常，双边 decode/chunked prefill 无死锁。
+3. host grant 区间零重叠。
+4. NPU/HCCL timeline 证明 A/B 集合通信不重叠。
+5. timeline 证明 sampling 与对侧 forward 可重叠。
+6. 证明四个 TP worker 的 `execute_model` 主机调用返回后不存在不可
+   重叠的异步通信尾部。
+7. 裸机无文件 I/O benchmark 运行 100 万次，handoff P99 目标
+   100–150 微秒；未达标时停止性能验收。
+
+## 旧方案历史断点（禁止继续执行）
 
 ## 当前断点
 
@@ -17,7 +114,7 @@
 - 提交 `d06d6a7` 已按当前调测决定修改 vLLM patch：EngineCore 第一次 idle 初始化只本地返回，不发 TP collective、不调用 vCANN；第二次及以后恢复 READY/IDLE 控制泵。
 - `d06d6a7` 的 patch 独立应用检查和 Python 编译检查已通过，但尚未完成远端双实例硬件复验。
 
-因此下一步不是重新设计、重新编译 vCANN 或重建容器，而是：
+以下是旧方案当时的下一步，现已废止：
 
 1. 在两个现有容器中把旧 vLLM patch 更新为 `d06d6a7` 版本。
 2. 清理本轮已经进入 FAILED 的 `shim4-7`。

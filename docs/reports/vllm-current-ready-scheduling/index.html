@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>vLLM 双实例 Worker 边界 elastic 调度 · 实现审视</title>
+  <style>
+    :root{--bg:#07111c;--panel:#0d1a28;--panel2:#122334;--line:#294158;--text:#ecf4fb;--muted:#91a8ba;--cyan:#55d6c2;--amber:#ffb45b;--blue:#71b7ff;--green:#6be19a;--red:#ff7d8b;--ink:#061019}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 12% -10%,#123b54 0,transparent 32%),var(--bg);color:var(--text);font:14px/1.65 Inter,"Segoe UI",Arial,sans-serif}.wrap{max-width:1320px;margin:auto;padding:40px 26px 72px}h1{font-size:clamp(36px,5vw,66px);line-height:1.03;letter-spacing:-.045em;margin:8px 0 16px}h2{font-size:25px;margin:42px 0 16px}h3{font-size:16px;margin:0 0 10px}.eyebrow{color:var(--cyan);font-weight:800;letter-spacing:.13em;text-transform:uppercase}.hero{display:grid;grid-template-columns:1.7fr 1fr;gap:24px;align-items:end}.lead{max-width:850px;color:#bfd1df;font-size:17px}.card{border:1px solid var(--line);background:linear-gradient(145deg,#102233e8,#0a1724e8);border-radius:17px;padding:19px;box-shadow:0 20px 45px #0004}.stamp b{display:block;color:var(--green);font-size:20px;margin:8px 0}.tag{display:inline-block;border-radius:99px;padding:3px 9px;background:#15394b;color:#bcecf2;font-size:12px}.tag.warn{background:#49331b;color:#ffd59b}.tag.bad{background:#4a2029;color:#ffc0c7}.muted{color:var(--muted)}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:28px 0}.kpi strong{display:block;font-size:28px}.kpi span{color:var(--muted)}code,.mono{font-family:"Cascadia Code",Consolas,monospace;color:#a7e9df}.architecture{display:grid;grid-template-columns:1fr 82px 1fr;gap:14px}.instance{padding:0;overflow:hidden}.instance header{display:flex;justify-content:space-between;padding:14px 17px;border-bottom:1px solid var(--line)}.instance.a header{border-left:5px solid var(--cyan)}.instance.b header{border-left:5px solid var(--amber)}.layer{margin:12px 14px;padding:12px;border:1px solid var(--line);border-radius:11px;background:#091623}.workers{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:9px}.worker{text-align:center;padding:9px 4px;border:1px solid #31536d;border-radius:8px;background:#10273a;font-size:12px}.bridge{display:flex;align-items:center;justify-content:center;writing-mode:vertical-rl;color:var(--muted);letter-spacing:.08em}.protocol{display:grid;grid-template-columns:1.05fr .95fr;gap:15px}.mask{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.bit{padding:11px 4px;text-align:center;border-radius:9px;border:1px solid var(--line);background:#0b1724}.bit.on{background:#153e35;border-color:#397b68;color:#aaf2d8}.stateflow{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:14px}.state{padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:#102133}.arrow{color:#6f8ba1}.sequence{overflow:auto}.lanes{min-width:1000px;display:grid;grid-template-columns:145px repeat(7,1fr);border:1px solid var(--line);border-radius:12px;overflow:hidden}.cell{min-height:72px;padding:9px;border-right:1px solid #1d3346;border-bottom:1px solid #1d3346}.head{min-height:auto;background:#12273a;color:#9db6c8;text-align:center;font-size:12px}.lane{background:#0a1724;font-weight:800}.pulse{display:block;padding:7px;border-radius:8px;color:var(--ink);font-size:12px;font-weight:750}.a{background:var(--cyan)}.b{background:var(--amber)}.blue{background:var(--blue)}.green{background:var(--green)}.gray{background:#718496;color:white}.compare{width:100%;border-collapse:collapse}.compare th,.compare td{text-align:left;padding:11px;border-bottom:1px solid var(--line);vertical-align:top}.compare th{font-size:12px;color:#9db2c4}.ok{color:var(--green);font-weight:800}.no{color:var(--red);font-weight:800}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}.callout{padding:15px;border:1px solid var(--line);border-radius:12px;background:#0a1724}.callout.warn{border-color:#704d29;background:#261b10}.callout.bad{border-color:#74303a;background:#29141a}.tests{display:grid;grid-template-columns:repeat(3,1fr);gap:11px}.test strong{display:block;font-size:17px}.test span{color:var(--muted)}ul{padding-left:19px}.foot{margin-top:42px;border-top:1px solid var(--line);padding-top:18px;color:var(--muted);font-size:12px}
+    @media(max-width:900px){.hero,.protocol,.grid2{grid-template-columns:1fr}.kpis,.tests{grid-template-columns:repeat(2,1fr)}.architecture{grid-template-columns:1fr}.bridge{writing-mode:horizontal-tb;padding:5px}.workers{grid-template-columns:repeat(2,1fr)}}@media(max-width:560px){.kpis,.tests{grid-template-columns:1fr}}
+  </style>
+</head>
+<body><main class="wrap">
+  <section class="hero">
+    <div>
+      <div class="eyebrow">Implementation review · Protocol v3 · 2026-07-23</div>
+      <h1>Worker 边界<br>轻量 elastic 调度</h1>
+      <p class="lead">调度从 EngineCore 下沉到每个 vLLM WorkerProc 的 <code>execute_model</code> 调用边界。两个共卡实例的 forward 严格错开；sampling 与所有其他 RPC 不持有租约，vLLM 原生 async batch queue 完整保留。</p>
+    </div>
+    <aside class="card stamp"><span class="tag">当前本地实现</span><b>CPU / fake executor：PASS</b><span class="muted">真实黄区 TP4 / NPU timeline 尚未执行，因此整体状态仍是 NO-GO。</span></aside>
+  </section>
+
+  <section class="kpis">
+    <div class="card kpi"><strong>1 grant</strong><span>每实例每轮 forward</span></div>
+    <div class="card kpi"><strong>4 + 4 bits</strong><span>TP4 READY / COMPLETE</span></div>
+    <div class="card kpi"><strong>0</strong><span>EngineCore 调度改动</span></div>
+    <div class="card kpi"><strong>100,000</strong><span>本地连续授权通过</span></div>
+  </section>
+
+  <h2>1. 实现形态：租约只包住 Worker forward</h2>
+  <section class="architecture">
+    <article class="card instance a">
+      <header><b>实例 A · primary control role</b><span class="tag">A</span></header>
+      <div class="layer"><b>EngineCore / AsyncScheduler</b><br><span class="muted">原生 schedule、placeholder、FutureWrapper、batch queue</span></div>
+      <div class="layer"><b>WorkerProc × TP4</b><div class="workers"><span class="worker">A rank 0<br>coordinator</span><span class="worker">A rank 1</span><span class="worker">A rank 2</span><span class="worker">A rank 3</span></div></div>
+      <div class="layer"><code>enter_forward → worker.execute_model → leave_forward</code></div>
+    </article>
+    <div class="bridge">同机 mmap · atomics · futex</div>
+    <article class="card instance b">
+      <header><b>实例 B · standby control role</b><span class="tag warn">B</span></header>
+      <div class="layer"><b>EngineCore / AsyncScheduler</b><br><span class="muted">与 MODE=off 完全相同的上层控制流</span></div>
+      <div class="layer"><b>WorkerProc × TP4</b><div class="workers"><span class="worker">B rank 0</span><span class="worker">B rank 1</span><span class="worker">B rank 2</span><span class="worker">B rank 3</span></div></div>
+      <div class="layer"><code>sample_tokens / 空计划 / 其他 RPC → 直接执行</code></div>
+    </article>
+  </section>
+
+  <h2>2. v3 位图协议</h2>
+  <section class="protocol">
+    <article class="card">
+      <h3>TP4 一轮，不是 4 次或 8 次授权</h3>
+      <p class="muted">四个 worker 各自到达边界后原子设置 READY bit。只有完整位图才进入候选队列；coordinator 发布一个实例级 grant 并一次 futex wake 全部 workers。</p>
+      <div class="mask"><span class="bit on">rank 0<br>READY</span><span class="bit on">rank 1<br>READY</span><span class="bit on">rank 2<br>READY</span><span class="bit on">rank 3<br>READY</span></div>
+      <div class="stateflow"><span class="state">IDLE</span><span class="arrow">→</span><span class="state">COLLECTING</span><span class="arrow">→</span><span class="state">READY</span><span class="arrow">→</span><span class="state">RUNNING</span><span class="arrow">→</span><span class="state">COMPLETE</span><span class="arrow">→</span><span class="state">DRAINING</span><span class="arrow">→</span><span class="state">IDLE</span></div>
+    </article>
+    <article class="card">
+      <h3>为什么有 DRAINING / exit_mask</h3>
+      <p>全部 COMPLETE 后，全局 owner 立即释放，对侧可马上获得 grant。本侧 workers 同时进入极短的回收确认：每个 worker 设置 exit bit；全部确认前本实例不能开启下一轮。</p>
+      <p class="muted">这修复了压力测试发现的跨轮竞态：最快 worker 不能在较慢 worker 观察到回收前污染下一轮；又不会阻塞对侧 handoff。</p>
+      <p><span class="ok">fencing</span>：epoch + instance session + worker session + rank + forward_seq + grant_id。</p>
+    </article>
+  </section>
+
+  <h2>3. 原生 async 时序没有 sampling 空泡</h2>
+  <article class="card sequence">
+    <div class="lanes">
+      <div class="cell head"></div><div class="cell head">① schedule₁</div><div class="cell head">② forward₁</div><div class="cell head">③ sample₁</div><div class="cell head">④ schedule₂</div><div class="cell head">⑤ forward₂</div><div class="cell head">⑥ consume sample₁</div><div class="cell head">⑦ 后续</div>
+      <div class="cell lane">EngineCore</div><div class="cell"><span class="pulse blue">原生调度 batch₁</span></div><div class="cell muted">FutureWrapper 保持原样</div><div class="cell"><span class="pulse green">提交 sampling₁</span></div><div class="cell"><span class="pulse blue">不等 sampling₁<br>继续 batch₂</span></div><div class="cell muted">原生 batch queue</div><div class="cell"><span class="pulse gray">稍后消费 token₁</span></div><div class="cell muted">placeholder / queue depth 不变</div>
+      <div class="cell lane">Worker A</div><div class="cell muted">FIFO 收到 RPC</div><div class="cell"><span class="pulse a">READY bits → grant A<br>execute_model₁</span></div><div class="cell"><span class="pulse green">sample_tokens₁<br>不进入 gate</span></div><div class="cell muted">FIFO 保序</div><div class="cell"><span class="pulse a">下一次 enter<br>execute_model₂</span></div><div class="cell muted">异步 output copy</div><div class="cell muted">继续原生顺序</div>
+      <div class="cell lane">对侧 Worker B</div><div class="cell muted">可等待 READY</div><div class="cell muted">A 持有 owner</div><div class="cell"><span class="pulse b">A sampling 时<br>B forward 可运行</span></div><div class="cell muted">elastic：有 READY 即授予</div><div class="cell muted">A/B forward 不重叠</div><div class="cell muted">sampling 可交叠</div><div class="cell muted">不制造配比空泡</div>
+    </div>
+  </article>
+
+  <h2>4. 改动边界</h2>
+  <table class="card compare">
+    <thead><tr><th>组件</th><th>当前处理</th><th>影响</th></tr></thead>
+    <tbody>
+      <tr><td>EngineCore / AsyncScheduler</td><td><span class="ok">不修改</span></td><td>不再等待 execute future，不限制 <code>batch_queue</code>，消除旧 P1 sampling 空泡。</td></tr>
+      <tr><td>vLLM WorkerProc</td><td>单文件轻量 patch</td><td>模型加载与 MQ 初始化后建 gate；只包非空 <code>execute_model</code>；异常 fail-closed。</td></tr>
+      <tr><td>vLLM-Ascend worker</td><td><span class="ok">不修改</span></td><td>无 stream event、无设备同步、无 READY/End。</td></tr>
+      <tr><td>vCANN runtime</td><td><span class="ok">不调用调度接口</span></td><td>只保留旧提交前能力；模型间仲裁全部在上层。</td></tr>
+      <tr><td>控制通道</td><td>共享 mmap + C11 atomic + futex</td><td>热路径没有 TCP、UDS、轮询 sleep 或文件 I/O。</td></tr>
+    </tbody>
+  </table>
+
+  <h2>5. 黄区串行启动</h2>
+  <section class="grid2">
+    <article class="callout"><h3>A 完全就绪后才启动 B</h3><ol><li>启动 A / primary。</li><li><code>/v1/models</code> 成功。</li><li>inspector 为 RUNNING。</li><li>A registration mask = <code>0b1111</code>。</li><li>此时才启动 B。</li></ol></article>
+    <article class="callout"><h3>B 完全就绪后才开放业务</h3><ol><li><code>/v1/models</code> 成功。</li><li>inspector 为 RUNNING。</li><li>B registration mask = <code>0b1111</code>。</li><li>脚本输出 <code>PAIR_READY</code>。</li></ol><p class="muted">默认超时 900 秒；primary、owner worker 或 barrier 超时均要求 supervisor 整对重启。</p></article>
+  </section>
+
+  <h2>6. 当前验证结果</h2>
+  <section class="tests">
+    <article class="card test"><strong class="ok">TP1 / TP2 / TP4</strong><span>一次 grant 被本实例全部 worker 消费；全部 COMPLETE 后释放。</span></article>
+    <article class="card test"><strong class="ok">零 forward 重叠</strong><span>本地 TP4 双实例 fake WorkerProc 区间检查通过。</span></article>
+    <article class="card test"><strong class="ok">sampling 可重叠</strong><span>A sampling 与 B forward 的主机区间实测重叠。</span></article>
+    <article class="card test"><strong class="ok">100k rounds</strong><span>零重复 grant、零永久等待；同时发现并修复跨轮竞态。</span></article>
+    <article class="card test"><strong class="ok">真实 EngineCore 控制流</strong><span>v0.19.1 <code>step_with_batch_queue()</code> 直接运行，off / elastic 轨迹一致。</span></article>
+    <article class="card test"><strong class="no">本机性能未过门槛</strong><span>Docker Desktop 固定 CPU 诊断：TP1 P99 324 μs；TP4 P99 1.11 ms。该环境不是黄区裸机，但不能据此宣称性能 PASS。</span></article>
+    <article class="card test"><strong class="no">NPU 未验收</strong><span>集合通信 timeline、设备异步尾部、TPOT 回退与百万轮固定 CPU 指标待黄区。</span></article>
+  </section>
+
+  <h2>7. DFX 与交付闸门</h2>
+  <section class="grid2">
+    <article class="callout bad"><h3>立即 FAILED / 整对重启</h3><ul><li>forward deadline 超时或迟到 COMPLETE</li><li>owner / primary / 执行中 worker 死亡</li><li>缺 rank barrier 超时、重复 rank、位图越界</li><li>epoch、session、sequence 或 grant fencing 不匹配</li><li>共享状态损坏</li></ul></article>
+    <article class="callout warn"><h3>仍需黄区证明</h3><ul><li>所有 TP worker 主机返回后，没有不可重叠的 NPU 通信尾部</li><li>A/B 集合通信 timeline 零重叠</li><li>sampling 与对侧 forward 在设备侧实际重叠</li><li>单实例无竞争 TPOT 回退 ≤ 1%</li><li>固定 CPU 百万轮 barrier / handoff P99 ≤ 150 μs</li></ul></article>
+  </section>
+
+  <footer class="foot">实现依据：<span class="mono">scheduler/src/vllm_pair_scheduler/</span>、<span class="mono">patches/vllm-pair-elastic-scheduling.patch</span>、<span class="mono">scripts/pair-scheduler/</span>。该页面描述 protocol v3；旧 vCANN READY / End / kernel gate 方案已删除，不再是当前实现。</footer>
+</main></body>
+</html>

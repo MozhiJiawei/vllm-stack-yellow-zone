@@ -248,7 +248,6 @@ __attribute__((visibility("default"))) aclError aclrtLaunchKernel(
     runtime_hook_resolve(HOOK_aclrtLaunchKernel);
     vcann_trace_record(VCANN_TRACE_ACL_KERNEL, (rtStream_t)stream, funcHandle, argsData,
                        0, blockDim, (uint32_t)argsSize);
-    (void)det_sched_gate((rtStream_t)stream, NULL, NULL);
     return RUNTIME_HOOK_CALL(rt_library_entry, aclrtLaunchKernel, funcHandle, blockDim,
                              argsData, argsSize, stream);
 }
@@ -260,7 +259,6 @@ __attribute__((visibility("default"))) aclError aclrtLaunchKernelWithConfig(
     runtime_hook_resolve(HOOK_aclrtLaunchKernelWithConfig);
     vcann_trace_record(VCANN_TRACE_ACL_KERNEL_CONFIG, (rtStream_t)stream, funcHandle,
                        argsHandle, 0, blockDim, 0);
-    (void)det_sched_gate((rtStream_t)stream, NULL, NULL);
     return RUNTIME_HOOK_CALL(rt_library_entry, aclrtLaunchKernelWithConfig, funcHandle,
                              blockDim, stream, cfg, argsHandle, reserve);
 }
@@ -272,7 +270,6 @@ __attribute__((visibility("default"))) aclError aclrtLaunchKernelV2(
     runtime_hook_resolve(HOOK_aclrtLaunchKernelV2);
     vcann_trace_record(VCANN_TRACE_ACL_KERNEL_V2, (rtStream_t)stream, funcHandle, argsData,
                        0, blockDim, (uint32_t)argsSize);
-    (void)det_sched_gate((rtStream_t)stream, NULL, NULL);
     return RUNTIME_HOOK_CALL(rt_library_entry, aclrtLaunchKernelV2, funcHandle, blockDim,
                              argsData, argsSize, cfg, stream);
 }
@@ -285,7 +282,6 @@ __attribute__((visibility("default"))) aclError aclrtLaunchKernelWithHostArgs(
     runtime_hook_resolve(HOOK_aclrtLaunchKernelWithHostArgs);
     vcann_trace_record(VCANN_TRACE_ACL_KERNEL_HOST_ARGS, (rtStream_t)stream, funcHandle,
                        hostArgs, placeHolderNum, blockDim, (uint32_t)argsSize);
-    (void)det_sched_gate((rtStream_t)stream, NULL, NULL);
     return RUNTIME_HOOK_CALL(rt_library_entry, aclrtLaunchKernelWithHostArgs, funcHandle,
                              blockDim, stream, cfg, hostArgs, argsSize, placeHolderArray,
                              placeHolderNum);

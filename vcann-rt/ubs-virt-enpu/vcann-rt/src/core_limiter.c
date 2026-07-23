@@ -22,8 +22,6 @@ vnpu_time_slice_sched_t *g_vnpu_sched_context = NULL;
 uint8_t g_vnpu_id = 0;
 volatile int g_terminate = 0;
 atomic_bool g_sched_locking = false;
-static _Thread_local unsigned int g_core_gate_depth = 0;
-static _Thread_local bool g_core_gate_pending = false;
 atomic_int hasModelExecuteSync = 0;
 pthread_mutex_t g_sched_mutex;
 
@@ -94,13 +92,6 @@ void core_limiter(rtStream_t stream, core_function func, void *param)
     if (!is_core_limit()) {
         return;
     }
-    if (g_core_gate_depth > 0) {
-        restore_streams(stream);
-        if (func != NULL) func(param, stream);
-        ++g_core_gate_depth;
-        g_core_gate_pending = true;
-        return;
-    }
     while (!g_terminate) {
         // g_sched_locking is a atomic_int for scheduler thread obtain lock with high priority
         if (atomic_load(&g_sched_locking)) {
@@ -111,48 +102,19 @@ void core_limiter(rtStream_t stream, core_function func, void *param)
         // waiting for mutex == waiting for launch task
         int rc = pthread_mutex_lock(&g_sched_mutex);
         CHECK_COND_RETURN(rc != 0, "Failed to lock mutex, error code=%d.", rc);
-        if (det_sched_requested() && !det_sched_has_lease()) {
-            pthread_mutex_unlock(&g_sched_mutex);
-            ns_sleep(WAITING_SLEEP_PERIOD);
-            continue;
-        }
         LOG_DEBUG("The mutex lock is successfully obtained.");
         // The delivered stream needs to be recorded because the execution time needs to be collected later.
         restore_streams(stream);
         if (func != NULL) {
             func(param, stream);
         }
-        g_core_gate_depth = 1;
-        g_core_gate_pending = true;
+        pthread_mutex_unlock(&g_sched_mutex);
+        // Recording time when the last task was delivered, which is used for schedule policy 2.
+        atomic_store(&g_vnpu_sched_context->last_kernel_time_ns[g_vnpu_id], ns_now());
         return;
     }
 
     return;
-}
-
-bool core_limiter_take_pending(void)
-{
-    bool pending = g_core_gate_pending;
-    g_core_gate_pending = false;
-    return pending;
-}
-
-void core_limiter_release(void)
-{
-    if (g_core_gate_depth == 0 || --g_core_gate_depth > 0) {
-        return;
-    }
-    atomic_store(&g_vnpu_sched_context->last_kernel_time_ns[g_vnpu_id], ns_now());
-    pthread_mutex_unlock(&g_sched_mutex);
-}
-
-bool det_sched_gate(rtStream_t stream, core_function func, void *param)
-{
-    if (!det_sched_requested()) {
-        return false;
-    }
-    core_limiter(stream, func, param);
-    return true;
 }
 
 bool check_timeout(atomic_uint_fast64_t *timestamp, uint64_t timeout_period)
@@ -182,34 +144,6 @@ bool is_vnpu_in_prefill(int vnpu_id)
         return false;
     }
     return atomic_load(&g_vnpu_sched_context->prefill_state[vnpu_id].in_prefill);
-}
-
-int lock_vnpu_schedule_mutex(int vnpu_id)
-{
-    if (g_vnpu_sched_context == NULL || vnpu_id < 0 || vnpu_id >= MAX_VNPU) {
-        return EINVAL;
-    }
-
-    int rc = pthread_mutex_lock(&g_vnpu_sched_context->vnpu_schedule_mutex[vnpu_id]);
-    if (rc == EOWNERDEAD) {
-        LOG_INFO("The scheduling process for vNPU %d exited; taking over its robust mutex.", vnpu_id);
-        rc = pthread_mutex_consistent(&g_vnpu_sched_context->vnpu_schedule_mutex[vnpu_id]);
-    }
-    return rc;
-}
-
-void unlock_vnpu_schedule_mutex(int vnpu_id)
-{
-    if (g_vnpu_sched_context == NULL || vnpu_id < 0 || vnpu_id >= MAX_VNPU) {
-        return;
-    }
-    int rc = pthread_mutex_unlock(&g_vnpu_sched_context->vnpu_schedule_mutex[vnpu_id]);
-    CHECK_COND_RETURN(rc != 0, "Failed to unlock vNPU %d schedule mutex, error code=%d.", vnpu_id, rc);
-}
-
-bool vnpu_borrow_allowed(int owner)
-{
-    return owner != g_vnpu_id && !is_vnpu_in_prefill(owner);
 }
 
 inline bool vnpu_has_work(int vnpu_id)
@@ -270,24 +204,17 @@ void set_vnpu_and_idle(int vnpu_id, int next_vnpu_id)
     atomic_store(&g_vnpu_sched_context->owner, next_vnpu_id);
 }
 
-int synchronize_and_clear_streams_checked(void)
+void synchronize_and_clear_streams(void)
 {
     int remaining_count = 0;
-    int first_error = ACL_RT_SUCCESS;
     for (int i = 0; i < g_cache_streams.num_streams; ++i) {
         rtStream_t stm = g_cache_streams.streams[i];
         bool capture = 0;
         int rc = hashmap_get_capture_status(stream_map, (void *)stm, &capture);
-        if (rc == -1) {
-            LOG_ERROR("Failed to get stream %p capture_status from the hash map.", (void *)stm);
-            g_cache_streams.streams[remaining_count++] = stm;
-            first_error = ACL_ERROR_FAILURE;
-            continue;
-        }
+        CHECK_COND_RETURN(rc == -1, "Failed to get stream %p capture_status from the hash map.", (void *)stm);
         if (capture) {
             LOG_DEBUG("Stream %p is in capture, skip synchronization and clear.", (void *)stm);
             g_cache_streams.streams[remaining_count++] = stm;
-            first_error = ACL_ERROR_FAILURE;
             continue;
         }
         // int32_t devID = 0;
@@ -299,31 +226,13 @@ int synchronize_and_clear_streams_checked(void)
             uint32_t turn = atomic_load(&g_vnpu_sched_context->vnpu_schedule_turn[g_vnpu_id]);
             vcann_trace_sync_begin(stm, owner, turn, g_vnpu_id);
         }
-        int sync_rc = RUNTIME_HOOK_CALL(rt_library_entry, rtStreamSynchronize, stm);
+        RUNTIME_HOOK_CALL(rt_library_entry, rtStreamSynchronize, stm);
         vcann_trace_sync_end(stm);
-        if (sync_rc != ACL_RT_SUCCESS) {
-            LOG_ERROR("Stream %p synchronization failed, error code=%d.", (void *)stm, sync_rc);
-            g_cache_streams.streams[remaining_count++] = stm;
-            if (first_error == ACL_RT_SUCCESS) {
-                first_error = sync_rc;
-            }
-            continue;
-        }
         LOG_DEBUG("Stream synchronization end.");
         rc = hashmap_remove(stream_map, (void *)stm);
-        if (rc == -1) {
-            LOG_ERROR("Failed to remove stream %p from the hash map.", (void *)stm);
-            g_cache_streams.streams[remaining_count++] = stm;
-            first_error = ACL_ERROR_FAILURE;
-        }
+        CHECK_COND_RETURN(rc == -1, "Failed to remove stream %p from the hash map.", (void *)stm);
     }
     g_cache_streams.num_streams = remaining_count;
-    return first_error;
-}
-
-void synchronize_and_clear_streams(void)
-{
-    (void)synchronize_and_clear_streams_checked();
 }
 
 void compensate_delta_time(void)
@@ -331,7 +240,7 @@ void compensate_delta_time(void)
     uint64_t begin = ns_now();
     synchronize_and_clear_streams();
     uint64_t elapsed = ns_now() - begin;
-    set_core_cur_timeslice(get_core_cur_timeslice() - (int64_t)elapsed);
+    set_core_cur_timeslice(-(int64_t)elapsed);
 }
 
 bool add_and_consume_time_slice(uint8_t *turn_id)
@@ -358,6 +267,9 @@ bool add_and_consume_time_slice(uint8_t *turn_id)
     // For Determining whether the current round of scheduling is complete for a container with multiple threads.
     *turn_id = atomic_load(&g_vnpu_sched_context->vnpu_schedule_turn[g_vnpu_id]);
 
+    int vnpu_id = atomic_load(&g_vnpu_sched_context->owner);
+    int next_vnpu_id = select_next_owner(vnpu_id);
+
     bool in_prefill = is_vnpu_in_prefill(g_vnpu_id);
     while (end > now || in_prefill) {
         now = ns_now();
@@ -377,6 +289,7 @@ bool add_and_consume_time_slice(uint8_t *turn_id)
     atomic_store(&g_sched_locking, true);
     pthread_mutex_lock(&g_sched_mutex);
     atomic_store(&g_sched_locking, false);
+    set_vnpu_and_idle(vnpu_id, next_vnpu_id);
 
     return true;
 }
@@ -481,30 +394,11 @@ void check_and_borrow_timeslice(int owner)
     if (owner == g_vnpu_id) {
         return;
     }
-
-    bool owner_mutex_locked = false;
-    if (owner >= 0 && owner < MAX_VNPU) {
-        // Hold the owner's process-shared mutex for the complete borrow window.
-        // rtBeginPrefill uses the same mutex, so no new prefill can overlap a
-        // borrow that has already started, and no new borrow can enter prefill.
-        int rc = lock_vnpu_schedule_mutex(owner);
-        CHECK_COND_RETURN(rc != 0, "Failed to lock owner vNPU %d schedule mutex, error code=%d.", owner, rc);
-        owner_mutex_locked = true;
-        if (!vnpu_borrow_allowed(owner)) {
-            unlock_vnpu_schedule_mutex(owner);
-            return;
-        }
-    }
-
     pthread_mutex_unlock(&g_sched_mutex);
     ns_sleep(BORROW_TIMESLICE_LENGTH); // borrow BORROW_TIMESLICE_LENGTH ns every time
     atomic_store(&g_sched_locking, true);
-    int rc = pthread_mutex_lock(&g_sched_mutex);
+    pthread_mutex_lock(&g_sched_mutex);
     atomic_store(&g_sched_locking, false);
-    if (owner_mutex_locked) {
-        unlock_vnpu_schedule_mutex(owner);
-    }
-    CHECK_COND_RETURN(rc != 0, "Failed to lock scheduler mutex after borrowing, error code=%d.", rc);
 }
 
 // Scheduling main thread
@@ -522,21 +416,6 @@ void *vnpu_scheduler_thread(void *arg)
     CHECK_COND_RETURN_((ret != ACL_RT_SUCCESS), NULL, "Call rtSetDevice fails after vnpu scheduler is created, ret: %d, target : %d", ret, logic_id);
 
     while (!g_terminate) {
-        if (det_sched_requested()) {
-            det_sched_fail_if_participant_lost();
-            if (det_sched_has_lease()) {
-                pthread_mutex_unlock(&g_sched_mutex);
-                while (!g_terminate && det_sched_has_lease()) {
-                    ns_sleep(WAITING_SLEEP_PERIOD);
-                }
-                atomic_store(&g_sched_locking, true);
-                pthread_mutex_lock(&g_sched_mutex);
-                atomic_store(&g_sched_locking, false);
-            } else {
-                ns_sleep(WAITING_SLEEP_PERIOD);
-            }
-            continue;
-        }
         // Distributed thread scheduling.
         // Scheduling is performed only when the owner is the current vnpu or the owner is disabled.
         int owner = atomic_load(&g_vnpu_sched_context->owner);
@@ -560,8 +439,11 @@ void *vnpu_scheduler_thread(void *arg)
 
 
         // Only one thread is accepted.
-        int rc = lock_vnpu_schedule_mutex(g_vnpu_id);
-        if (rc != 0) {
+        int rc = pthread_mutex_lock(&g_vnpu_sched_context->vnpu_schedule_mutex[g_vnpu_id]);
+        if (rc == EOWNERDEAD) {
+            LOG_INFO("The scheduling process has been detected to exit, and the scheduling is being taken over.");
+            pthread_mutex_consistent(&g_vnpu_sched_context->vnpu_schedule_mutex[g_vnpu_id]);
+        } else if (rc != 0) {
             LOG_WARN("Failed to obtain mutex lock, error code=%d.", rc);
             continue;
         }
@@ -572,12 +454,10 @@ void *vnpu_scheduler_thread(void *arg)
             // Multi-process in the same vNPU is an unrecommended scenario and should be avoided as much as possible.
             if (flag) {
                 compensate_delta_time();
-                int vnpu_id = atomic_load(&g_vnpu_sched_context->owner);
-                set_vnpu_and_idle(vnpu_id, select_next_owner(vnpu_id));
             }
             atomic_store(&g_vnpu_sched_context->vnpu_schedule_turn[g_vnpu_id], turn_id + 1);
         }
-        unlock_vnpu_schedule_mutex(g_vnpu_id);
+        pthread_mutex_unlock(&g_vnpu_sched_context->vnpu_schedule_mutex[g_vnpu_id]);
     }
     pthread_mutex_unlock(&g_sched_mutex);
     hashmap_destroy(stream_map);
@@ -588,6 +468,7 @@ void *vnpu_scheduler_thread(void *arg)
 void share_mem_init(vnpu_time_slice_sched_t *vnpu_sched_shm)
 {
     g_vnpu_sched_context = vnpu_sched_shm;
+    uint64_t begin = ns_now();
 
     while (!g_terminate) {
         if (atomic_load(&g_vnpu_sched_context->magic_number) == MAGIC_INITIALIZED) {
@@ -595,20 +476,16 @@ void share_mem_init(vnpu_time_slice_sched_t *vnpu_sched_shm)
         }
 
         if (atomic_load(&g_vnpu_sched_context->magic_number) == MAGIC_INITIALIZING) {
+            uint64_t now = ns_now();
+            if (now - begin > VNPU_TIMEOUT_PERIOD) {
+                atomic_store(&g_vnpu_sched_context->magic_number, MAGIC_UNINITIALIZED);
+                begin = now;
+            }
             ns_sleep(WAITING_SLEEP_PERIOD);
             continue;
         }
 
-        uint_fast32_t expected = MAGIC_UNINITIALIZED;
-        if (!atomic_compare_exchange_strong(&g_vnpu_sched_context->magic_number,
-                                            &expected, MAGIC_INITIALIZING)) {
-            if (expected != MAGIC_INITIALIZING && expected != MAGIC_INITIALIZED) {
-                LOG_ERROR("Incompatible shared-memory layout 0x%lx", (unsigned long)expected);
-                g_terminate = 1;
-                return;
-            }
-            continue;
-        }
+        atomic_store(&g_vnpu_sched_context->magic_number, MAGIC_INITIALIZING);
         atomic_store(&g_vnpu_sched_context->owner, -1);
 
         pthread_mutexattr_t attr;
@@ -625,7 +502,6 @@ void share_mem_init(vnpu_time_slice_sched_t *vnpu_sched_shm)
             pthread_mutex_init(&g_vnpu_sched_context->vnpu_schedule_mutex[i], &attr);
         }
 
-        det_sched_init(&attr);
         pthread_mutexattr_destroy(&attr);
         atomic_store(&g_vnpu_sched_context->magic_number, MAGIC_INITIALIZED);
         return;
@@ -670,9 +546,6 @@ int aicore_limiter_initialize(void)
     }
 
     share_mem_init(vnpu_sched_shm);
-    if (g_terminate) {
-        return ENPU_FAIL;
-    }
     pthread_mutex_init(&g_sched_mutex, NULL);
 
     rc = vnpu_scheduler_init(vnpu_sched_shm);
