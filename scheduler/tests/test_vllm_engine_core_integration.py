@@ -8,7 +8,6 @@ import queue
 import sys
 import types
 from collections import deque
-from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -148,34 +147,22 @@ def test_engine_core_source_has_no_pair_scheduler_hooks() -> None:
     assert "pair_forward_gate" not in source
 
 
-def test_worker_reads_debug_bypass_for_each_forward(monkeypatch) -> None:
-    _, WorkerProc, _ = _load_vllm_classes()
+def test_mode_off_worker_hot_paths_remain_native() -> None:
+    _, WorkerProc, UniProcExecutor = _load_vllm_classes()
+    worker_loop = inspect.getsource(WorkerProc.worker_busy_loop)
+    uniproc_execute = inspect.getsource(UniProcExecutor.execute_model)
+
+    assert "pair_forward_gate" not in worker_loop
+    assert "PAIR_SCHED" not in worker_loop
+    assert "pair_forward_gate" not in uniproc_execute
+    assert "PAIR_SCHED" not in uniproc_execute
+
+
+def test_worker_gate_is_installed_once_and_wraps_only_forward(monkeypatch) -> None:
+    _load_vllm_classes()
+    from vllm.v1.executor import multiproc_executor
+
     trace: list[str] = []
-
-    class StopLoop(BaseException):
-        pass
-
-    class MQ:
-        def __init__(self):
-            self.calls = deque(
-                [
-                    ("0", ("execute_model", (_output("gated"),), {}, 0)),
-                    ("1", ("execute_model", (_output("bypassed"),), {}, 0)),
-                ]
-            )
-
-        def dequeue(self, indefinite=True):
-            assert indefinite
-            if not self.calls:
-                raise StopLoop
-            bypass, call = self.calls.popleft()
-            monkeypatch.setenv("VLLM_PAIR_SCHED_DEBUG_BYPASS", bypass)
-            return call
-
-    class Worker:
-        def execute_model(self, output):
-            trace.append(f"worker.execute:{output.name}")
-            return output.name
 
     class Gate:
         def enter_forward(self):
@@ -188,27 +175,49 @@ def test_worker_reads_debug_bypass_for_each_forward(monkeypatch) -> None:
         def fail(self, reason):
             trace.append(f"gate.fail:{reason}")
 
-    proc = WorkerProc.__new__(WorkerProc)
-    proc.rank = 0
-    proc.worker = Worker()
-    proc.rpc_broadcast_mq = MQ()
-    proc._pair_forward_gate = Gate()
-    proc.handle_output = lambda output: trace.append(f"output:{output}")
-    with pytest.raises(StopLoop):
-        proc.worker_busy_loop()
+    gate = Gate()
+    calls = []
+    module = SimpleNamespace(
+        create_worker_forward_gate_from_env=lambda **kwargs: (
+            calls.append(kwargs) or gate
+        )
+    )
+    monkeypatch.setitem(sys.modules, "vllm_pair_scheduler", module)
+    monkeypatch.setenv("VLLM_PAIR_SCHED_MODE", "elastic")
+    config = SimpleNamespace(
+        parallel_config=SimpleNamespace(
+            pipeline_parallel_size=1,
+            nnodes_within_dp=1,
+            local_world_size=4,
+        )
+    )
+
+    def execute_model(output):
+        trace.append(f"worker.execute:{output.name}")
+        return output.name
+
+    worker = SimpleNamespace(execute_model=execute_model)
+    assert (
+        multiproc_executor._install_pair_worker_gate(worker, config, rank=2)
+        is gate
+    )
+    assert calls == [{"worker_rank": 2, "worker_count": 4}]
+
+    assert worker.execute_model(_output("gated")) == "gated"
+    assert worker.execute_model(_output("empty", tokens=0)) == "empty"
 
     assert trace == [
         "gate.enter",
         "worker.execute:gated",
         "gate.leave:1:9",
-        "output:gated",
-        "worker.execute:bypassed",
-        "output:bypassed",
+        "worker.execute:empty",
     ]
 
 
-def test_real_uniproc_gates_only_nonempty_execute_model(monkeypatch) -> None:
-    _, _, UniProcExecutor = _load_vllm_classes()
+def test_uniproc_gate_is_installed_at_worker_boundary(monkeypatch) -> None:
+    _load_vllm_classes()
+    from vllm.v1.executor import uniproc_executor
+
     trace: list[str] = []
 
     class Gate:
@@ -222,56 +231,11 @@ def test_real_uniproc_gates_only_nonempty_execute_model(monkeypatch) -> None:
         def fail(self, reason):
             trace.append(f"gate.fail:{reason}")
 
-    executor = UniProcExecutor.__new__(UniProcExecutor)
-    executor._pair_forward_gate = Gate()
-
-    def collective_rpc(
-        method,
-        timeout=None,
-        args=(),
-        kwargs=None,
-        non_block=False,
-        single_value=False,
-    ):
-        name = getattr(args[0], "name", args[0]) if args else ""
-        trace.append(f"rpc:{method}:{name}")
-        future = Future()
-        future.set_result(name)
-        return future if non_block else name
-
-    executor.collective_rpc = collective_rpc
-
-    monkeypatch.setenv("VLLM_PAIR_SCHED_DEBUG_BYPASS", "0")
-    assert executor.execute_model(_output("gated"), non_block=True).result() == "gated"
-    monkeypatch.setenv("VLLM_PAIR_SCHED_DEBUG_BYPASS", "1")
-    assert executor.execute_model(_output("bypassed"), non_block=True).result() == (
-        "bypassed"
-    )
-    monkeypatch.setenv("VLLM_PAIR_SCHED_DEBUG_BYPASS", "0")
-    assert executor.execute_model(
-        _output("empty", tokens=0), non_block=True
-    ).result() == "empty"
-    assert executor.sample_tokens("grammar", non_block=True).result() == "grammar"
-
-    assert trace == [
-        "gate.enter",
-        "rpc:execute_model:gated",
-        "gate.leave:1:9",
-        "rpc:execute_model:bypassed",
-        "rpc:execute_model:empty",
-        "rpc:sample_tokens:grammar",
-    ]
-
-
-def test_uniproc_gate_factory_registers_one_worker(monkeypatch) -> None:
-    _load_vllm_classes()
-    from vllm.v1.executor import uniproc_executor
-
+    gate = Gate()
     calls = []
-    sentinel = object()
     module = SimpleNamespace(
         create_worker_forward_gate_from_env=lambda **kwargs: (
-            calls.append(kwargs) or sentinel
+            calls.append(kwargs) or gate
         )
     )
     monkeypatch.setitem(sys.modules, "vllm_pair_scheduler", module)
@@ -284,12 +248,62 @@ def test_uniproc_gate_factory_registers_one_worker(monkeypatch) -> None:
         )
     )
 
-    assert uniproc_executor._create_pair_worker_gate(config) is sentinel
+    def execute_model(output):
+        trace.append(f"worker.execute:{output.name}")
+        return output.name
+
+    worker = SimpleNamespace(execute_model=execute_model)
+    assert uniproc_executor._install_pair_worker_gate(worker, config) is gate
     assert calls == [{"worker_rank": 0, "worker_count": 1}]
+    assert worker.execute_model(_output("gated")) == "gated"
+    assert trace == [
+        "gate.enter",
+        "worker.execute:gated",
+        "gate.leave:1:9",
+    ]
 
 
-def test_real_uniproc_forward_exception_fails_pair(monkeypatch) -> None:
-    _, _, UniProcExecutor = _load_vllm_classes()
+def test_mode_off_does_not_replace_worker_execute_model(monkeypatch) -> None:
+    _load_vllm_classes()
+    from vllm.v1.executor import multiproc_executor
+    from vllm.v1.executor import uniproc_executor
+
+    monkeypatch.setenv("VLLM_PAIR_SCHED_MODE", "off")
+    worker = SimpleNamespace(execute_model=lambda output: output)
+    original_execute_model = worker.execute_model
+    uniproc_config = SimpleNamespace(
+        parallel_config=SimpleNamespace(
+            pipeline_parallel_size=1,
+            nnodes_within_dp=1,
+            world_size=1,
+        )
+    )
+    multiproc_config = SimpleNamespace(
+        parallel_config=SimpleNamespace(
+            pipeline_parallel_size=1,
+            nnodes_within_dp=1,
+            local_world_size=4,
+        )
+    )
+
+    assert (
+        uniproc_executor._install_pair_worker_gate(worker, uniproc_config)
+        is None
+    )
+    assert worker.execute_model is original_execute_model
+    assert (
+        multiproc_executor._install_pair_worker_gate(
+            worker, multiproc_config, rank=0
+        )
+        is None
+    )
+    assert worker.execute_model is original_execute_model
+
+
+def test_installed_worker_gate_fails_pair_on_forward_exception(monkeypatch) -> None:
+    _load_vllm_classes()
+    from vllm.v1.executor import uniproc_executor
+
     trace: list[str] = []
 
     class Gate:
@@ -303,19 +317,31 @@ def test_real_uniproc_forward_exception_fails_pair(monkeypatch) -> None:
         def fail(self, reason):
             trace.append(f"gate.fail:{reason}")
 
-    executor = UniProcExecutor.__new__(UniProcExecutor)
-    executor._pair_forward_gate = Gate()
-
-    def collective_rpc(*args, **kwargs):
-        future = Future()
-        future.set_exception(RuntimeError("fake forward failed"))
-        return future
-
-    executor.collective_rpc = collective_rpc
-    monkeypatch.setenv("VLLM_PAIR_SCHED_DEBUG_BYPASS", "0")
+    gate = Gate()
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_pair_scheduler",
+        SimpleNamespace(
+            create_worker_forward_gate_from_env=lambda **kwargs: gate
+        ),
+    )
+    monkeypatch.setenv("VLLM_PAIR_SCHED_MODE", "elastic")
+    config = SimpleNamespace(
+        parallel_config=SimpleNamespace(
+            pipeline_parallel_size=1,
+            nnodes_within_dp=1,
+            world_size=1,
+        )
+    )
+    worker = SimpleNamespace(
+        execute_model=lambda output: (_ for _ in ()).throw(
+            RuntimeError("fake forward failed")
+        )
+    )
+    uniproc_executor._install_pair_worker_gate(worker, config)
 
     with pytest.raises(RuntimeError, match="fake forward failed"):
-        executor.execute_model(_output("bad"), non_block=True)
+        worker.execute_model(_output("bad"))
     assert trace == ["gate.enter", "gate.fail:201"]
 
 
@@ -373,8 +399,10 @@ def test_real_engine_core_sampling_exception_follows_native_path() -> None:
         engine.step_with_batch_queue()
 
 
-def test_real_worker_proc_gates_only_nonempty_execute_model() -> None:
+def test_real_worker_proc_gates_only_nonempty_execute_model(monkeypatch) -> None:
     _, WorkerProc, _ = _load_vllm_classes()
+    from vllm.v1.executor import multiproc_executor
+
     trace: list[str] = []
 
     class StopLoop(BaseException):
@@ -421,7 +449,25 @@ def test_real_worker_proc_gates_only_nonempty_execute_model() -> None:
     proc.rank = 0
     proc.worker = Worker()
     proc.rpc_broadcast_mq = MQ()
-    proc._pair_forward_gate = Gate()
+    gate = Gate()
+    monkeypatch.setenv("VLLM_PAIR_SCHED_MODE", "elastic")
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_pair_scheduler",
+        SimpleNamespace(
+            create_worker_forward_gate_from_env=lambda **kwargs: gate
+        ),
+    )
+    config = SimpleNamespace(
+        parallel_config=SimpleNamespace(
+            pipeline_parallel_size=1,
+            nnodes_within_dp=1,
+            local_world_size=1,
+        )
+    )
+    proc._pair_forward_gate = multiproc_executor._install_pair_worker_gate(
+        proc.worker, config, rank=0
+    )
     proc.handle_output = lambda output: trace.append(f"output:{output}")
     with pytest.raises(StopLoop):
         proc.worker_busy_loop()
@@ -437,8 +483,10 @@ def test_real_worker_proc_gates_only_nonempty_execute_model() -> None:
     ]
 
 
-def test_real_worker_proc_forward_exception_fails_pair() -> None:
+def test_real_worker_proc_forward_exception_fails_pair(monkeypatch) -> None:
     _, WorkerProc, _ = _load_vllm_classes()
+    from vllm.v1.executor import multiproc_executor
+
     trace: list[str] = []
 
     class StopLoop(BaseException):
@@ -472,7 +520,25 @@ def test_real_worker_proc_forward_exception_fails_pair() -> None:
     proc.rank = 0
     proc.worker = Worker()
     proc.rpc_broadcast_mq = MQ()
-    proc._pair_forward_gate = Gate()
+    gate = Gate()
+    monkeypatch.setenv("VLLM_PAIR_SCHED_MODE", "elastic")
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_pair_scheduler",
+        SimpleNamespace(
+            create_worker_forward_gate_from_env=lambda **kwargs: gate
+        ),
+    )
+    config = SimpleNamespace(
+        parallel_config=SimpleNamespace(
+            pipeline_parallel_size=1,
+            nnodes_within_dp=1,
+            local_world_size=1,
+        )
+    )
+    proc._pair_forward_gate = multiproc_executor._install_pair_worker_gate(
+        proc.worker, config, rank=0
+    )
     proc.handle_output = lambda output: trace.append(
         f"output:{type(output).__name__}"
     )

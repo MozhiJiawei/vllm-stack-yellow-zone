@@ -2,12 +2,12 @@ diff --git a/vllm/v1/executor/uniproc_executor.py b/vllm/v1/executor/uniproc_exe
 index b616c3b7b..3a76a97ac 100644
 --- a/vllm/v1/executor/uniproc_executor.py
 +++ b/vllm/v1/executor/uniproc_executor.py
-@@ -23,9 +23,30 @@ from vllm.v1.worker.worker_base import WorkerWrapperBase
+@@ -23,9 +23,46 @@ from vllm.v1.worker.worker_base import WorkerWrapperBase
  logger = init_logger(__name__)
  
  
-+def _create_pair_worker_gate(vllm_config):
-+    """Create the optional same-host gate for a true single-worker executor."""
++def _install_pair_worker_gate(worker, vllm_config):
++    """Install the gate only when enabled, leaving MODE=off's hot path native."""
 +    if os.environ.get("VLLM_PAIR_SCHED_MODE", "off").lower() == "off":
 +        return None
 +
@@ -23,7 +23,23 @@ index b616c3b7b..3a76a97ac 100644
 +
 +    from vllm_pair_scheduler import create_worker_forward_gate_from_env
 +
-+    return create_worker_forward_gate_from_env(worker_rank=0, worker_count=1)
++    gate = create_worker_forward_gate_from_env(worker_rank=0, worker_count=1)
++    execute_model = worker.execute_model
++
++    def gated_execute_model(scheduler_output):
++        if scheduler_output.total_num_scheduled_tokens <= 0:
++            return execute_model(scheduler_output)
++        forward_round = gate.enter_forward()
++        try:
++            output = execute_model(scheduler_output)
++            gate.leave_forward(*forward_round)
++            return output
++        except Exception:
++            gate.fail(201)
++            raise
++
++    worker.execute_model = gated_execute_model
++    return gate
 +
 +
  class UniProcExecutor(Executor):
@@ -33,60 +49,17 @@ index b616c3b7b..3a76a97ac 100644
          self.driver_worker = WorkerWrapperBase(rpc_rank=0)
          distributed_init_method, rank, local_rank = self._distributed_args()
          kwargs = dict(
-@@ -51,6 +72,7 @@ class UniProcExecutor(Executor):
+@@ -51,6 +88,9 @@ class UniProcExecutor(Executor):
          else:
              self.driver_worker.load_model()
          current_platform.update_block_size_for_backend(self.vllm_config)
-+        self._pair_forward_gate = _create_pair_worker_gate(self.vllm_config)
++        self._pair_forward_gate = _install_pair_worker_gate(
++            self.driver_worker, self.vllm_config
++        )
  
      def _distributed_args(self) -> tuple[str, int, int]:
          """Return (distributed_init_method, rank, local_rank)."""
-@@ -102,17 +124,33 @@ class UniProcExecutor(Executor):
-     def execute_model(  # type: ignore[override]
-         self, scheduler_output: SchedulerOutput, non_block: bool = False
-     ) -> ModelRunnerOutput | None | Future[ModelRunnerOutput | None]:
--        output = self.collective_rpc(
--            "execute_model",
--            args=(scheduler_output,),
--            non_block=non_block,
--            single_value=True,
--        )
--        # In non-blocking mode, surface any exception as early as possible.
--        if non_block and output.done():
--            # Raise the exception in-line if the task failed.
--            output.result()
--        return output
-+        forward_round = None
-+        gate = self._pair_forward_gate
-+        try:
-+            if (
-+                scheduler_output.total_num_scheduled_tokens > 0
-+                and gate is not None
-+                and os.environ.get("VLLM_PAIR_SCHED_DEBUG_BYPASS") != "1"
-+            ):
-+                forward_round = gate.enter_forward()
-+
-+            output = self.collective_rpc(
-+                "execute_model",
-+                args=(scheduler_output,),
-+                non_block=non_block,
-+                single_value=True,
-+            )
-+            # In non-blocking mode, surface any exception as early as possible.
-+            if non_block and output.done():
-+                # Raise the exception in-line if the task failed.
-+                output.result()
-+            if forward_round is not None:
-+                gate.leave_forward(*forward_round)
-+            return output
-+        except Exception:
-+            if forward_round is not None:
-+                gate.fail(201)
-+            raise
- 
-     def sample_tokens(  # type: ignore[override]
-         self, grammar_output: GrammarOutput | None, non_block: bool = False
-@@ -133,6 +171,9 @@ class UniProcExecutor(Executor):
+@@ -133,6 +173,9 @@ class UniProcExecutor(Executor):
          return
  
      def shutdown(self) -> None:
@@ -100,12 +73,14 @@ diff --git a/vllm/v1/executor/multiproc_executor.py b/vllm/v1/executor/multiproc
 index f9b771540..5a552eef0 100644
 --- a/vllm/v1/executor/multiproc_executor.py
 +++ b/vllm/v1/executor/multiproc_executor.py
-@@ -64,6 +64,28 @@ from vllm.v1.worker.worker_base import WorkerWrapperBase
+@@ -64,6 +64,46 @@ from vllm.v1.worker.worker_base import WorkerWrapperBase
  logger = init_logger(__name__)
  
  
-+def _create_pair_worker_gate(vllm_config: VllmConfig, rank: int):
-+    """Create the optional same-host gate after this worker has loaded."""
++def _install_pair_worker_gate(
++    worker: WorkerWrapperBase, vllm_config: VllmConfig, rank: int
++):
++    """Install the gate only when enabled, leaving MODE=off's hot path native."""
 +    if os.environ.get("VLLM_PAIR_SCHED_MODE", "off").lower() == "off":
 +        return None
 +
@@ -120,16 +95,32 @@ index f9b771540..5a552eef0 100644
 +
 +    from vllm_pair_scheduler import create_worker_forward_gate_from_env
 +
-+    return create_worker_forward_gate_from_env(
++    gate = create_worker_forward_gate_from_env(
 +        worker_rank=rank % worker_count,
 +        worker_count=worker_count,
 +    )
++    execute_model = worker.execute_model
++
++    def gated_execute_model(scheduler_output):
++        if scheduler_output.total_num_scheduled_tokens <= 0:
++            return execute_model(scheduler_output)
++        forward_round = gate.enter_forward()
++        try:
++            output = execute_model(scheduler_output)
++            gate.leave_forward(*forward_round)
++            return output
++        except Exception:
++            gate.fail(201)
++            raise
++
++    worker.execute_model = gated_execute_model
++    return gate
 +
 +
  class FutureWrapper(Future):
      def __init__(
          self,
-@@ -581,6 +603,7 @@ class WorkerProc:
+@@ -581,6 +621,7 @@ class WorkerProc:
          is_driver_worker: bool,
      ):
          self.rank = rank
@@ -137,15 +128,17 @@ index f9b771540..5a552eef0 100644
          wrapper = WorkerWrapperBase(rpc_rank=local_rank, global_rank=rank)
          # TODO: move `init_worker` to executor level as a collective rpc call
          all_kwargs: list[dict] = [
-@@ -629,6 +652,7 @@ class WorkerProc:
+@@ -629,6 +670,9 @@ class WorkerProc:
          # Initialize message queues after init_device() since multi-node setups
          # (nnodes_within_dp > 1) require distributed groups to be initialized
          self._init_message_queues(input_shm_handle, vllm_config)
-+        self._pair_forward_gate = _create_pair_worker_gate(vllm_config, rank)
++        self._pair_forward_gate = _install_pair_worker_gate(
++            self.worker, vllm_config, rank
++        )
  
          # Enable environment variable cache (e.g. assume no more
          # environment variable overrides after this point)
-@@ -742,6 +766,9 @@ class WorkerProc:
+@@ -742,6 +786,9 @@ class WorkerProc:
          return cast(list[WorkerProcHandle], ready_proc_handles)
  
      def shutdown(self):
@@ -155,34 +148,3 @@ index f9b771540..5a552eef0 100644
          if self.rpc_broadcast_mq is not None:
              self.rpc_broadcast_mq.shutdown()
          if self.worker_response_mq is not None:
-@@ -935,14 +962,30 @@ class WorkerProc:
-             method, args, kwargs, output_rank = self.rpc_broadcast_mq.dequeue(
-                 indefinite=True
-             )
-+            forward_round = None
-             try:
-                 if isinstance(method, str):
-                     func = getattr(self.worker, method)
-                 elif isinstance(method, bytes):
-                     func = partial(cloudpickle.loads(method), self.worker)
- 
-+                is_nonempty_forward = (
-+                    method == "execute_model"
-+                    and args
-+                    and args[0].total_num_scheduled_tokens > 0
-+                )
-+                if (
-+                    is_nonempty_forward
-+                    and self._pair_forward_gate is not None
-+                    and os.environ.get("VLLM_PAIR_SCHED_DEBUG_BYPASS") != "1"
-+                ):
-+                    forward_round = self._pair_forward_gate.enter_forward()
-                 output = func(*args, **kwargs)
-+                if forward_round is not None:
-+                    self._pair_forward_gate.leave_forward(*forward_round)
-             except Exception as e:
-+                if forward_round is not None:
-+                    self._pair_forward_gate.fail(201)
-                 # Notes have been introduced in python 3.11
-                 if hasattr(e, "add_note"):
-                     e.add_note(traceback.format_exc())

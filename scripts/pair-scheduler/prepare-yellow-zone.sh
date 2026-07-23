@@ -111,9 +111,12 @@ for container in "$PRIMARY_CONTAINER" "$STANDBY_CONTAINER"; do
       cd /vllm-workspace/vllm
       git apply --check '$PATCH'
       git apply '$PATCH'
-      python -m py_compile vllm/v1/executor/multiproc_executor.py
+      python -m py_compile \
+        vllm/v1/executor/uniproc_executor.py \
+        vllm/v1/executor/multiproc_executor.py
       ! grep -q 'pair_forward_gate\\|PAIR_SCHED' vllm/v1/engine/core.py
-      grep -q '_create_pair_worker_gate' vllm/v1/executor/multiproc_executor.py
+      grep -q '_install_pair_worker_gate' vllm/v1/executor/uniproc_executor.py
+      grep -q '_install_pair_worker_gate' vllm/v1/executor/multiproc_executor.py
       grep -q 'enter_forward' vllm/v1/executor/multiproc_executor.py
       grep -q 'leave_forward' vllm/v1/executor/multiproc_executor.py
       python - <<'PY'
