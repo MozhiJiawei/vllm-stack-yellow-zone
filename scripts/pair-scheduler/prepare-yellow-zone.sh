@@ -73,30 +73,11 @@ bash "$ROOT/scripts/restart-vcann-xlite-containers.sh" \
   --restart \
   --physical-npus "$PHYSICAL_NPUS"
 
-mkdir -p "$ARTIFACT_DIR"
-rm -f "$ARTIFACT_DIR"/vllm_pair_scheduler-*.whl
-
-ctr -n "$NAMESPACE" tasks exec \
-  --exec-id "pair-wheel-$RANDOM" "$PRIMARY_CONTAINER" \
-  /bin/bash -lc "
-    set -euo pipefail
-    command -v gcc
-    python - <<'PY'
-import setuptools
-import wheel
-print('python-build-preflight', setuptools.__version__, wheel.__version__)
-PY
-    python -m pip wheel --no-build-isolation --no-deps \
-      '$ROOT/scheduler' -w '$ARTIFACT_DIR'
-  "
-
-WHEEL=$(find "$ARTIFACT_DIR" -maxdepth 1 -name 'vllm_pair_scheduler-*.whl' |
-  sort | tail -n 1)
-test -n "$WHEEL"
-
-for container in "$PRIMARY_CONTAINER" "$STANDBY_CONTAINER"; do
+install_role() {
+  local container=$1
+  local role=$2
   ctr -n "$NAMESPACE" tasks exec \
-    --exec-id "pair-install-$RANDOM" "$container" \
+    --exec-id "pair-install-$role-$RANDOM" "$container" \
     /bin/bash -lc "
       set -euo pipefail
       test ! -e '$ROOT/patches/vllm-vcann-deterministic-scheduling.patch'
@@ -107,26 +88,19 @@ for container in "$PRIMARY_CONTAINER" "$STANDBY_CONTAINER"; do
       command -v nm
       ! nm -D /opt/enpu/vcann-rt/hot/libvruntime.so 2>/dev/null |
         grep -E 'rtDetSched'
-      python -m pip install --force-reinstall --no-deps '$WHEEL'
+      bash '$ROOT/scheduler/install-pair-scheduler.sh' '$ROOT' '$role'
       cd /vllm-workspace/vllm
-      git apply --check '$PATCH'
-      git apply '$PATCH'
-      python -m py_compile \
-        vllm/v1/executor/uniproc_executor.py \
-        vllm/v1/executor/multiproc_executor.py
       ! grep -q 'pair_forward_gate\\|PAIR_SCHED' vllm/v1/engine/core.py
       grep -q '_install_pair_worker_gate' vllm/v1/executor/uniproc_executor.py
       grep -q '_install_pair_worker_gate' vllm/v1/executor/multiproc_executor.py
       grep -q 'enter_forward' vllm/v1/executor/multiproc_executor.py
       grep -q 'leave_forward' vllm/v1/executor/multiproc_executor.py
-      python - <<'PY'
-from vllm_pair_scheduler import PairSchedulerConfig
-from vllm_pair_scheduler.inspect import main
-print('pair-scheduler-import-ok', PairSchedulerConfig().mode, callable(main))
-PY
-      install -d -m 1770 /dev/shm/vllm-pair-scheduler
     "
-done
+}
+
+mkdir -p "$ARTIFACT_DIR"
+install_role "$PRIMARY_CONTAINER" primary
+install_role "$STANDBY_CONTAINER" standby
 
 run_case() {
   local name=$1

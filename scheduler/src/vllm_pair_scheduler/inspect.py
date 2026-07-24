@@ -181,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Read a vLLM pair scheduler generation without joining it"
     )
-    parser.add_argument("--pair-id", required=True)
+    parser.add_argument("--pair-id", default="default")
     parser.add_argument(
         "--shm-dir",
         type=Path,

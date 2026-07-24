@@ -6,8 +6,8 @@ from .gate import (
     PairSchedulerFailed,
     PairSchedulerTimeout,
     SharedMemoryForwardGate,
-    create_forward_gate_from_env,
-    create_worker_forward_gate_from_env,
+    create_forward_gate_from_install,
+    create_worker_forward_gate_from_install,
 )
 from .inspect import inspect_pair
 
@@ -17,7 +17,7 @@ __all__ = [
     "PairSchedulerFailed",
     "PairSchedulerTimeout",
     "SharedMemoryForwardGate",
-    "create_forward_gate_from_env",
-    "create_worker_forward_gate_from_env",
+    "create_forward_gate_from_install",
+    "create_worker_forward_gate_from_install",
     "inspect_pair",
 ]

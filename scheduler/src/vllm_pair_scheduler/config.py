@@ -1,19 +1,12 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
 
-def _positive_int(env: dict[str, str], name: str, default: int) -> int:
-    raw = env.get(name, str(default))
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
-    if value <= 0:
-        raise ValueError(f"{name} must be positive, got {value}")
-    return value
+ROLE_FILE = Path("/etc/vllm-pair-scheduler/role")
+SHM_DIR = Path("/dev/shm/vllm-pair-scheduler")
+PAIR_ID = "default"
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,7 +15,7 @@ class PairSchedulerConfig:
     role: str | None = None
     instance_id: str | None = None
     pair_id: str | None = None
-    shm_dir: Path = Path("/dev/shm/vllm-pair-scheduler")
+    shm_dir: Path = SHM_DIR
     init_timeout_ms: int = 30_000
     forward_timeout_ms: int = 30_000
     heartbeat_ms: int = 100
@@ -36,11 +29,11 @@ class PairSchedulerConfig:
         if self.mode == "off":
             return
         if self.role not in {"primary", "standby"}:
-            raise ValueError("VLLM_PAIR_SCHED_ROLE must be primary or standby")
+            raise ValueError("installed role must be primary or standby")
         if self.instance_id not in {"A", "B"}:
-            raise ValueError("VLLM_PAIR_SCHED_INSTANCE_ID must be A or B")
+            raise ValueError("instance_id must be A or B")
         if not self.pair_id:
-            raise ValueError("VLLM_PAIR_SCHED_PAIR_ID is required in elastic mode")
+            raise ValueError("pair_id is required in elastic mode")
         if self.role == "primary" and self.instance_id != "A":
             raise ValueError("protocol v3 requires primary role on instance A")
         if self.role == "standby" and self.instance_id != "B":
@@ -57,30 +50,25 @@ class PairSchedulerConfig:
             raise ValueError("peer timeout must exceed two heartbeat periods")
 
     @classmethod
-    def from_env(cls, env: dict[str, str] | None = None) -> PairSchedulerConfig:
-        values = os.environ if env is None else env
-        mode = values.get("VLLM_PAIR_SCHED_MODE", "off").lower()
+    def from_install(
+        cls, role_file: Path = ROLE_FILE
+    ) -> PairSchedulerConfig:
+        """Load the fixed deployment profile written by the installer.
+
+        A missing role file is the sole off switch. All protocol settings are
+        deliberately fixed for the first same-host, one-pair deployment.
+        """
+        try:
+            role = role_file.read_text(encoding="ascii").strip().lower()
+        except FileNotFoundError:
+            return cls()
+        if role not in {"primary", "standby"}:
+            raise ValueError(
+                f"{role_file} must contain exactly primary or standby"
+            )
         return cls(
-            mode=mode,
-            role=values.get("VLLM_PAIR_SCHED_ROLE", "").lower() or None,
-            instance_id=values.get("VLLM_PAIR_SCHED_INSTANCE_ID", "").upper()
-            or None,
-            pair_id=values.get("VLLM_PAIR_SCHED_PAIR_ID") or None,
-            shm_dir=Path(
-                values.get(
-                    "VLLM_PAIR_SCHED_SHM_DIR", "/dev/shm/vllm-pair-scheduler"
-                )
-            ),
-            init_timeout_ms=_positive_int(
-                values, "VLLM_PAIR_SCHED_INIT_TIMEOUT_MS", 30_000
-            ),
-            forward_timeout_ms=_positive_int(
-                values, "VLLM_PAIR_SCHED_FORWARD_TIMEOUT_MS", 30_000
-            ),
-            heartbeat_ms=_positive_int(
-                values, "VLLM_PAIR_SCHED_HEARTBEAT_MS", 100
-            ),
-            peer_timeout_ms=_positive_int(
-                values, "VLLM_PAIR_SCHED_PEER_TIMEOUT_MS", 1_000
-            ),
+            mode="elastic",
+            role=role,
+            instance_id="A" if role == "primary" else "B",
+            pair_id=PAIR_ID,
         )

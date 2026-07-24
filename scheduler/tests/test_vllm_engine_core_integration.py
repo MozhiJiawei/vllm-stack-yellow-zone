@@ -178,12 +178,12 @@ def test_worker_gate_is_installed_once_and_wraps_only_forward(monkeypatch) -> No
     gate = Gate()
     calls = []
     module = SimpleNamespace(
-        create_worker_forward_gate_from_env=lambda **kwargs: (
+        create_worker_forward_gate_from_install=lambda **kwargs: (
             calls.append(kwargs) or gate
         )
     )
     monkeypatch.setitem(sys.modules, "vllm_pair_scheduler", module)
-    monkeypatch.setenv("VLLM_PAIR_SCHED_MODE", "elastic")
+    monkeypatch.setattr(multiproc_executor.os.path, "isfile", lambda path: True)
     config = SimpleNamespace(
         parallel_config=SimpleNamespace(
             pipeline_parallel_size=1,
@@ -234,12 +234,12 @@ def test_uniproc_gate_is_installed_at_worker_boundary(monkeypatch) -> None:
     gate = Gate()
     calls = []
     module = SimpleNamespace(
-        create_worker_forward_gate_from_env=lambda **kwargs: (
+        create_worker_forward_gate_from_install=lambda **kwargs: (
             calls.append(kwargs) or gate
         )
     )
     monkeypatch.setitem(sys.modules, "vllm_pair_scheduler", module)
-    monkeypatch.setenv("VLLM_PAIR_SCHED_MODE", "elastic")
+    monkeypatch.setattr(uniproc_executor.os.path, "isfile", lambda path: True)
     config = SimpleNamespace(
         parallel_config=SimpleNamespace(
             pipeline_parallel_size=1,
@@ -268,7 +268,8 @@ def test_mode_off_does_not_replace_worker_execute_model(monkeypatch) -> None:
     from vllm.v1.executor import multiproc_executor
     from vllm.v1.executor import uniproc_executor
 
-    monkeypatch.setenv("VLLM_PAIR_SCHED_MODE", "off")
+    monkeypatch.setattr(uniproc_executor.os.path, "isfile", lambda path: False)
+    monkeypatch.setattr(multiproc_executor.os.path, "isfile", lambda path: False)
     worker = SimpleNamespace(execute_model=lambda output: output)
     original_execute_model = worker.execute_model
     uniproc_config = SimpleNamespace(
@@ -322,10 +323,10 @@ def test_installed_worker_gate_fails_pair_on_forward_exception(monkeypatch) -> N
         sys.modules,
         "vllm_pair_scheduler",
         SimpleNamespace(
-            create_worker_forward_gate_from_env=lambda **kwargs: gate
+            create_worker_forward_gate_from_install=lambda **kwargs: gate
         ),
     )
-    monkeypatch.setenv("VLLM_PAIR_SCHED_MODE", "elastic")
+    monkeypatch.setattr(uniproc_executor.os.path, "isfile", lambda path: True)
     config = SimpleNamespace(
         parallel_config=SimpleNamespace(
             pipeline_parallel_size=1,
@@ -345,9 +346,7 @@ def test_installed_worker_gate_fails_pair_on_forward_exception(monkeypatch) -> N
     assert trace == ["gate.enter", "gate.fail:201"]
 
 
-@pytest.mark.parametrize("mode", ["off", "elastic"])
-def test_real_engine_core_preserves_native_async_queue(mode: str) -> None:
-    os.environ["VLLM_PAIR_SCHED_MODE"] = mode
+def test_real_engine_core_preserves_native_async_queue() -> None:
     trace: list[str] = []
     engine = _engine([_output("one"), _output("two")], trace)
 
@@ -450,12 +449,12 @@ def test_real_worker_proc_gates_only_nonempty_execute_model(monkeypatch) -> None
     proc.worker = Worker()
     proc.rpc_broadcast_mq = MQ()
     gate = Gate()
-    monkeypatch.setenv("VLLM_PAIR_SCHED_MODE", "elastic")
+    monkeypatch.setattr(multiproc_executor.os.path, "isfile", lambda path: True)
     monkeypatch.setitem(
         sys.modules,
         "vllm_pair_scheduler",
         SimpleNamespace(
-            create_worker_forward_gate_from_env=lambda **kwargs: gate
+            create_worker_forward_gate_from_install=lambda **kwargs: gate
         ),
     )
     config = SimpleNamespace(
@@ -521,12 +520,12 @@ def test_real_worker_proc_forward_exception_fails_pair(monkeypatch) -> None:
     proc.worker = Worker()
     proc.rpc_broadcast_mq = MQ()
     gate = Gate()
-    monkeypatch.setenv("VLLM_PAIR_SCHED_MODE", "elastic")
+    monkeypatch.setattr(multiproc_executor.os.path, "isfile", lambda path: True)
     monkeypatch.setitem(
         sys.modules,
         "vllm_pair_scheduler",
         SimpleNamespace(
-            create_worker_forward_gate_from_env=lambda **kwargs: gate
+            create_worker_forward_gate_from_install=lambda **kwargs: gate
         ),
     )
     config = SimpleNamespace(

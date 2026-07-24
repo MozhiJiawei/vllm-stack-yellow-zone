@@ -380,11 +380,11 @@ class SharedMemoryForwardGate:
         self.close()
 
 
-def create_worker_forward_gate_from_env(
+def create_worker_forward_gate_from_install(
     worker_rank: int,
     worker_count: int,
 ) -> DisabledForwardGate | SharedMemoryForwardGate:
-    config = PairSchedulerConfig.from_env()
+    config = PairSchedulerConfig.from_install()
     if config.mode == "off":
         return DisabledForwardGate()
     return SharedMemoryForwardGate(
@@ -392,6 +392,6 @@ def create_worker_forward_gate_from_env(
     )
 
 
-def create_forward_gate_from_env() -> DisabledForwardGate | SharedMemoryForwardGate:
+def create_forward_gate_from_install() -> DisabledForwardGate | SharedMemoryForwardGate:
     """Backward-compatible TP1 factory for local fake-engine tests."""
-    return create_worker_forward_gate_from_env(0, 1)
+    return create_worker_forward_gate_from_install(0, 1)

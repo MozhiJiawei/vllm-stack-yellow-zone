@@ -1,81 +1,62 @@
 # vLLM pair scheduler
 
-`vllm-pair-scheduler` serializes the `model_forward` sections of two vLLM
-instances on the same Linux host. Protocol v3 gates the worker
-`execute_model` call through `WorkerProc` for multiprocessing executors and
-through the direct `UniProcExecutor` worker call for TP1. It uses a shared
-`mmap`, lock-free C11 atomics, and futex wakeups and does not communicate with
-vCANN.
+This package serializes the `execute_model` sections of two same-host vLLM
+instances. Protocol v3 uses shared memory, C11 atomics, futexes, and one READY
+and COMPLETE bit per local TP worker. Sampling and every other RPC bypass the
+gate.
 
-The primary is a control-plane role, not an active/passive serving role. Both
-instances may execute requests, but only the primary coordinator grants the
-single forward lease. There is no automatic promotion.
+## Install
 
-## Configuration
-
-| Variable | Values / default |
-| --- | --- |
-| `VLLM_PAIR_SCHED_MODE` | `off` (default), `elastic` |
-| `VLLM_PAIR_SCHED_ROLE` | `primary`, `standby` |
-| `VLLM_PAIR_SCHED_INSTANCE_ID` | `A` for primary, `B` for standby |
-| `VLLM_PAIR_SCHED_PAIR_ID` | Required stable pair name |
-| `VLLM_PAIR_SCHED_SHM_DIR` | `/dev/shm/vllm-pair-scheduler` |
-| `VLLM_PAIR_SCHED_INIT_TIMEOUT_MS` | `30000` |
-| `VLLM_PAIR_SCHED_FORWARD_TIMEOUT_MS` | `30000` |
-| `VLLM_PAIR_SCHED_HEARTBEAT_MS` | `100` |
-| `VLLM_PAIR_SCHED_PEER_TIMEOUT_MS` | `1000` |
-
-Both containers must mount the same host directory at the configured shared
-memory path and run with a common uid/gid that can read and write mode `0660`
-files. `fix-shared`, Pipeline Parallel, multi-node TP, automatic failover, and
-more than 64 local workers are deliberately unsupported.
-
-Each local TP worker sets one READY bit before the instance receives a single
-grant. The grant is released only after all local workers set COMPLETE. TP4 is
-therefore one grant with four READY and four COMPLETE bits, not four or eight
-grants. The completion contract is the host return of every worker's
-`execute_model` call; no device event is added.
-
-Sampling and all other RPC methods bypass the gate. EngineCore,
-AsyncScheduler, FutureWrapper, placeholders, and the batch queue are unchanged,
-so sampling futures may remain queued while the next batch is scheduled.
-
-`VLLM_PAIR_SCHED_MODE` is read once while each worker is initialized. In
-`off` mode the worker's `execute_model` callable is not replaced, the scheduler
-package is not imported, and the native vLLM hot path contains no scheduler
-condition or environment lookup. In `elastic` mode initialization installs a
-gated `execute_model` wrapper for non-empty forwards. Changing modes requires
-restarting the vLLM pair.
-
-## Inspection
-
-Inspection is read-only and does not register another participant:
+Run once inside each stopped vLLM container. Install the primary first:
 
 ```bash
-vllm-pair-scheduler-inspect \
-  --pair-id qwen3-4b-tp4-npu4-7 \
-  --shm-dir /dev/shm/vllm-pair-scheduler \
-  --json
+bash /root/l00933108/scheduler/install-pair-scheduler.sh \
+  /root/l00933108 primary
 ```
 
-Exit status is `0` for RUNNING, `2` for FAILED, `3` for SHUTDOWN or a stale
-primary heartbeat, and `1` when the generation cannot be read. A forward
-deadline marks the pair FAILED but deliberately does not kill a blocked
-worker; an external supervisor must stop and restart both instances. The JSON
-includes `instances.A/B.registration_complete`, aggregate masks, and each
-worker's pid, session, heartbeat, sequence, READY and COMPLETE state.
-
-## Benchmark
-
-The handoff benchmark records timestamps in process memory and performs no file
-I/O on its hot path:
+Then install the standby:
 
 ```bash
-python scheduler/benchmarks/handoff.py \
-  --iterations 1000000 \
-  --workers 4 \
-  --cpu-a 2 \
-  --cpu-b 8 \
-  --timeout-seconds 1800 \
-  --max-p99-us 150
+bash /root/l00933108/scheduler/install-pair-scheduler.sh \
+  /root/l00933108 standby
 ```
+
+The source root must contain `scheduler/` and
+`patches/vllm-pair-elastic-scheduling.patch`. The vLLM source defaults to
+`/vllm-workspace/vllm`; pass a third argument only when it lives elsewhere.
+
+Both containers must mount the same host directory at
+`/dev/shm/vllm-pair-scheduler`. The standby installer refuses to finish unless
+it sees the primary's marker through that mount.
+
+The installer builds and installs the wheel, applies the vLLM v0.19.1 patch,
+creates the shared-memory directory, and writes the role. Start `vllm serve`
+normally afterward. No `VLLM_PAIR_SCHED_*` environment variables are used.
+
+The fixed first-version profile is:
+
+- primary is instance A; standby is instance B;
+- pair ID is `default`;
+- shared memory is `/dev/shm/vllm-pair-scheduler`;
+- initialization/forward/heartbeat/peer timeouts are 30 s/30 s/100 ms/1 s.
+
+Deleting `/etc/vllm-pair-scheduler/role` and restarting vLLM disables the
+integration completely: the patched executor does not import the package or
+replace `execute_model`.
+
+## Inspect
+
+```bash
+vllm-pair-scheduler-inspect --json
+```
+
+Exit status is `0` for RUNNING, `2` for FAILED, `3` for SHUTDOWN/stale, and
+`1` for a read error. A failed pair must be stopped and restarted together.
+
+The current version supports TP and EP, with at most 64 same-host local
+workers. DP support is still under development. The two colocated models must
+use the same communication domain. The scheduler adds no vLLM serve arguments;
+existing model launch arguments remain unchanged.
+
+PP, automatic primary promotion, fixed compute ratios, multi-node TP, and
+device-side completion events are not supported.

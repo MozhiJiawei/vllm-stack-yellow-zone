@@ -7,8 +7,8 @@ index b616c3b7b..3a76a97ac 100644
  
  
 +def _install_pair_worker_gate(worker, vllm_config):
-+    """Install the gate only when enabled, leaving MODE=off's hot path native."""
-+    if os.environ.get("VLLM_PAIR_SCHED_MODE", "off").lower() == "off":
++    """Install only when a role file exists; otherwise keep the hot path native."""
++    if not os.path.isfile("/etc/vllm-pair-scheduler/role"):
 +        return None
 +
 +    parallel_config = vllm_config.parallel_config
@@ -21,9 +21,9 @@ index b616c3b7b..3a76a97ac 100644
 +            "vLLM pair scheduling v3 UniProc integration requires world size 1"
 +        )
 +
-+    from vllm_pair_scheduler import create_worker_forward_gate_from_env
++    from vllm_pair_scheduler import create_worker_forward_gate_from_install
 +
-+    gate = create_worker_forward_gate_from_env(worker_rank=0, worker_count=1)
++    gate = create_worker_forward_gate_from_install(worker_rank=0, worker_count=1)
 +    execute_model = worker.execute_model
 +
 +    def gated_execute_model(scheduler_output):
@@ -80,8 +80,8 @@ index f9b771540..5a552eef0 100644
 +def _install_pair_worker_gate(
 +    worker: WorkerWrapperBase, vllm_config: VllmConfig, rank: int
 +):
-+    """Install the gate only when enabled, leaving MODE=off's hot path native."""
-+    if os.environ.get("VLLM_PAIR_SCHED_MODE", "off").lower() == "off":
++    """Install only when a role file exists; otherwise keep the hot path native."""
++    if not os.path.isfile("/etc/vllm-pair-scheduler/role"):
 +        return None
 +
 +    parallel_config = vllm_config.parallel_config
@@ -93,9 +93,9 @@ index f9b771540..5a552eef0 100644
 +    if worker_count > 64:
 +        raise ValueError("vLLM pair scheduling v3 supports at most 64 local workers")
 +
-+    from vllm_pair_scheduler import create_worker_forward_gate_from_env
++    from vllm_pair_scheduler import create_worker_forward_gate_from_install
 +
-+    gate = create_worker_forward_gate_from_env(
++    gate = create_worker_forward_gate_from_install(
 +        worker_rank=rank % worker_count,
 +        worker_count=worker_count,
 +    )
