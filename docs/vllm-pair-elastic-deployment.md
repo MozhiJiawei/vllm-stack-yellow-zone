@@ -127,6 +127,9 @@ chmod 0644 /root/l00933108/cont2_npu_info.config
 │   └── ld.so.preload
 ├── cont1_npu_info.config
 └── cont2_npu_info.config
+
+/root/isa/conf/
+└── xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl
 ```
 
 创建主实例容器：
@@ -203,6 +206,46 @@ ctr -n k8s.io run \
 一致；只区分 vCANN 配置文件、virtual NPU ID、`MASTER_PORT` 和 HCCL
 socket 端口范围。
 
+容器创建后，先取得两个 task 的宿主机 PID，将同一个 xLite wheel 复制到
+两个容器的 `/workspace`。`ctr` 没有 `docker cp` 对应命令，因此这里通过
+`/proc/<task-pid>/root` 访问容器根文件系统：
+
+```bash
+CONT1_PID=$(ctr -n k8s.io tasks list |
+  awk '$1 == "cont1_ljw" {print $2}')
+CONT2_PID=$(ctr -n k8s.io tasks list |
+  awk '$1 == "cont2_ljw" {print $2}')
+
+test "$CONT1_PID" -gt 0
+test "$CONT2_PID" -gt 0
+
+install -m 0644 \
+  /root/isa/conf/xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl \
+  "/proc/$CONT1_PID/root/workspace/xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl"
+
+install -m 0644 \
+  /root/isa/conf/xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl \
+  "/proc/$CONT2_PID/root/workspace/xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl"
+```
+
+然后在两个容器中分别安装，并校验版本：
+
+```bash
+ctr -n k8s.io tasks exec --exec-id install-xlite-a cont1_ljw \
+  /bin/bash -lc '
+    python3 -m pip install \
+      /workspace/xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl
+    python3 -c "import importlib.metadata as m; assert m.version(\"xlite\") == \"0.1.0rc12\""
+  '
+
+ctr -n k8s.io tasks exec --exec-id install-xlite-b cont2_ljw \
+  /bin/bash -lc '
+    python3 -m pip install \
+      /workspace/xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl
+    python3 -c "import importlib.metadata as m; assert m.version(\"xlite\") == \"0.1.0rc12\""
+  '
+```
+
 ## 2. 一键安装
 
 先确认两个容器里都没有正在运行的 vLLM：
@@ -259,6 +302,11 @@ DP（Data Parallel）；DP 支持仍在开发中。
 模型原来如何启动，安装调度器后仍按原参数启动即可，也不再设置任何
 `VLLM_PAIR_SCHED_*` 环境变量。
 
+vCANN 已经按 `npu_info.config` 完成显存切分，vLLM 看到的是当前实例切分后
+的显存配额，而不是整卡显存。因此两个实例都应在各自配额内使用
+`--gpu-memory-utilization 0.85`；不能再次按整卡比例折算成 `0.35`。这仍
+属于 vCANN 部署参数，不是 pair scheduler 新增的参数。
+
 下面命令只是黄区现有 TP4、async scheduling 和 xLite full graph 配置的
 启动示例，这些参数不是调度器的强制配置。
 
@@ -275,7 +323,7 @@ ctr -n k8s.io tasks exec --exec-id start-a cont1_ljw \
       --async-scheduling \
       --max-model-len 10240 \
       --max-num-batched-tokens 1024 \
-      --gpu-memory-utilization 0.35 \
+      --gpu-memory-utilization 0.85 \
       --block-size 128 \
       --additional-config='"'"'{"xlite_graph_config":{"enabled":true,"full_mode":true}}'"'"' \
       --served-model-name Qwen3-4B \
@@ -307,7 +355,7 @@ ctr -n k8s.io tasks exec --exec-id start-b cont2_ljw \
       --async-scheduling \
       --max-model-len 10240 \
       --max-num-batched-tokens 1024 \
-      --gpu-memory-utilization 0.35 \
+      --gpu-memory-utilization 0.85 \
       --block-size 128 \
       --additional-config='"'"'{"xlite_graph_config":{"enabled":true,"full_mode":true}}'"'"' \
       --served-model-name Qwen3-4B \

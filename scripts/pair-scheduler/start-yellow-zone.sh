@@ -29,7 +29,7 @@ start_instance() {
         --max_model_len 10240 \
         --tensor-parallel-size 4 \
         --max-num-batched-tokens 1024 \
-        --gpu-memory-utilization 0.35 \
+        --gpu-memory-utilization 0.85 \
         --async-scheduling \
         --block-size 128 \
         --additional-config='{\"xlite_graph_config\":{\"enabled\":true,\"full_mode\":true}}' \
