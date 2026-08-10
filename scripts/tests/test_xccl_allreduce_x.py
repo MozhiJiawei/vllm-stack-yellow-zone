@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 import yaml
@@ -15,7 +16,7 @@ SCRIPTS = REPO_ROOT / "scripts"
 CONFIG = REPO_ROOT / "configs" / "xccl-allreduce-x" / "cann-8.5.1-ascend910b4.yaml"
 sys.path.insert(0, str(SCRIPTS))
 
-from xccl_allreduce_x import ConfigError, load_config  # noqa: E402
+from xccl_allreduce_x import ConfigError, build_operation, load_config  # noqa: E402
 
 
 class ConfigTests(unittest.TestCase):
@@ -116,6 +117,32 @@ class CliTests(unittest.TestCase):
         )
         self.assertIn("TOTAL=30", completed.stdout)
         self.assertIn('"id": "fused.custom_top_k_top_p"', completed.stdout)
+
+
+class BuilderTests(unittest.TestCase):
+    def test_grouped_matmul_explicitly_disables_axis_grouping(self) -> None:
+        scenario = next(
+            scenario
+            for scenario in load_config(CONFIG)[0]
+            if scenario.id == "fused.grouped_matmul"
+        )
+        captured: dict = {}
+
+        def grouped_matmul(xs, weights, **kwargs):
+            captured.update(kwargs)
+            return [object()]
+
+        fake_torch = SimpleNamespace(
+            bfloat16=object(),
+            randn=lambda *shape, **kwargs: object(),
+            ops=SimpleNamespace(
+                npu=SimpleNamespace(npu_grouped_matmul=grouped_matmul)
+            ),
+        )
+        operation = build_operation(fake_torch, object(), scenario, "npu:0")
+        operation()
+        self.assertEqual(-1, captured["group_type"])
+        self.assertEqual(0, captured["split_item"])
 
 
 if __name__ == "__main__":

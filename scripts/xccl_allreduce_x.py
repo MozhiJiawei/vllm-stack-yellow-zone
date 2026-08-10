@@ -438,7 +438,7 @@ def build_operation(torch: Any, torch_npu: Any, scenario: Scenario, device: str)
         operation = _require_npu_op(torch, "npu_grouped_matmul")
         xs = [torch.randn(shape["m"], shape["k"], dtype=dtype, device=device) for _ in range(shape["groups"])]
         weights = [torch.randn(shape["k"], shape["n"], dtype=dtype, device=device) for _ in range(shape["groups"])]
-        return lambda: operation(xs, weights, split_item=0)
+        return lambda: operation(xs, weights, split_item=0, group_type=-1)
     if op in {"npu_top_k_top_p", "custom_top_k_top_p"}:
         if op == "custom_top_k_top_p":
             _register_custom_opp()
