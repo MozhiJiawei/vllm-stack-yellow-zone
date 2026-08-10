@@ -133,7 +133,7 @@ for container in "$PRIMARY_CONTAINER" "$STANDBY_CONTAINER"; do
   if status=$(task_field "$container" 3 2>/dev/null); then
     [[ $status != RUNNING ]] || {
       if container_exec "$container" /bin/bash -lc \
-          "pgrep -af 'EngineCore|vllm serve|VLLM::Worker' >/dev/null"; then
+          "pgrep -af '[E]ngineCore|[v]llm serve|VLLM::[W]orker' >/dev/null"; then
         fail "refusing to replace $container while vLLM is running"
       fi
     }

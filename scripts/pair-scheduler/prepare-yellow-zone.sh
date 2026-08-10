@@ -99,7 +99,7 @@ for container in "$PRIMARY_CONTAINER" "$STANDBY_CONTAINER"; do
   if "$CTR_BIN" -n "$NAMESPACE" tasks ls 2>/dev/null |
       awk 'NR > 1 {print $1}' | grep -qx "$container"; then
     if container_exec "$container" /bin/bash -lc \
-        "pgrep -af 'EngineCore|vllm serve' >/dev/null"; then
+        "pgrep -af '[E]ngineCore|[v]llm serve|VLLM::[W]orker' >/dev/null"; then
       echo "Refusing to rebuild while vLLM is running in $container" >&2
       exit 1
     fi
