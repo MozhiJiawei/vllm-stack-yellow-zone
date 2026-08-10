@@ -8,6 +8,30 @@
 - Repository source should normally be fetched directly from GitHub with Git. A GitHub source archive is an acceptable bootstrap fallback when Git is not yet available.
 - Before installing or changing remote software, collect the relevant system, network, package, service, and configuration state. Do not assume a standard Linux or Windows image.
 
+## Default repository synchronization path
+
+- Use the OSS-backed Git bundle workflow as the default and only routine path for updating code on the Ascend environment. Do not use `git clone`/`git pull` from the Ascend host and do not send repository data over SSH.
+- Run the workflow from repository root on A after the desired changes have been committed and pushed to `origin/main`:
+
+  ```powershell
+  Set-ExecutionPolicy -Scope Process Bypass -Force
+  .\scripts\remote-sync\Publish-AscendBundle.ps1
+  ```
+
+- The publisher fetches the latest `origin/main`; local uncommitted changes and commits that have not been pushed are deliberately excluded. It builds a complete bundle, verifies it, and overwrites the single private OSS object `gh/mozhijiawei/vllm-stack-yellow-zone/remote-sync/latest.bundle`.
+- The publisher then sends only the expiring signed URL and control data over SSH to `root@9.15.144.34`. The Ascend host downloads the payload directly from OSS and creates or fast-forwards `/root/l00933108/vllm-stack-yellow-zone`.
+- A successful run must complete the remote bundle verification and report the resulting remote commit. Treat a dirty remote worktree, a non-fast-forward update, fetch failure, upload failure, download failure, or verification failure as a stop condition; diagnose it rather than bypassing the guard.
+- If the remote controller or protected OSS credential file is missing after the Ascend environment is reinstalled, bootstrap them once from A:
+
+  ```powershell
+  Set-ExecutionPolicy -Scope Process Bypass -Force
+  .\scripts\remote-sync\Install-AscendRemoteSync.ps1
+  ```
+
+- The installer may use the explicitly approved small-file SSH exception only for `/root/l00933108/bin/update-code-from-bundle.sh` and `/root/l00933108/.secrets/gh-oss-attachments.env`. All repository payload still travels directly through OSS.
+- Do not modify the OSS bucket configuration, permissions, lifecycle, or versioning for this workflow. Do not create timestamped bundle objects, list the bucket, or delete objects. Every publication must replace the fixed `latest.bundle` key.
+- Defaults and supported overrides are documented in `scripts/remote-sync/README.md`. Keep that document and this section aligned whenever the workflow changes.
+
 ## Network topology and verified endpoints
 
 - A is the local Windows machine running Codex.
