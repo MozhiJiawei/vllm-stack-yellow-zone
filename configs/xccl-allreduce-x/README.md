@@ -34,7 +34,9 @@ python scripts/run-xccl-allreduce-x-matrix.py \
 
 On the Ascend host, use the namespace-preserving launcher.  Do not replace it
 with `ctr tasks exec`; the Ascend driver can assign an incomplete device set to
-the new exec process.
+the new exec process.  The launcher uses `/tmp/xccl-allreduce-x-work` as the
+CANN working directory so generated `kernel_meta/` files never dirty the
+deployed repository checkout.
 
 ```bash
 scripts/run-xccl-allreduce-x-on-ascend.sh \

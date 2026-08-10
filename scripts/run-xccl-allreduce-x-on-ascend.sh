@@ -22,7 +22,15 @@ exec nsenter --target "$pid" --mount --uts --ipc --net --pid \
   --root="/proc/$pid/root" --wd="/proc/$pid/root" -- \
   /usr/bin/env -i "${container_env[@]}" /bin/bash -lc '
     set -euo pipefail
-    cd "$1"
-    shift
-    exec python scripts/run-xccl-allreduce-x-matrix.py --config "$1" "${@:2}"
+    repo=$1
+    config=$2
+    shift 2
+    if [[ $config != /* ]]; then
+      config=$repo/$config
+    fi
+    workdir=/tmp/xccl-allreduce-x-work
+    mkdir -p "$workdir"
+    cd "$workdir"
+    exec python "$repo/scripts/run-xccl-allreduce-x-matrix.py" \
+      --config "$config" "$@"
   ' _ "$REPO" "$CONFIG" "$@"
