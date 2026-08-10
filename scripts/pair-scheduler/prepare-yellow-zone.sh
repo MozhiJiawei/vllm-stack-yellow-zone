@@ -8,9 +8,10 @@ NAMESPACE=${CONTAINERD_NAMESPACE:-k8s.io}
 CTR_BIN=${CTR_BIN:-/root/l00933108/.tools/containerd/bin/ctr}
 IMAGE=${IMAGE:-quay.io/ascend/vllm-ascend:v0.19.1rc1}
 XLITE_WHEEL=${XLITE_WHEEL:-}
+ARTIFACT_ROOT=${ARTIFACT_ROOT:-/root/l00933108/.artifacts}
 PRIMARY_CONTAINER=${PRIMARY_CONTAINER:-cont1_ljw}
 STANDBY_CONTAINER=${STANDBY_CONTAINER:-cont2_ljw}
-ARTIFACT_DIR="$ROOT/.artifacts/pair-scheduler"
+ARTIFACT_DIR="$ARTIFACT_ROOT/pair-scheduler"
 PATCH="$ROOT/patches/vllm-pair-elastic-scheduling.patch"
 
 usage() {
@@ -23,6 +24,7 @@ Options:
   --ctr PATH               unrestricted ctr client (default: $CTR_BIN)
   --image REF              vLLM Ascend image (default: $IMAGE)
   --xlite-wheel PATH       xLite wheel (default: DEPS_ROOT/xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl)
+  --artifact-root PATH      preflight output root (default: $ARTIFACT_ROOT)
   --physical-npus LIST     physical NPU list (default: 4,5,6,7)
   --namespace NAME         containerd namespace (default: k8s.io)
   -h, --help               show this help
@@ -36,7 +38,6 @@ while (($#)); do
   case "$1" in
     --root)
       ROOT=$2
-      ARTIFACT_DIR="$ROOT/.artifacts/pair-scheduler"
       PATCH="$ROOT/patches/vllm-pair-elastic-scheduling.patch"
       shift 2
       ;;
@@ -44,6 +45,11 @@ while (($#)); do
     --ctr) CTR_BIN=$2; shift 2 ;;
     --image) IMAGE=$2; shift 2 ;;
     --xlite-wheel) XLITE_WHEEL=$2; shift 2 ;;
+    --artifact-root)
+      ARTIFACT_ROOT=$2
+      ARTIFACT_DIR="$ARTIFACT_ROOT/pair-scheduler"
+      shift 2
+      ;;
     --physical-npus)
       PHYSICAL_NPUS=$2
       shift 2

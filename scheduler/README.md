@@ -77,6 +77,10 @@ The defaults use:
 - models under `/cache/models`;
 - physical NPUs `4,5,6,7` in both native containers.
 
+Preflight traces are written outside the Git worktree under
+`/root/l00933108/.artifacts/pair-scheduler` so repository synchronization is
+not blocked by generated files.
+
 This path does not build, mount, preload, or configure vCANN-RT. It also does
 not require GDB, `enpu-monitor`, `npu_info.config`, or a custom
 `ld.so.preload`. The legacy vCANN diagnostic scripts remain separate and are

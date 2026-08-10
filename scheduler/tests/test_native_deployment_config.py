@@ -21,6 +21,8 @@ def test_prepare_uses_native_container_entry_point() -> None:
     assert "restart-vcann-xlite-containers.sh" not in script
     assert 'wheel=$WHEEL' not in script
     assert "tasks exec" not in script
+    assert "ARTIFACT_ROOT=${ARTIFACT_ROOT:-/root/l00933108/.artifacts}" in script
+    assert 'ARTIFACT_DIR="$ROOT/.artifacts/pair-scheduler"' not in script
 
 
 def test_native_container_inputs_are_pinned() -> None:
