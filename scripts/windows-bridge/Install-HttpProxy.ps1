@@ -69,8 +69,12 @@ try {
     # Privoxy 4.1.0 registers itself with the legacy INTERACTIVE_PROCESS bit.
     # Modern Windows disables interactive services, leaving the process marked
     # Running without loading the configuration or opening its listener.
+    # The built-in installer records only "privoxy.exe --service" and drops
+    # the custom config path. Make the service command line deterministic so
+    # it cannot fall back to config.txt or the service working directory.
+    $serviceCommand = "$($layout.Exe) --service $($layout.Config)"
     Invoke-BridgeNative -FilePath "$env:SystemRoot\System32\sc.exe" -ArgumentList @(
-        'config', $config.proxy.serviceName, 'type=', 'own'
+        'config', $config.proxy.serviceName, 'type=', 'own', 'binPath=', $serviceCommand
     )
     Set-Service -Name $config.proxy.serviceName -StartupType Automatic
     Start-Service -Name $config.proxy.serviceName
