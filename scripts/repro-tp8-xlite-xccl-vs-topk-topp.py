@@ -143,6 +143,9 @@ def model_b(
     entered: Any,
     messages: Any,
     operator: str,
+    batch_size: int,
+    vocab_size: int,
+    dtype_name: str,
     top_k: int,
     top_p: float,
 ) -> None:
@@ -156,28 +159,37 @@ def model_b(
         if not enable_custom_op():
             raise RuntimeError("vLLM Ascend custom operators are disabled")
 
+        dtype = getattr(torch, dtype_name)
         logits = torch.empty(
-            (ISSUE_BATCH, VOCAB_SIZE),
-            dtype=torch.float32,
-            device=f"npu:{device}",
+            (batch_size, vocab_size), dtype=dtype, device=f"npu:{device}"
         ).uniform_(-5.0, 5.0)
         k = torch.full(
-            (ISSUE_BATCH,), top_k, dtype=torch.int32, device=f"npu:{device}"
+            (batch_size,), top_k, dtype=torch.int32, device=f"npu:{device}"
         )
         p = torch.full(
-            (ISSUE_BATCH,), top_p, dtype=torch.float32, device=f"npu:{device}"
+            (batch_size,), top_p, dtype=torch.float32, device=f"npu:{device}"
         )
 
         def operation() -> Any:
             if operator == "sigmoid":
                 return torch.sigmoid(logits)
-            return torch.ops._C_ascend.npu_apply_top_k_top_p(logits, k=k, p=p)
+            if operator == "silu":
+                return torch.nn.functional.silu(logits)
+            if operator == "softmax":
+                return torch.softmax(logits, dim=-1)
+            if operator == "sort":
+                return torch.sort(logits, dim=-1).values
+            custom_k = None if operator == "topp-only" else k
+            custom_p = None if operator == "topk-only" else p
+            return torch.ops._C_ascend.npu_apply_top_k_top_p(
+                logits, k=custom_k, p=custom_p
+            )
 
         warmup_started = time.monotonic()
         warmup_output = operation()
         torch.npu.synchronize()
         warmup_elapsed = time.monotonic() - warmup_started
-        if warmup_output.shape != logits.shape or warmup_output.dtype != torch.float32:
+        if warmup_output.shape != logits.shape or warmup_output.dtype != dtype:
             raise RuntimeError(
                 "unexpected warmup output: "
                 f"shape={tuple(warmup_output.shape)} dtype={warmup_output.dtype}"
@@ -188,7 +200,7 @@ def model_b(
             "B",
             device,
             f"operator={operator} warmup_elapsed={warmup_elapsed:.6f}s "
-            "shape=4x151936 dtype=float32",
+            f"shape={batch_size}x{vocab_size} dtype={dtype_name}",
         )
 
         start.wait()
@@ -268,9 +280,22 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--device", type=int, default=0, help="shared A/B NPU (default: 0)")
     result.add_argument(
         "--operator",
-        choices=("topk-topp", "sigmoid"),
+        choices=(
+            "topk-topp",
+            "topk-only",
+            "topp-only",
+            "sigmoid",
+            "silu",
+            "softmax",
+            "sort",
+        ),
         default="topk-topp",
         help="B-side operator; sigmoid is the known-good Vector control",
+    )
+    result.add_argument("--batch-size", type=int, default=ISSUE_BATCH)
+    result.add_argument("--vocab-size", type=int, default=VOCAB_SIZE)
+    result.add_argument(
+        "--dtype", choices=("float16", "bfloat16", "float32"), default="float32"
     )
     result.add_argument("--top-k", type=int, default=50)
     result.add_argument("--top-p", type=float, default=0.9)
@@ -291,8 +316,10 @@ def main() -> int:
         parser().error(f"device must be between 0 and {TP - 1}")
     if args.device != 0:
         parser().error("only device 0 is valid because model A submits only rank 0")
-    if not 1 <= args.top_k <= VOCAB_SIZE:
-        parser().error(f"top-k must be between 1 and {VOCAB_SIZE}")
+    if args.batch_size <= 0 or args.vocab_size <= 0:
+        parser().error("batch-size and vocab-size must be positive")
+    if not 1 <= args.top_k <= args.vocab_size:
+        parser().error(f"top-k must be between 1 and {args.vocab_size}")
     if not 0.0 < args.top_p <= 1.0:
         parser().error("top-p must be in (0, 1]")
     if any(
@@ -320,7 +347,8 @@ def main() -> int:
 
     log(
         "CONFIG: tp=8 A_submit_ranks=0 A_count=20480 A_dtype=bf16 "
-        f"B_device={args.device} B_shape=4x151936 B_dtype=float32 "
+        f"B_device={args.device} B_shape={args.batch_size}x{args.vocab_size} "
+        f"B_dtype={args.dtype} "
         f"B_operator={args.operator} top_k={args.top_k} top_p={args.top_p:g} "
         f"xlite_port={port}"
     )
@@ -357,6 +385,9 @@ def main() -> int:
                 b_entered,
                 messages,
                 args.operator,
+                args.batch_size,
+                args.vocab_size,
+                args.dtype,
                 args.top_k,
                 args.top_p,
             ),
