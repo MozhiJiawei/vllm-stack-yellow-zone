@@ -13,6 +13,10 @@ Model B is warmed up before A is blocked.  The measured invocation starts only
 after A has entered the incomplete collective.  No checkpoint or vCANN is
 needed; run this inside the same Linux Ascend container where
 ``repro-tp8-xlite-xccl-deadlock.py`` works.
+
+Use ``--operator sigmoid`` for the known-good Vector control.  It keeps the
+same B tensor, device, warm-up, and timing while replacing only the measured
+TopK-TopP call.
 """
 
 from __future__ import annotations
@@ -138,6 +142,7 @@ def model_b(
     start: Any,
     entered: Any,
     messages: Any,
+    operator: str,
     top_k: int,
     top_p: float,
 ) -> None:
@@ -164,6 +169,8 @@ def model_b(
         )
 
         def operation() -> Any:
+            if operator == "sigmoid":
+                return torch.sigmoid(logits)
             return torch.ops._C_ascend.npu_apply_top_k_top_p(logits, k=k, p=p)
 
         warmup_started = time.monotonic()
@@ -180,12 +187,13 @@ def model_b(
             "READY",
             "B",
             device,
-            f"warmup_elapsed={warmup_elapsed:.6f}s shape=4x151936 dtype=float32",
+            f"operator={operator} warmup_elapsed={warmup_elapsed:.6f}s "
+            "shape=4x151936 dtype=float32",
         )
 
         start.wait()
         entered.set()
-        emit(messages, "ENTER", "B", device, "npu_apply_top_k_top_p")
+        emit(messages, "ENTER", "B", device, operator)
         begin = time.monotonic()
         output = operation()
         emit(messages, "SUBMITTED", "B", device, "host call returned")
@@ -258,6 +266,12 @@ def stop(processes: list[mp.Process], stop_requested: Any) -> None:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--device", type=int, default=0, help="shared A/B NPU (default: 0)")
+    result.add_argument(
+        "--operator",
+        choices=("topk-topp", "sigmoid"),
+        default="topk-topp",
+        help="B-side operator; sigmoid is the known-good Vector control",
+    )
     result.add_argument("--top-k", type=int, default=50)
     result.add_argument("--top-p", type=float, default=0.9)
     result.add_argument("--startup-timeout", type=float, default=600)
@@ -307,7 +321,8 @@ def main() -> int:
     log(
         "CONFIG: tp=8 A_submit_ranks=0 A_count=20480 A_dtype=bf16 "
         f"B_device={args.device} B_shape=4x151936 B_dtype=float32 "
-        f"top_k={args.top_k} top_p={args.top_p:g} xlite_port={port}"
+        f"B_operator={args.operator} top_k={args.top_k} top_p={args.top_p:g} "
+        f"xlite_port={port}"
     )
     ctx = mp.get_context("spawn")
     messages = ctx.Queue()
@@ -341,6 +356,7 @@ def main() -> int:
                 b_start,
                 b_entered,
                 messages,
+                args.operator,
                 args.top_k,
                 args.top_p,
             ),
@@ -365,7 +381,10 @@ def main() -> int:
             return 2
 
         a_state = events.states.get(("A", 0), "ENTER")
-        log(f"A_BLOCKED: rank=0 state={a_state}; starting B Sampling operator")
+        log(
+            f"A_BLOCKED: rank=0 state={a_state}; "
+            f"starting B operator={args.operator}"
+        )
         b_start.set()
         if not b_entered.wait(args.hang_timeout):
             log("RESULT=SETUP_FAILED stage=B_enter exit_code=2")
@@ -378,11 +397,17 @@ def main() -> int:
             log("RESULT=ALLREDUCE_DID_NOT_STAY_BLOCKED exit_code=2")
             return 2
         if completed:
-            log("RESULT=PASS B_OPERATOR_COMPLETED_WHILE_A_BLOCKED exit_code=0")
+            log(
+                "RESULT=PASS B_OPERATOR_COMPLETED_WHILE_A_BLOCKED "
+                f"operator={args.operator} exit_code=0"
+            )
             return 0
 
         b_state = events.states.get(("B", args.device), "ENTER")
-        log(f"RESULT=BLOCKED_BY_A_ALLREDUCE B_state={b_state} exit_code=1")
+        log(
+            "RESULT=BLOCKED_BY_A_ALLREDUCE "
+            f"operator={args.operator} B_state={b_state} exit_code=1"
+        )
         return 1
     finally:
         stop(processes, stop_requested)
