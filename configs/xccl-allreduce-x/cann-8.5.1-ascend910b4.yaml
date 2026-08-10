@@ -232,11 +232,3 @@ scenarios:
     params: {top_k: 50, top_p: 0.9}
     source: vLLM Ascend ApplyTopKTopPCustom / K_VALUE_MAX=1024
     shapes: [{profile: full_core, batch: 40, vocab: 151936}]
-  - id: regression.custom_top_k_top_p.fp32.b4.v151936
-    operator: custom_top_k_top_p
-    kind: fused
-    expected_core: vector
-    dtype: float32
-    params: {top_k: 50, top_p: 0.9}
-    source: original XCCL deadlock reproduction anchor / vLLM Ascend ApplyTopKTopPCustom
-    shapes: [{profile: issue_anchor, batch: 4, vocab: 151936}]

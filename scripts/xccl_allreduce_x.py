@@ -57,6 +57,7 @@ class Scenario:
     shape: Mapping[str, Any]
     params: Mapping[str, Any]
     source: str
+    expect: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -249,13 +250,43 @@ def load_config(path: Path) -> tuple[list[Scenario], Settings, dict[str, Any]]:
         source = entry.get("source")
         if not isinstance(source, str) or not source:
             raise ConfigError(f"{scenario_id}: source must be a non-empty string")
+        expect = entry.get("expect", {})
+        if not isinstance(expect, Mapping):
+            raise ConfigError(f"{scenario_id}: expect must be a mapping")
+        unknown_expectations = set(expect) - {"preflight", "contention"}
+        if unknown_expectations:
+            raise ConfigError(
+                f"{scenario_id}: invalid expectation phases: "
+                f"{sorted(unknown_expectations)}"
+            )
+        allowed_expectations = {
+            "preflight": {"PASS", "UNSUPPORTED"},
+            "contention": {"PASS", "BLOCKED_BY_A_ALLREDUCE"},
+        }
+        for phase, expected_result in expect.items():
+            if expected_result not in allowed_expectations[str(phase)]:
+                raise ConfigError(
+                    f"{scenario_id}: invalid {phase} expectation {expected_result!r}"
+                )
         for shape_index, shape in enumerate(shapes):
             _validate_shape(str(operator), shape, spec)
             _validate_params(str(operator), params, shape)
             estimated_mib = _shape_elements(str(operator), shape, spec) * _dtype_bytes(str(dtype)) / 1024**2
             if estimated_mib > settings.memory_limit_mib:
                 raise ConfigError(f"{scenario_id}.shapes[{shape_index}] estimates {estimated_mib:.1f} MiB, above limit {settings.memory_limit_mib:.1f} MiB")
-            scenarios.append(Scenario(scenario_id, str(operator), str(kind), str(expected_core), str(dtype), dict(shape), dict(params), source))
+            scenarios.append(
+                Scenario(
+                    scenario_id,
+                    str(operator),
+                    str(kind),
+                    str(expected_core),
+                    str(dtype),
+                    dict(shape),
+                    dict(params),
+                    source,
+                    dict(expect),
+                )
+            )
     return scenarios, settings, dict(baseline)
 
 
@@ -660,6 +691,7 @@ def _record(scenario: Scenario, phase: str, settings: Settings, attempt: int, re
         "shape": dict(scenario.shape),
         "params": dict(scenario.params),
         "source": scenario.source,
+        "expect": dict(scenario.expect),
         "phase": phase,
         "attempt": attempt,
         "result": result,

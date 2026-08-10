@@ -14,6 +14,20 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts"
 CONFIG = REPO_ROOT / "configs" / "xccl-allreduce-x" / "cann-8.5.1-ascend910b4.yaml"
+TOPK_TOPP_REGRESSION = (
+    REPO_ROOT
+    / "configs"
+    / "xccl-allreduce-x"
+    / "regressions"
+    / "custom-top-k-top-p-fp32-b4-v151936.yaml"
+)
+FFN_REGRESSION = (
+    REPO_ROOT
+    / "configs"
+    / "xccl-allreduce-x"
+    / "regressions"
+    / "ffn-bf16-t2048-h5120-i6400-gelu.yaml"
+)
 sys.path.insert(0, str(SCRIPTS))
 
 from xccl_allreduce_x import ConfigError, build_operation, load_config  # noqa: E402
@@ -29,12 +43,12 @@ class ConfigTests(unittest.TestCase):
             path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
             return load_config(path)
 
-    def test_default_catalog_has_thirty_operator_classes_plus_regression_anchor(self) -> None:
+    def test_default_catalog_has_thirty_unique_operator_classes(self) -> None:
         scenarios, settings, baseline = load_config(CONFIG)
-        self.assertEqual(31, len(scenarios))
-        self.assertEqual(31, len({scenario.id for scenario in scenarios}))
+        self.assertEqual(30, len(scenarios))
+        self.assertEqual(30, len({scenario.id for scenario in scenarios}))
         self.assertEqual(30, len({scenario.operator for scenario in scenarios}))
-        self.assertEqual({"vector": 12, "cube": 6, "fused": 13}, {
+        self.assertEqual({"vector": 12, "cube": 6, "fused": 12}, {
             kind: sum(scenario.kind == kind for scenario in scenarios)
             for kind in ("vector", "cube", "fused")
         })
@@ -82,12 +96,9 @@ class ConfigTests(unittest.TestCase):
             self.load(raw)
 
     def test_issue_anchor_preserves_original_blocking_topk_topp_input(self) -> None:
-        scenarios, _settings, _baseline = load_config(CONFIG)
-        scenario = next(
-            item
-            for item in scenarios
-            if item.id == "regression.custom_top_k_top_p.fp32.b4.v151936"
-        )
+        scenarios, settings, _baseline = load_config(TOPK_TOPP_REGRESSION)
+        self.assertEqual(1, len(scenarios))
+        scenario = scenarios[0]
         self.assertEqual("custom_top_k_top_p", scenario.operator)
         self.assertEqual("float32", scenario.dtype)
         self.assertEqual(
@@ -95,6 +106,40 @@ class ConfigTests(unittest.TestCase):
             scenario.shape,
         )
         self.assertEqual({"top_k": 50, "top_p": 0.9}, scenario.params)
+        self.assertEqual(
+            {"preflight": "PASS", "contention": "BLOCKED_BY_A_ALLREDUCE"},
+            scenario.expect,
+        )
+        self.assertEqual(3, settings.repeat)
+
+    def test_invalid_expected_result_is_rejected(self) -> None:
+        raw = yaml.safe_load(TOPK_TOPP_REGRESSION.read_text(encoding="utf-8"))
+        raw["scenarios"][0]["expect"]["contention"] = "PASS_OR_BLOCKED"
+        with self.assertRaisesRegex(ConfigError, "invalid contention expectation"):
+            self.load(raw)
+
+    def test_ffn_regression_is_independent_and_exact(self) -> None:
+        scenarios, settings, _baseline = load_config(FFN_REGRESSION)
+        self.assertEqual(1, len(scenarios))
+        scenario = scenarios[0]
+        self.assertEqual("regression.ffn.bf16.t2048.h5120.i6400.gelu", scenario.id)
+        self.assertEqual("ffn", scenario.operator)
+        self.assertEqual("bfloat16", scenario.dtype)
+        self.assertEqual(
+            {
+                "profile": "full_core",
+                "tokens": 2048,
+                "hidden": 5120,
+                "intermediate": 6400,
+            },
+            scenario.shape,
+        )
+        self.assertEqual({"activation": "gelu"}, scenario.params)
+        self.assertEqual(
+            {"preflight": "PASS", "contention": "BLOCKED_BY_A_ALLREDUCE"},
+            scenario.expect,
+        )
+        self.assertEqual(3, settings.repeat)
 
     def test_unknown_shape_profile_is_rejected(self) -> None:
         raw = deepcopy(self.raw)
@@ -136,12 +181,8 @@ class CliTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertIn("TOTAL=31", completed.stdout)
+        self.assertIn("TOTAL=30", completed.stdout)
         self.assertIn('"id": "fused.custom_top_k_top_p"', completed.stdout)
-        self.assertIn(
-            '"id": "regression.custom_top_k_top_p.fp32.b4.v151936"',
-            completed.stdout,
-        )
 
 
 class BuilderTests(unittest.TestCase):

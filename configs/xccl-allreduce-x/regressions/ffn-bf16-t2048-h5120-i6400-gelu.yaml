@@ -1,0 +1,28 @@
+version: 1
+
+baseline:
+  tp: 8
+  submit_ranks: [0]
+  dtype: bfloat16
+  shape: [4, 5120]
+
+defaults:
+  repeat: 3
+  startup_timeout: 600
+  operator_timeout: 30
+  hold_confirm_seconds: 3
+  case_timeout: 900
+  memory_limit_mib: 1024
+
+scenarios:
+  - id: regression.ffn.bf16.t2048.h5120.i6400.gelu
+    operator: ffn
+    kind: fused
+    expected_core: mixed
+    dtype: bfloat16
+    params: {activation: gelu}
+    source: CANN 8.5.1 ops_transformer / FFNV3 blocking reproduction anchor
+    expect:
+      preflight: PASS
+      contention: BLOCKED_BY_A_ALLREDUCE
+    shapes: [{profile: full_core, tokens: 2048, hidden: 5120, intermediate: 6400}]

@@ -1,0 +1,28 @@
+version: 1
+
+baseline:
+  tp: 8
+  submit_ranks: [0]
+  dtype: bfloat16
+  shape: [4, 5120]
+
+defaults:
+  repeat: 3
+  startup_timeout: 600
+  operator_timeout: 30
+  hold_confirm_seconds: 3
+  case_timeout: 900
+  memory_limit_mib: 1024
+
+scenarios:
+  - id: regression.custom_top_k_top_p.fp32.b4.v151936
+    operator: custom_top_k_top_p
+    kind: fused
+    expected_core: vector
+    dtype: float32
+    params: {top_k: 50, top_p: 0.9}
+    source: original XCCL deadlock reproduction anchor / vLLM Ascend ApplyTopKTopPCustom
+    expect:
+      preflight: PASS
+      contention: BLOCKED_BY_A_ALLREDUCE
+    shapes: [{profile: issue_anchor, batch: 4, vocab: 151936}]

@@ -61,6 +61,7 @@ def scenario_json(scenario: Scenario) -> str:
             "shape": dict(scenario.shape),
             "params": dict(scenario.params),
             "source": scenario.source,
+            "expect": dict(scenario.expect),
         },
         sort_keys=True,
     )
@@ -147,6 +148,7 @@ def run_isolated(
                 "shape": dict(scenario.shape),
                 "params": dict(scenario.params),
                 "source": scenario.source,
+                "expect": dict(scenario.expect),
                 "phase": phase,
                 "attempt": attempt,
                 "result": "CASE_TIMEOUT",
@@ -167,6 +169,7 @@ def run_isolated(
                 "shape": dict(scenario.shape),
                 "params": dict(scenario.params),
                 "source": scenario.source,
+                "expect": dict(scenario.expect),
                 "phase": phase,
                 "attempt": attempt,
                 "result": "RUNTIME_FAILED",
@@ -179,6 +182,17 @@ def run_isolated(
             f"result={record['result']} returncode={process.returncode}",
             flush=True,
         )
+        expected_result = scenario.expect.get(phase)
+        record["expected_result"] = expected_result
+        record["expectation_met"] = (
+            expected_result is None or record["result"] == expected_result
+        )
+        if not record["expectation_met"]:
+            print(
+                f"MATRIX_EXPECTATION_FAILED scenario={scenario.id} phase={phase} "
+                f"expected={expected_result} actual={record['result']}",
+                flush=True,
+            )
         return record
 
 
@@ -245,7 +259,8 @@ def main() -> int:
     counts = Counter(str(record["result"]) for record in records)
     print("MATRIX_SUMMARY " + " ".join(f"{key}={value}" for key, value in sorted(counts.items())))
     failures = {"SETUP_FAILED", "RUNTIME_FAILED", "CASE_TIMEOUT"}
-    return 2 if failures & set(counts) else 0
+    expectation_failed = any(not record["expectation_met"] for record in records)
+    return 2 if failures & set(counts) or expectation_failed else 0
 
 
 if __name__ == "__main__":
