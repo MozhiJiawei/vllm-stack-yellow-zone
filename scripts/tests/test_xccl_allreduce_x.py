@@ -29,12 +29,12 @@ class ConfigTests(unittest.TestCase):
             path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
             return load_config(path)
 
-    def test_default_catalog_has_thirty_unique_operators(self) -> None:
+    def test_default_catalog_has_thirty_operator_classes_plus_regression_anchor(self) -> None:
         scenarios, settings, baseline = load_config(CONFIG)
-        self.assertEqual(30, len(scenarios))
-        self.assertEqual(30, len({scenario.id for scenario in scenarios}))
+        self.assertEqual(31, len(scenarios))
+        self.assertEqual(31, len({scenario.id for scenario in scenarios}))
         self.assertEqual(30, len({scenario.operator for scenario in scenarios}))
-        self.assertEqual({"vector": 12, "cube": 6, "fused": 12}, {
+        self.assertEqual({"vector": 12, "cube": 6, "fused": 13}, {
             kind: sum(scenario.kind == kind for scenario in scenarios)
             for kind in ("vector", "cube", "fused")
         })
@@ -81,6 +81,27 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "at least 40 vector"):
             self.load(raw)
 
+    def test_issue_anchor_preserves_original_blocking_topk_topp_input(self) -> None:
+        scenarios, _settings, _baseline = load_config(CONFIG)
+        scenario = next(
+            item
+            for item in scenarios
+            if item.id == "regression.custom_top_k_top_p.fp32.b4.v151936"
+        )
+        self.assertEqual("custom_top_k_top_p", scenario.operator)
+        self.assertEqual("float32", scenario.dtype)
+        self.assertEqual(
+            {"profile": "issue_anchor", "batch": 4, "vocab": 151936},
+            scenario.shape,
+        )
+        self.assertEqual({"top_k": 50, "top_p": 0.9}, scenario.params)
+
+    def test_unknown_shape_profile_is_rejected(self) -> None:
+        raw = deepcopy(self.raw)
+        raw["scenarios"][0]["shapes"][0]["profile"] = "arbitrary"
+        with self.assertRaisesRegex(ConfigError, "profile must be"):
+            self.load(raw)
+
     def test_unknown_parameter_is_rejected(self) -> None:
         raw = deepcopy(self.raw)
         raw["scenarios"][0]["params"] = {"callable": "os.system"}
@@ -115,8 +136,12 @@ class CliTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertIn("TOTAL=30", completed.stdout)
+        self.assertIn("TOTAL=31", completed.stdout)
         self.assertIn('"id": "fused.custom_top_k_top_p"', completed.stdout)
+        self.assertIn(
+            '"id": "regression.custom_top_k_top_p.fp32.b4.v151936"',
+            completed.stdout,
+        )
 
 
 class BuilderTests(unittest.TestCase):

@@ -143,8 +143,9 @@ def _shape_elements(operator: str, shape: Mapping[str, Any], spec: OperatorSpec)
 def _validate_shape(operator: str, shape: Mapping[str, Any], spec: OperatorSpec) -> None:
     if not isinstance(shape, Mapping):
         raise ConfigError(f"{operator}: shape entry must be a mapping")
-    if shape.get("profile") != "full_core":
-        raise ConfigError(f"{operator}: first version only supports profile=full_core")
+    profile = shape.get("profile")
+    if profile not in {"full_core", "issue_anchor"}:
+        raise ConfigError(f"{operator}: profile must be full_core or issue_anchor")
     missing = set(spec.shape_keys) - set(shape)
     extra = set(shape) - {"profile", *spec.shape_keys}
     if missing or extra:
@@ -154,11 +155,11 @@ def _validate_shape(operator: str, shape: Mapping[str, Any], spec: OperatorSpec)
     for key in spec.cube_aligned:
         if int(shape[key]) % 16:
             raise ConfigError(f"{operator}.shape.{key} must be divisible by 16")
-    if spec.expected_core == "vector":
+    if profile == "full_core" and spec.expected_core == "vector":
         partitions = max(int(shape.get(key, 0)) for key in ("rows", "batch", "seq"))
         if int(partitions) < 40:
             raise ConfigError(f"{operator}: full_core requires at least 40 vector work partitions")
-    if spec.expected_core == "cube" and {"m", "n"} <= set(shape):
+    if profile == "full_core" and spec.expected_core == "cube" and {"m", "n"} <= set(shape):
         tiles = int(shape["m"]) // 16 * (int(shape["n"]) // 16)
         if tiles < 20:
             raise ConfigError(f"{operator}: full_core requires at least 20 cube tiles")

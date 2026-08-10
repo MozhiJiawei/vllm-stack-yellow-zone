@@ -22,6 +22,12 @@ benchmarks.  Vector profiles expose at least 40 row, batch, or sequence work
 partitions.  Cube dimensions are multiples of 16 and expose at least 20 output
 tiles.  Every expanded case is checked against the configured memory ceiling.
 
+The catalog also preserves the original blocking TopK/TopP input as the
+`regression.custom_top_k_top_p.fp32.b4.v151936` `issue_anchor` profile.  This
+profile intentionally does not satisfy the `full_core` partition rule: its
+purpose is deterministic regression reproduction with FP32 logits shaped
+`[4, 151936]`, `top_k=50`, and `top_p=0.9`.
+
 ## Usage
 
 Validate and list the catalog locally:
@@ -46,3 +52,12 @@ scripts/run-xccl-allreduce-x-on-ascend.sh \
 
 Run `--phase all` to preflight each case and run contention only for preflight
 passes.  `--scenario` and `--kind` may be repeated or combined to narrow a run.
+
+Run only the blocking regression anchor on the Ascend host:
+
+```bash
+scripts/run-xccl-allreduce-x-on-ascend.sh \
+  --phase all \
+  --scenario regression.custom_top_k_top_p.fp32.b4.v151936 \
+  --output /tmp/xccl-topk-topp-block-anchor.jsonl
+```
