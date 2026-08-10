@@ -90,6 +90,7 @@ def model_a(
     rank: int,
     port: int,
     start: Any,
+    entered: Any,
     stop_requested: Any,
     messages: Any,
 ) -> None:
@@ -122,6 +123,7 @@ def model_a(
             stop_requested.wait()
             return
 
+        entered.set()
         emit(messages, "ENTER", "A", rank, "all_reduce count=20480 dtype=bf16")
         all_reduce(runtime, output, source, 0)
         emit(messages, "SUBMITTED", "A", rank, "host call returned")
@@ -134,6 +136,7 @@ def model_a(
 def model_b(
     device: int,
     start: Any,
+    entered: Any,
     messages: Any,
     top_k: int,
     top_p: float,
@@ -181,6 +184,7 @@ def model_b(
         )
 
         start.wait()
+        entered.set()
         emit(messages, "ENTER", "B", device, "npu_apply_top_k_top_p")
         begin = time.monotonic()
         output = operation()
@@ -309,12 +313,14 @@ def main() -> int:
     messages = ctx.Queue()
     a_start = ctx.Event()
     b_start = ctx.Event()
+    a_entered = ctx.Event()
+    b_entered = ctx.Event()
     stop_requested = ctx.Event()
     processes = [
         ctx.Process(
             target=model_a,
             name=f"model-A-rank-{rank}",
-            args=(rank, port, a_start, stop_requested, messages),
+            args=(rank, port, a_start, a_entered, stop_requested, messages),
         )
         for rank in range(TP)
     ]
@@ -330,7 +336,14 @@ def main() -> int:
         b_process = ctx.Process(
             target=model_b,
             name="model-B-sampling-rank-0",
-            args=(args.device, b_start, messages, args.top_k, args.top_p),
+            args=(
+                args.device,
+                b_start,
+                b_entered,
+                messages,
+                args.top_k,
+                args.top_p,
+            ),
         )
         b_process.start()
         processes.append(b_process)
@@ -340,7 +353,7 @@ def main() -> int:
 
         log("START_A: rank 0 enters TP8 AllReduce; ranks 1..7 submit nothing")
         a_start.set()
-        if not events.until("ENTER", 1, args.hang_timeout, role="A"):
+        if not a_entered.wait(args.hang_timeout):
             log("RESULT=SETUP_FAILED stage=A_enter exit_code=2")
             return 2
         events.collect_for(args.hold_confirm_seconds)
@@ -354,6 +367,9 @@ def main() -> int:
         a_state = events.states.get(("A", 0), "ENTER")
         log(f"A_BLOCKED: rank=0 state={a_state}; starting B Sampling operator")
         b_start.set()
+        if not b_entered.wait(args.hang_timeout):
+            log("RESULT=SETUP_FAILED stage=B_enter exit_code=2")
+            return 2
         completed = events.until("DONE", 1, args.operator_timeout, role="B")
         if events.has_error():
             log("RESULT=RUNTIME_FAILED exit_code=2")
@@ -365,7 +381,7 @@ def main() -> int:
             log("RESULT=PASS B_OPERATOR_COMPLETED_WHILE_A_BLOCKED exit_code=0")
             return 0
 
-        b_state = events.states.get(("B", args.device), "NO_EVENT")
+        b_state = events.states.get(("B", args.device), "ENTER")
         log(f"RESULT=BLOCKED_BY_A_ALLREDUCE B_state={b_state} exit_code=1")
         return 1
     finally:
