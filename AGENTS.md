@@ -11,6 +11,8 @@
 ## Default repository synchronization path
 
 - Use the OSS-backed Git bundle workflow as the default and only routine path for updating code on the Ascend environment. Do not use `git clone`/`git pull` from the Ascend host and do not send repository data over SSH.
+- Never edit, patch, generate, or commit repository source directly on the Ascend host or from inside its bind-mounted containers. All source changes must follow this exact sequence: modify and integrate locally on A, commit and push the result, publish the OSS bundle, then update the remote checkout from that bundle.
+- Treat the remote checkout as a deployed copy of the published branch, not as a development worktree. If an experiment reveals a required code change, stop the run, make the change locally, and repeat the publish-and-update sequence before retrying.
 - Run the workflow from repository root on A after the desired changes have been committed and pushed to `origin/main`:
 
   ```powershell
