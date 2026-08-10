@@ -460,7 +460,7 @@ def emit(messages: Any, kind: str, role: str, rank: int, detail: str = "") -> No
     messages.put((kind, role, rank, detail))
 
 
-def model_a(rank: int, port: int, start: Any, stop_requested: Any, messages: Any) -> None:
+def model_a(rank: int, port: int, start: Any, entered: Any, stop_requested: Any, messages: Any) -> None:
     try:
         os.environ.update(XLITE_NODE_IPS="127.0.0.1", XLITE_PORT=str(port), XLITE_DISABLE_XCCL="false")
         import torch
@@ -477,6 +477,7 @@ def model_a(rank: int, port: int, start: Any, stop_requested: Any, messages: Any
         if rank != 0:
             stop_requested.wait()
             return
+        entered.set()
         emit(messages, "ENTER", "A", rank, "all_reduce count=20480 dtype=bf16")
         all_reduce(runtime, output, source, 0)
         emit(messages, "SUBMITTED", "A", rank, "host call returned")
@@ -585,6 +586,7 @@ def execute_case(scenario: Scenario, phase: str, settings: Settings, attempt: in
     events = Events(messages)
     x_start = ctx.Event()
     a_start = ctx.Event()
+    a_entered = ctx.Event()
     stop_requested = ctx.Event()
     processes: list[mp.Process] = []
     started = time.monotonic()
@@ -593,7 +595,7 @@ def execute_case(scenario: Scenario, phase: str, settings: Settings, attempt: in
     try:
         if phase == "contention":
             port = free_xlite_port()
-            processes.extend(ctx.Process(target=model_a, name=f"model-A-rank-{rank}", args=(rank, port, a_start, stop_requested, messages)) for rank in range(TP))
+            processes.extend(ctx.Process(target=model_a, name=f"model-A-rank-{rank}", args=(rank, port, a_start, a_entered, stop_requested, messages)) for rank in range(TP))
             for process in processes:
                 process.start()
             if not events.until("READY", TP, settings.startup_timeout, role="A"):
@@ -616,7 +618,7 @@ def execute_case(scenario: Scenario, phase: str, settings: Settings, attempt: in
 
         if phase == "contention":
             a_start.set()
-            if not events.until("ENTER", 1, settings.operator_timeout, role="A"):
+            if not a_entered.wait(settings.operator_timeout):
                 result = "SETUP_FAILED"
                 error = events.detail("ERROR", "A") or "A rank 0 did not enter AllReduce"
                 return _record(scenario, phase, settings, attempt, result, started, events, error)
