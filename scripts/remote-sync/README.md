@@ -45,4 +45,4 @@ The script uses:
 
 All values can be overridden with PowerShell parameters. The OSS object remains private; the generated signed URL expires after seven days.
 
-The object key is stable (`gh/mozhijiawei/vllm-stack-yellow-zone/remote-sync/latest.bundle` with the default configuration), so each successful publish replaces the previous bundle. After a successful upload, the uploader deletes older `.bundle` objects only under this repository's `remote-sync/` and legacy `issue-remote-sync/` prefixes. It does not change bucket lifecycle or versioning settings and does not touch non-bundle attachments.
+The object key is stable (`gh/mozhijiawei/vllm-stack-yellow-zone/remote-sync/latest.bundle` with the default configuration), so each successful publish replaces the previous bundle instead of creating another timestamped object. The workflow does not list or delete OSS objects and does not require lifecycle, versioning, ListBucket, or DeleteObject permissions.

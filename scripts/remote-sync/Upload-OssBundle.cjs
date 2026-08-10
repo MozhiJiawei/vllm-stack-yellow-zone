@@ -56,35 +56,6 @@ function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function listObjectNames(client, prefix) {
-  const names = [];
-  let continuationToken;
-  do {
-    const query = { prefix, "max-keys": 1000 };
-    if (continuationToken) query["continuation-token"] = continuationToken;
-    const result = await client.listV2(query);
-    for (const object of result.objects || []) names.push(object.name);
-    continuationToken = result.isTruncated ? result.nextContinuationToken : undefined;
-  } while (continuationToken);
-  return names;
-}
-
-async function deleteSupersededBundles(client, prefixes, keepKey) {
-  const candidates = new Set();
-  for (const prefix of prefixes) {
-    for (const name of await listObjectNames(client, prefix)) {
-      if (name !== keepKey && name.endsWith(".bundle")) candidates.add(name);
-    }
-  }
-
-  const names = [...candidates];
-  for (let index = 0; index < names.length; index += 1000) {
-    const batch = names.slice(index, index + 1000);
-    await client.deleteMulti(batch, { quiet: true });
-  }
-  process.stderr.write(`OSS_OLD_BUNDLES_REMOVED count=${names.length}\n`);
-}
-
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const configPath = path.resolve(required(args, "config"));
@@ -141,10 +112,6 @@ async function main() {
   }
 
   if (!result) throw new Error("OSS multipart upload produced no result.");
-  await deleteSupersededBundles(client, [
-    `${prefix}${repo}/remote-sync/`,
-    `${prefix}${repo}/issue-remote-sync/`,
-  ], objectKey);
   const signedUrl = await client.signatureUrlV4("GET", expires, undefined, objectKey);
   process.stdout.write(`${JSON.stringify({
     key: objectKey,
