@@ -4,6 +4,7 @@
 
 - Do not transfer payloads, repositories, archives, packages, models, or other large files to or from the remote Ascend environment through SSH. This prohibition includes `scp`, `sftp`, `rsync` over SSH, piping archives or binary data into `ssh`, and base64/chunked SSH transfer. The SSH path is too slow and is reserved for commands, diagnostics, and interactive administration. A later explicit user authorization permits a narrow exception for tiny credential and control-script files; never use that exception for payload data.
 - When a file must be transferred, upload it from A to a GitHub Release asset, then download it from the remote environment through B's HTTP proxy. Prefer `gh` or `gh api` for GitHub Release and Issue operations; do not use browser automation when the CLI/API covers the operation.
+- The repository synchronization workflow is an intentional exception to the GitHub Release default: it uses the user's private Guangzhou OSS bucket because measured Release-asset throughput is extremely poor. It overwrites the fixed object key `gh/mozhijiawei/vllm-stack-yellow-zone/remote-sync/latest.bundle`; do not create timestamped bundle objects.
 - Repository source should normally be fetched directly from GitHub with Git. A GitHub source archive is an acceptable bootstrap fallback when Git is not yet available.
 - Before installing or changing remote software, collect the relevant system, network, package, service, and configuration state. Do not assume a standard Linux or Windows image.
 

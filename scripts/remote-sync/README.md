@@ -6,7 +6,7 @@ This workflow updates the isolated Ascend environment without transferring repos
 
 1. A fetches `origin/main` from GitHub.
 2. A creates a complete Git bundle containing the committed `origin/main` history.
-3. A uploads the bundle to the configured private Aliyun OSS bucket with resumable multipart upload and creates a seven-day V4 signed GET URL.
+3. A uploads the bundle to a fixed `remote-sync/latest.bundle` object in the configured private Aliyun OSS bucket with resumable multipart upload, replacing the previous completed bundle, and creates a seven-day V4 signed GET URL.
 4. Only the signed URL and control output travel through SSH.
 5. The Ascend environment downloads the bundle directly from OSS, verifies it with Git, and creates or fast-forwards `/root/l00933108/vllm-stack-yellow-zone`.
 
@@ -44,3 +44,5 @@ The script uses:
 - remote worktree: `/root/l00933108/vllm-stack-yellow-zone`.
 
 All values can be overridden with PowerShell parameters. The OSS object remains private; the generated signed URL expires after seven days.
+
+The object key is stable (`gh/mozhijiawei/vllm-stack-yellow-zone/remote-sync/latest.bundle` with the default configuration), so each successful publish replaces the previous bundle. After a successful upload, the uploader deletes older `.bundle` objects only under this repository's `remote-sync/` and legacy `issue-remote-sync/` prefixes. It does not change bucket lifecycle or versioning settings and does not touch non-bundle attachments.
