@@ -57,6 +57,10 @@
 - Missing CA certificate symlinks were repaired. `/etc/pki/tls/cert.pem` and `/etc/pki/tls/certs/ca-bundle.crt` point to `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`.
 - The image is minimal. It has `rpm`, `curl`, `tar`, `gzip`, `xz`, `python3`, `pkg-config`, and `openssl`, but no `yum`, `dnf`, `microdnf`, compiler, or Make.
 - Git 2.55.0 is installed at `/usr/local/bin/git`. Its isolated runtime is `/root/l00933108/.tools/git`, installed with micromamba from the TUNA conda-forge aarch64 mirror.
+- The pair-scheduler native-container baseline image is available as `quay.io/ascend/vllm-ascend:v0.19.1rc1`, manifest digest `sha256:66fd1ee885ffa696e79b1cd6034d4d6a4b1bec121b3c1cec9b596ad298362caa`. It was pulled through the digest-identical Nanjing mirror and tagged with the official name.
+- The pinned xLite wheel is `/root/l00933108/deps/xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl`, SHA-256 `cccb74688f6acb9cc219290c3a04b6005b81dba941b9d63c79bd52d02854fc8a`.
+- The system `/usr/local/bin/ctr` is policy-restricted. Pair-scheduler scripts must use the private upstream client at `/root/l00933108/.tools/containerd/bin/ctr`; do not replace the system binary.
+- The pair-scheduler preparation path uses native Ascend containers and models under `/cache/models`. It intentionally has no dependency on vCANN-RT, GDB, `enpu-monitor`, `npu_info.config`, or a custom `ld.so.preload`.
 - A complete GitHub source archive was successfully downloaded through B at about 10.4 MiB/s (approximately 87 Mbit/s), confirming that large GitHub downloads work.
 - The validated micromamba aarch64 bootstrap archive is `/root/l00933108/.tools/micromamba-linux-aarch64.tar.bz2`, SHA-256 `e705ffeed90ce0659eb546e4b1e1028c9eaf0bc9cc854867b19ac5ce0ba5852f`.
 - Direct GitHub Smart HTTP cloning is currently unreliable through B: ten clone attempts failed with proxy 503 or TLS EOF before object transfer. Do not repeatedly retry this path without changing the download route.

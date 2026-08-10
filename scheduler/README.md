@@ -58,5 +58,35 @@ workers. DP support is still under development. The two colocated models must
 use the same communication domain. The scheduler adds no vLLM serve arguments;
 existing model launch arguments remain unchanged.
 
+## Yellow-zone native deployment
+
+The yellow-zone preparation entry point creates two native Ascend containers,
+installs xLite and the scheduler integration, and runs the scheduler preflight:
+
+```bash
+bash /root/l00933108/vllm-stack-yellow-zone/scripts/pair-scheduler/prepare-yellow-zone.sh
+```
+
+The defaults use:
+
+- image `quay.io/ascend/vllm-ascend:v0.19.1rc1`;
+- xLite wheel
+  `/root/l00933108/deps/xlite-0.1.0rc12-cp311-cp311-manylinux2014_aarch64.whl`;
+- unrestricted private `ctr` client
+  `/root/l00933108/.tools/containerd/bin/ctr`;
+- models under `/cache/models`;
+- physical NPUs `4,5,6,7` in both native containers.
+
+This path does not build, mount, preload, or configure vCANN-RT. It also does
+not require GDB, `enpu-monitor`, `npu_info.config`, or a custom
+`ld.so.preload`. The legacy vCANN diagnostic scripts remain separate and are
+not called by the pair-scheduler preparation flow.
+
+After preparation succeeds, start the real TP4 pair in primary-first order:
+
+```bash
+bash /root/l00933108/vllm-stack-yellow-zone/scripts/pair-scheduler/start-yellow-zone.sh
+```
+
 PP, automatic primary promotion, fixed compute ratios, multi-node TP, and
 device-side completion events are not supported.
