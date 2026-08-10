@@ -167,7 +167,7 @@ def model_b(
             (batch_size,), top_k, dtype=torch.int32, device=f"npu:{device}"
         )
         p = torch.full(
-            (batch_size,), top_p, dtype=torch.float32, device=f"npu:{device}"
+            (batch_size,), top_p, dtype=dtype, device=f"npu:{device}"
         )
 
         def operation() -> Any:
