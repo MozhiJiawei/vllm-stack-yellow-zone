@@ -31,6 +31,34 @@ exec nsenter --target "$pid" --mount --uts --ipc --net --pid \
     workdir=/tmp/xccl-allreduce-x-work
     mkdir -p "$workdir"
     cd "$workdir"
+
+    declare -a runner_args=()
+    while (($#)); do
+      case $1 in
+        --config)
+          [[ $# -ge 2 ]]
+          value=$2
+          if [[ $value != /* ]]; then
+            value=$repo/$value
+          fi
+          runner_args+=(--config "$value")
+          shift 2
+          ;;
+        --config=*)
+          value=${1#--config=}
+          if [[ $value != /* ]]; then
+            value=$repo/$value
+          fi
+          runner_args+=(--config "$value")
+          shift
+          ;;
+        *)
+          runner_args+=("$1")
+          shift
+          ;;
+      esac
+    done
+
     exec python "$repo/scripts/run-xccl-allreduce-x-matrix.py" \
-      --config "$config" "$@"
+      --config "$config" "${runner_args[@]}"
   ' _ "$REPO" "$CONFIG" "$@"
