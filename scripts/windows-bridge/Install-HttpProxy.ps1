@@ -66,6 +66,12 @@ try {
     if (-not $service) {
         Invoke-BridgeProcess -FilePath $layout.Exe -ArgumentList @("--install:$($config.proxy.serviceName)", $layout.Config)
     }
+    # Privoxy 4.1.0 registers itself with the legacy INTERACTIVE_PROCESS bit.
+    # Modern Windows disables interactive services, leaving the process marked
+    # Running without loading the configuration or opening its listener.
+    Invoke-BridgeNative -FilePath "$env:SystemRoot\System32\sc.exe" -ArgumentList @(
+        'config', $config.proxy.serviceName, 'type=', 'own'
+    )
     Set-Service -Name $config.proxy.serviceName -StartupType Automatic
     Start-Service -Name $config.proxy.serviceName
 } catch {
@@ -83,8 +89,13 @@ Invoke-BridgeNative -FilePath "$env:SystemRoot\System32\sc.exe" -ArgumentList @(
     'failureflag', $config.proxy.serviceName, '1'
 )
 
-$listener = Get-NetTCPConnection -State Listen -LocalAddress $binding.LocalAddress `
-    -LocalPort $config.proxy.port -ErrorAction SilentlyContinue
+$listener = $null
+foreach ($attempt in 1..20) {
+    $listener = Get-NetTCPConnection -State Listen -LocalAddress $binding.LocalAddress `
+        -LocalPort $config.proxy.port -ErrorAction SilentlyContinue
+    if ($listener) { break }
+    Start-Sleep -Milliseconds 500
+}
 if (-not $listener) { throw 'Privoxy started but is not listening on the expected address. Check privoxy.log.' }
 
 Write-Host ''
