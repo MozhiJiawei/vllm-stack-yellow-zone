@@ -8,6 +8,29 @@ STARTUP_TIMEOUT_SECONDS=${STARTUP_TIMEOUT_SECONDS:-900}
 STARTUP_POLL_SECONDS=${STARTUP_POLL_SECONDS:-2}
 CTR_BIN=${CTR_BIN:-/root/l00933108/.tools/containerd/bin/ctr}
 
+task_field() {
+  local container=$1
+  local field=$2
+  "$CTR_BIN" -n "$NAMESPACE" tasks list |
+    awk -v container="$container" -v field="$field" \
+      'NR > 1 && $1 == container {print $field; found=1} END {exit !found}'
+}
+
+container_exec() {
+  local container=$1
+  shift
+  local pid
+  local -a container_env=()
+  pid=$(task_field "$container" 2)
+  [[ $pid =~ ^[0-9]+$ ]]
+  while IFS= read -r -d '' item; do
+    container_env+=("$item")
+  done <"/proc/$pid/environ"
+  nsenter --target "$pid" --mount --uts --ipc --net --pid \
+    --root="/proc/$pid/root" --wd="/proc/$pid/root" -- \
+    /usr/bin/env -i "${container_env[@]}" "$@"
+}
+
 start_instance() {
   local container=$1
   local instance=$2
@@ -16,9 +39,7 @@ start_instance() {
   local socket_range=$5
   local log=$6
 
-  "$CTR_BIN" -n "$NAMESPACE" tasks exec \
-    --exec-id "pair-start-$instance-$RANDOM" "$container" \
-    /bin/bash -lc "
+  container_exec "$container" /bin/bash -lc "
       set -euo pipefail
       cd /workspace
       unset ASCEND_RT_VISIBLE_DEVICES
@@ -49,9 +70,7 @@ wait_ready() {
   local deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
 
   while (( SECONDS < deadline )); do
-    if "$CTR_BIN" -n "$NAMESPACE" tasks exec \
-      --exec-id "pair-ready-$instance-$RANDOM" "$container" \
-      /bin/bash -lc "
+    if container_exec "$container" /bin/bash -lc "
         set -euo pipefail
         curl --fail --silent --max-time 2 http://127.0.0.1:$port/v1/models >/dev/null
         vllm-pair-scheduler-inspect --json |

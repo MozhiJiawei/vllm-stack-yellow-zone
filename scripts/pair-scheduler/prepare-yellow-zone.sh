@@ -72,12 +72,33 @@ test -f "$ROOT/scripts/pair-scheduler/recreate-native-xlite-containers.sh"
 test -x "$CTR_BIN"
 test -f "$XLITE_WHEEL"
 
+task_field() {
+  local container=$1
+  local field=$2
+  "$CTR_BIN" -n "$NAMESPACE" tasks list |
+    awk -v container="$container" -v field="$field" \
+      'NR > 1 && $1 == container {print $field; found=1} END {exit !found}'
+}
+
+container_exec() {
+  local container=$1
+  shift
+  local pid
+  local -a container_env=()
+  pid=$(task_field "$container" 2)
+  [[ $pid =~ ^[0-9]+$ ]]
+  while IFS= read -r -d '' item; do
+    container_env+=("$item")
+  done <"/proc/$pid/environ"
+  nsenter --target "$pid" --mount --uts --ipc --net --pid \
+    --root="/proc/$pid/root" --wd="/proc/$pid/root" -- \
+    /usr/bin/env -i "${container_env[@]}" "$@"
+}
+
 for container in "$PRIMARY_CONTAINER" "$STANDBY_CONTAINER"; do
   if "$CTR_BIN" -n "$NAMESPACE" tasks ls 2>/dev/null |
       awk 'NR > 1 {print $1}' | grep -qx "$container"; then
-    if "$CTR_BIN" -n "$NAMESPACE" tasks exec \
-        --exec-id "pair-running-check-$RANDOM" "$container" \
-        /bin/bash -lc \
+    if container_exec "$container" /bin/bash -lc \
         "pgrep -af 'EngineCore|vllm serve' >/dev/null"; then
       echo "Refusing to rebuild while vLLM is running in $container" >&2
       exit 1
@@ -97,9 +118,7 @@ bash "$ROOT/scripts/pair-scheduler/recreate-native-xlite-containers.sh" \
 install_role() {
   local container=$1
   local role=$2
-  "$CTR_BIN" -n "$NAMESPACE" tasks exec \
-    --exec-id "pair-install-$role-$RANDOM" "$container" \
-    /bin/bash -lc "
+  container_exec "$container" /bin/bash -lc "
       set -euo pipefail
       bash '$ROOT/scheduler/install-pair-scheduler.sh' '$ROOT' '$role'
       cd /vllm-workspace/vllm
@@ -124,9 +143,7 @@ run_case() {
   local trace="$ARTIFACT_DIR/$name.jsonl"
   rm -f "$trace"
 
-  "$CTR_BIN" -n "$NAMESPACE" tasks exec \
-    --exec-id "pair-$name-a-$RANDOM" "$PRIMARY_CONTAINER" \
-    /bin/bash -lc "
+  container_exec "$PRIMARY_CONTAINER" /bin/bash -lc "
       python '$ROOT/scheduler/tests/fake_engine.py' \
         --role primary --instance A --pair '$pair' \
         --shm-dir /dev/shm/vllm-pair-scheduler \
@@ -135,9 +152,7 @@ run_case() {
   local primary_exec=$!
   sleep 0.1
   set +e
-  "$CTR_BIN" -n "$NAMESPACE" tasks exec \
-    --exec-id "pair-$name-b-$RANDOM" "$STANDBY_CONTAINER" \
-    /bin/bash -lc "
+  container_exec "$STANDBY_CONTAINER" /bin/bash -lc "
       python '$ROOT/scheduler/tests/fake_engine.py' \
         --role standby --instance B --pair '$pair' \
         --shm-dir /dev/shm/vllm-pair-scheduler \
@@ -167,9 +182,7 @@ run_standby_death_case() {
   local trace="$ARTIFACT_DIR/standby-death.jsonl"
   rm -f "$trace"
 
-  "$CTR_BIN" -n "$NAMESPACE" tasks exec \
-    --exec-id "pair-standby-death-a-$RANDOM" "$PRIMARY_CONTAINER" \
-    /bin/bash -lc "
+  container_exec "$PRIMARY_CONTAINER" /bin/bash -lc "
       python '$ROOT/scheduler/tests/fake_engine.py' \
         --role primary --instance A --pair '$pair' \
         --shm-dir /dev/shm/vllm-pair-scheduler \
@@ -179,9 +192,7 @@ run_standby_death_case() {
   local primary_exec=$!
   sleep 0.1
   set +e
-  "$CTR_BIN" -n "$NAMESPACE" tasks exec \
-    --exec-id "pair-standby-death-b-$RANDOM" "$STANDBY_CONTAINER" \
-    /bin/bash -lc "
+  container_exec "$STANDBY_CONTAINER" /bin/bash -lc "
       python '$ROOT/scheduler/tests/fake_engine.py' \
         --role standby --instance B --pair '$pair' \
         --shm-dir /dev/shm/vllm-pair-scheduler \

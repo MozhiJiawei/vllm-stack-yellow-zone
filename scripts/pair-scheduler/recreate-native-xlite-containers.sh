@@ -11,6 +11,7 @@ XLITE_SHA256=${XLITE_SHA256:-cccb74688f6acb9cc219290c3a04b6005b81dba941b9d63c79b
 XLITE_EXPECTED_VERSION=${XLITE_EXPECTED_VERSION:-0.1.0rc12}
 MODEL_ROOT=${MODEL_ROOT:-/cache/models}
 SHM_ROOT=${SHM_ROOT:-/opt/l00933108}
+TOOLS_ROOT=${TOOLS_ROOT:-/root/l00933108/.tools}
 PHYSICAL_NPUS=${PHYSICAL_NPUS:-4,5,6,7}
 PRIMARY_CONTAINER=${PRIMARY_CONTAINER:-cont1_ljw}
 STANDBY_CONTAINER=${STANDBY_CONTAINER:-cont2_ljw}
@@ -70,6 +71,21 @@ task_field() {
       'NR > 1 && $1 == container {print $field; found=1} END {exit !found}'
 }
 
+container_exec() {
+  local container=$1
+  shift
+  local pid
+  local -a container_env=()
+  pid=$(task_field "$container" 2) || fail "container task not found: $container"
+  [[ $pid =~ ^[0-9]+$ ]] || fail "invalid task PID for $container: $pid"
+  while IFS= read -r -d '' item; do
+    container_env+=("$item")
+  done <"/proc/$pid/environ"
+  nsenter --target "$pid" --mount --uts --ipc --net --pid \
+    --root="/proc/$pid/root" --wd="/proc/$pid/root" -- \
+    /usr/bin/env -i "${container_env[@]}" "$@"
+}
+
 delete_exact_container() {
   local container=$1
   "$CTR_BIN" -n "$NAMESPACE" tasks delete --force "$container" \
@@ -80,10 +96,12 @@ delete_exact_container() {
 
 [[ $EUID -eq 0 ]] || fail 'run as root on the containerd host'
 [[ -x $CTR_BIN ]] || fail "unrestricted ctr client is missing: $CTR_BIN"
+command -v nsenter >/dev/null || fail 'required host command not found: nsenter'
 require_path "$ROOT/scheduler/install-pair-scheduler.sh"
 require_path "$ROOT/patches/vllm-pair-elastic-scheduling.patch"
 require_path "$XLITE_WHEEL"
 require_path "$MODEL_ROOT/Qwen3-4B"
+require_path "$TOOLS_ROOT/git/bin/git"
 require_path /usr/local/Ascend/driver
 require_path /usr/local/dcmi
 require_path /usr/local/sbin/npu-smi
@@ -114,9 +132,8 @@ done
 for container in "$PRIMARY_CONTAINER" "$STANDBY_CONTAINER"; do
   if status=$(task_field "$container" 3 2>/dev/null); then
     [[ $status != RUNNING ]] || {
-      if "$CTR_BIN" -n "$NAMESPACE" tasks exec \
-          --exec-id "native-running-check-$RANDOM" "$container" \
-          /bin/bash -lc "pgrep -af 'EngineCore|vllm serve|VLLM::Worker' >/dev/null"; then
+      if container_exec "$container" /bin/bash -lc \
+          "pgrep -af 'EngineCore|vllm serve|VLLM::Worker' >/dev/null"; then
         fail "refusing to replace $container while vLLM is running"
       fi
     }
@@ -145,6 +162,7 @@ create_container() {
     --mount "type=bind,src=$SHM_ROOT,dst=/dev/shm,options=rbind:rw" \
     --mount "type=bind,src=$ROOT,dst=$ROOT,options=rbind:rw" \
     --mount "type=bind,src=$DEPS_ROOT,dst=$DEPS_ROOT,options=rbind:ro" \
+    --mount "type=bind,src=$TOOLS_ROOT,dst=$TOOLS_ROOT,options=rbind:ro" \
     "$IMAGE" "$container" /bin/bash -lc \
     'trap : TERM INT; sleep infinity & wait'
 }
@@ -166,12 +184,12 @@ fi
 for container in "$PRIMARY_CONTAINER" "$STANDBY_CONTAINER"; do
   status=$(task_field "$container" 3)
   [[ $status == RUNNING ]] || fail "container task is not running: $container"
-  "$CTR_BIN" -n "$NAMESPACE" tasks exec \
-    --exec-id "native-xlite-install-$RANDOM" "$container" \
-    /bin/bash -lc '
+  container_exec "$container" /bin/bash -lc '
       set -euo pipefail
       wheel=$1
       expected_version=$2
+      tools_root=$3
+      ln -sfn "$tools_root/git/bin/git" /usr/local/bin/git
       test -d /vllm-workspace/vllm/vllm
       command -v gcc
       command -v git
@@ -179,7 +197,7 @@ for container in "$PRIMARY_CONTAINER" "$STANDBY_CONTAINER"; do
       python -m pip install --force-reinstall --no-deps "$wheel"
       python -c "import importlib.metadata as m; value=m.version(\"xlite\"); print(\"XLITE_VERSION=\" + value); assert value == \"$expected_version\""
       npu-smi info >/dev/null
-    ' _ "$XLITE_WHEEL" "$XLITE_EXPECTED_VERSION"
+    ' _ "$XLITE_WHEEL" "$XLITE_EXPECTED_VERSION" "$TOOLS_ROOT"
 done
 
 echo "NATIVE_XLITE_CONTAINERS_READY containers=$PRIMARY_CONTAINER,$STANDBY_CONTAINER image=$IMAGE physical_npus=$PHYSICAL_NPUS"

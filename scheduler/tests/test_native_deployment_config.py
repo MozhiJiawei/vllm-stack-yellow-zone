@@ -20,6 +20,7 @@ def test_prepare_uses_native_container_entry_point() -> None:
     assert "recreate-native-xlite-containers.sh" in script
     assert "restart-vcann-xlite-containers.sh" not in script
     assert 'wheel=$WHEEL' not in script
+    assert "tasks exec" not in script
 
 
 def test_native_container_inputs_are_pinned() -> None:
@@ -33,3 +34,4 @@ def test_native_container_inputs_are_pinned() -> None:
     )
     assert "restart-vcann-xlite-containers.sh" not in script
     assert "runtime/vcann" not in script.lower()
+    assert "tasks exec" not in script
