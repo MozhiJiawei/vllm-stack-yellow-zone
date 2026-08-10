@@ -31,3 +31,7 @@ The yellow-zone preparation and TP4 launch entry points are
 [`scripts/pair-scheduler/prepare-yellow-zone.sh`](scripts/pair-scheduler/prepare-yellow-zone.sh)
 and
 [`scripts/pair-scheduler/start-yellow-zone.sh`](scripts/pair-scheduler/start-yellow-zone.sh).
+
+Windows host B's Tailscale subnet routing and restricted HTTP proxy are managed
+by the version-controlled entry points in
+[`scripts/windows-bridge`](scripts/windows-bridge/README.md).

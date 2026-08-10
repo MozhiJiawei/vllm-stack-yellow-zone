@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "ascendIp": "9.15.144.34",
+  "routePrefixLength": 32,
+  "proxy": {
+    "port": 18080,
+    "serviceName": "VllmStackPrivoxy",
+    "version": "4.1.0",
+    "downloadUrl": "https://downloads.sourceforge.net/project/ijbswa/Win32/4.1.0/privoxy_4.1.0.zip",
+    "sha256": "23AD0BDCAB68044B625A8AD61E381B37DDA1977BEE5149A59CC380F4FCEBFDC8"
+  },
+  "tailscale": {
+    "acceptDns": false,
+    "unattended": true
+  }
+}
