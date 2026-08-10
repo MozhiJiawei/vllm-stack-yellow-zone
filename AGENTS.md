@@ -51,6 +51,12 @@
 
 ## Current Ascend environment state
 
+### Container lifecycle policy
+
+- Treat `cont1_ljw` and `cont2_ljw` as long-lived, fixed experiment containers. Reuse them for remote experiments whenever their image and device mapping are compatible.
+- Repository code is bind-mounted into those containers. Update the remote repository through the OSS bundle workflow and use the mounted checkout; do not rebuild or restart containers merely to update source code.
+- Recreate a container only when an image, device mapping, mount, or other container-creation-time dependency cannot be changed in place. Collect state and explain that requirement before replacement.
+
 - OS: EulerOS 2.0 SP13, architecture `aarch64`.
 - Use `/root/l00933108` as the single remote working directory for tools, repositories, downloads, and build work.
 - Persistent shell proxy configuration is `/etc/profile.d/vllm-stack-proxy.sh`, exporting upper- and lower-case HTTP/HTTPS proxy variables for `http://19.3.25.108:18080`.

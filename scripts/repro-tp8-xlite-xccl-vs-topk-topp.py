@@ -18,8 +18,10 @@ needed; run this inside the same Linux Ascend container where
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import multiprocessing as mp
 import os
+from pathlib import Path
 import queue
 import random
 import socket
@@ -34,6 +36,27 @@ ISSUE_BATCH = 4
 HIDDEN_SIZE = 5120
 VOCAB_SIZE = 151936
 ALLREDUCE_COUNT = ISSUE_BATCH * HIDDEN_SIZE
+
+
+def register_bundled_custom_opp() -> None:
+    """Expose vLLM Ascend's packaged kernels before torch initializes CANN."""
+    spec = importlib.util.find_spec("vllm_ascend")
+    if spec is None or not spec.submodule_search_locations:
+        raise RuntimeError("cannot locate the installed vllm_ascend package")
+
+    package_root = Path(next(iter(spec.submodule_search_locations)))
+    custom_opp = package_root / "_cann_ops_custom" / "vendors" / "vllm-ascend"
+    if not custom_opp.is_dir():
+        raise RuntimeError(f"vLLM Ascend custom OPP directory is missing: {custom_opp}")
+
+    entries = [
+        item
+        for item in os.environ.get("ASCEND_CUSTOM_OPP_PATH", "").split(":")
+        if item
+    ]
+    custom_opp_text = str(custom_opp)
+    if custom_opp_text not in entries:
+        os.environ["ASCEND_CUSTOM_OPP_PATH"] = ":".join([custom_opp_text, *entries])
 
 
 def log(message: str) -> None:
@@ -116,6 +139,7 @@ def model_b(
     top_p: float,
 ) -> None:
     try:
+        register_bundled_custom_opp()
         import torch
         import torch_npu  # noqa: F401 - registers the NPU backend
         from vllm_ascend.utils import enable_custom_op
