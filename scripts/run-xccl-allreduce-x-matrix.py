@@ -129,6 +129,8 @@ def run_isolated(
             str(attempt),
             "--worker-result",
             str(result_path),
+            "--repeat",
+            str(settings.repeat),
         ]
         print(
             f"MATRIX_CASE_START scenario={scenario.id} phase={phase} attempt={attempt} "
