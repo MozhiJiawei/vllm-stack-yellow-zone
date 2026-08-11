@@ -25,4 +25,4 @@ scenarios:
     expect:
       preflight: PASS
       contention: BLOCKED_BY_A_ALLREDUCE
-    shapes: [{profile: full_core, tokens: 2048, hidden: 5120, intermediate: 6400}]
+    shapes: [{profile: regression, tokens: 2048, hidden: 5120, intermediate: 6400}]

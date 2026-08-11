@@ -21,49 +21,49 @@ scenarios:
     expected_core: vector
     dtype: float32
     source: CANN 8.5.1 ops_math / Add
-    shapes: [{profile: full_core, rows: 40, cols: 262144}]
+    shapes: [{profile: other, rows: 40, cols: 262144}]
   - id: vector.mul
     operator: mul
     kind: vector
     expected_core: vector
     dtype: float32
     source: CANN 8.5.1 ops_math / Mul
-    shapes: [{profile: full_core, rows: 40, cols: 262144}]
+    shapes: [{profile: other, rows: 40, cols: 262144}]
   - id: vector.exp
     operator: exp
     kind: vector
     expected_core: vector
     dtype: float32
     source: CANN 8.5.1 ops_math / Exp
-    shapes: [{profile: full_core, rows: 40, cols: 262144}]
+    shapes: [{profile: other, rows: 40, cols: 262144}]
   - id: vector.sigmoid
     operator: sigmoid
     kind: vector
     expected_core: vector
     dtype: float32
     source: CANN 8.5.1 ops_nn / Sigmoid
-    shapes: [{profile: full_core, rows: 40, cols: 262144}]
+    shapes: [{profile: other, rows: 40, cols: 262144}]
   - id: vector.relu
     operator: relu
     kind: vector
     expected_core: vector
     dtype: float32
     source: CANN 8.5.1 ops_nn / Relu
-    shapes: [{profile: full_core, rows: 40, cols: 262144}]
+    shapes: [{profile: other, rows: 40, cols: 262144}]
   - id: vector.silu
     operator: silu
     kind: vector
     expected_core: vector
     dtype: float32
     source: CANN 8.5.1 ops_nn / Swish
-    shapes: [{profile: full_core, rows: 40, cols: 262144}]
+    shapes: [{profile: other, rows: 40, cols: 262144}]
   - id: vector.gelu
     operator: gelu
     kind: vector
     expected_core: vector
     dtype: float32
     source: CANN 8.5.1 ops_nn / Gelu
-    shapes: [{profile: full_core, rows: 40, cols: 262144}]
+    shapes: [{profile: other, rows: 40, cols: 262144}]
   - id: vector.cast
     operator: cast
     kind: vector
@@ -71,28 +71,28 @@ scenarios:
     dtype: float32
     params: {target_dtype: bfloat16}
     source: CANN 8.5.1 ops_math / Cast
-    shapes: [{profile: full_core, rows: 40, cols: 262144}]
+    shapes: [{profile: other, rows: 40, cols: 262144}]
   - id: vector.reduce_sum
     operator: reduce_sum
     kind: vector
     expected_core: vector
     dtype: float32
     source: CANN 8.5.1 ops_math / ReduceSum
-    shapes: [{profile: full_core, rows: 40, cols: 151936}]
+    shapes: [{profile: other, rows: 40, cols: 151936}]
   - id: vector.softmax
     operator: softmax
     kind: vector
     expected_core: vector
     dtype: float32
     source: CANN 8.5.1 ops_nn / SoftmaxV2
-    shapes: [{profile: full_core, rows: 40, cols: 151936}]
+    shapes: [{profile: other, rows: 40, cols: 151936}]
   - id: vector.sort
     operator: sort
     kind: vector
     expected_core: vector
     dtype: float32
     source: CANN 8.5.1 ops_nn / Sort
-    shapes: [{profile: full_core, rows: 40, cols: 151936}]
+    shapes: [{profile: other, rows: 40, cols: 151936}]
   - id: vector.topk
     operator: topk
     kind: vector
@@ -100,7 +100,7 @@ scenarios:
     dtype: float32
     params: {k: 50}
     source: CANN 8.5.1 ops_nn / TopK
-    shapes: [{profile: full_core, rows: 40, cols: 151936}]
+    shapes: [{profile: other, rows: 40, cols: 151936}]
 
   - id: cube.matmul
     operator: matmul
@@ -108,42 +108,42 @@ scenarios:
     expected_core: cube
     dtype: bfloat16
     source: CANN 8.5.1 ops_math / MatMulV3
-    shapes: [{profile: full_core, m: 1024, k: 4096, n: 4096}]
+    shapes: [{profile: other, m: 1024, k: 4096, n: 4096}]
   - id: cube.batch_matmul
     operator: batch_matmul
     kind: cube
     expected_core: cube
     dtype: bfloat16
     source: CANN 8.5.1 ops_math / BatchMatMulV3
-    shapes: [{profile: full_core, batch: 20, m: 512, k: 512, n: 512}]
+    shapes: [{profile: other, batch: 20, m: 512, k: 512, n: 512}]
   - id: cube.addmm
     operator: addmm
     kind: cube
     expected_core: cube
     dtype: bfloat16
     source: CANN 8.5.1 ops_math / Addmm
-    shapes: [{profile: full_core, m: 1024, k: 4096, n: 4096}]
+    shapes: [{profile: other, m: 1024, k: 4096, n: 4096}]
   - id: cube.conv2d
     operator: conv2d
     kind: cube
     expected_core: cube
     dtype: bfloat16
     source: CANN 8.5.1 ops_nn / Conv2D
-    shapes: [{profile: full_core, batch: 20, in_channels: 64, out_channels: 128, height: 56, width: 56, kernel: 3}]
+    shapes: [{profile: other, batch: 20, in_channels: 64, out_channels: 128, height: 56, width: 56, kernel: 3}]
   - id: cube.conv3d
     operator: conv3d
     kind: cube
     expected_core: cube
     dtype: bfloat16
     source: CANN 8.5.1 ops_nn / Conv3D
-    shapes: [{profile: full_core, batch: 20, in_channels: 32, out_channels: 64, depth: 8, height: 24, width: 24, kernel: 3}]
+    shapes: [{profile: other, batch: 20, in_channels: 32, out_channels: 64, depth: 8, height: 24, width: 24, kernel: 3}]
   - id: cube.quant_batch_matmul
     operator: quant_batch_matmul
     kind: cube
     expected_core: cube
     dtype: int8
     source: CANN 8.5.1 ops_transformer / QuantBatchMatmulV3
-    shapes: [{profile: full_core, m: 1024, k: 4096, n: 4096}]
+    shapes: [{profile: other, m: 1024, k: 4096, n: 4096}]
 
   - id: fused.layer_norm
     operator: layer_norm
@@ -151,56 +151,56 @@ scenarios:
     expected_core: vector
     dtype: bfloat16
     source: CANN 8.5.1 ops_nn / LayerNorm
-    shapes: [{profile: full_core, rows: 4096, hidden: 5120}]
+    shapes: [{profile: other, rows: 4096, hidden: 5120}]
   - id: fused.rms_norm
     operator: rms_norm
     kind: fused
     expected_core: vector
     dtype: bfloat16
     source: CANN 8.5.1 ops_transformer / RmsNorm
-    shapes: [{profile: full_core, rows: 4096, hidden: 5120}]
+    shapes: [{profile: other, rows: 4096, hidden: 5120}]
   - id: fused.add_rms_norm
     operator: add_rms_norm
     kind: fused
     expected_core: vector
     dtype: bfloat16
     source: CANN 8.5.1 ops_transformer / AddRmsNorm
-    shapes: [{profile: full_core, rows: 4096, hidden: 5120}]
+    shapes: [{profile: other, rows: 4096, hidden: 5120}]
   - id: fused.swiglu
     operator: swiglu
     kind: fused
     expected_core: vector
     dtype: bfloat16
     source: CANN 8.5.1 ops_transformer / SwiGlu
-    shapes: [{profile: full_core, rows: 4096, hidden: 5120}]
+    shapes: [{profile: other, rows: 4096, hidden: 5120}]
   - id: fused.rotary_mul
     operator: rotary_mul
     kind: fused
     expected_core: vector
     dtype: bfloat16
     source: CANN 8.5.1 ops_transformer / RotaryPositionEmbedding
-    shapes: [{profile: full_core, batch: 1, seq: 4096, heads: 32, head_dim: 128}]
+    shapes: [{profile: other, batch: 1, seq: 4096, heads: 32, head_dim: 128}]
   - id: fused.fusion_attention
     operator: fusion_attention
     kind: fused
     expected_core: mixed
     dtype: bfloat16
     source: CANN 8.5.1 ops_transformer / FlashAttentionScore
-    shapes: [{profile: full_core, batch: 1, seq: 2048, heads: 32, head_dim: 128}]
+    shapes: [{profile: other, batch: 1, seq: 2048, heads: 32, head_dim: 128}]
   - id: fused.prompt_flash_attention
     operator: prompt_flash_attention
     kind: fused
     expected_core: mixed
     dtype: bfloat16
     source: CANN 8.5.1 ops_transformer / PromptFlashAttention
-    shapes: [{profile: full_core, batch: 1, seq: 2048, heads: 32, head_dim: 128}]
+    shapes: [{profile: other, batch: 1, seq: 2048, heads: 32, head_dim: 128}]
   - id: fused.incre_flash_attention
     operator: incre_flash_attention
     kind: fused
     expected_core: mixed
     dtype: bfloat16
     source: CANN 8.5.1 ops_transformer / IncreFlashAttention
-    shapes: [{profile: full_core, batch: 40, kv_seq: 2048, heads: 32, kv_heads: 8, head_dim: 128}]
+    shapes: [{profile: other, batch: 40, kv_seq: 2048, heads: 32, kv_heads: 8, head_dim: 128}]
   - id: fused.ffn
     operator: ffn
     kind: fused
@@ -208,14 +208,14 @@ scenarios:
     dtype: bfloat16
     params: {activation: gelu}
     source: CANN 8.5.1 ops_transformer / FFNV3
-    shapes: [{profile: full_core, tokens: 2048, hidden: 5120, intermediate: 6400}]
+    shapes: [{profile: other, tokens: 2048, hidden: 5120, intermediate: 6400}]
   - id: fused.grouped_matmul
     operator: grouped_matmul
     kind: fused
     expected_core: cube
     dtype: bfloat16
     source: CANN 8.5.1 ops_transformer / GroupedMatmulV4
-    shapes: [{profile: full_core, groups: 20, m: 64, k: 1024, n: 1024}]
+    shapes: [{profile: other, groups: 20, m: 64, k: 1024, n: 1024}]
   - id: fused.npu_top_k_top_p
     operator: npu_top_k_top_p
     kind: fused
@@ -223,7 +223,7 @@ scenarios:
     dtype: bfloat16
     params: {top_k: 50, top_p: 0.9}
     source: CANN 8.5.1 ops_nn / TopKTopPSample
-    shapes: [{profile: full_core, batch: 40, vocab: 151936}]
+    shapes: [{profile: other, batch: 40, vocab: 151936}]
   - id: fused.custom_top_k_top_p
     operator: custom_top_k_top_p
     kind: fused
@@ -231,4 +231,4 @@ scenarios:
     dtype: bfloat16
     params: {top_k: 50, top_p: 0.9}
     source: vLLM Ascend ApplyTopKTopPCustom / K_VALUE_MAX=1024
-    shapes: [{profile: full_core, batch: 40, vocab: 151936}]
+    shapes: [{profile: other, batch: 40, vocab: 151936}]

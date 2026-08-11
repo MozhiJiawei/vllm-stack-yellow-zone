@@ -17,17 +17,17 @@ The runtime source of truth is the installed CANN 8.5.1 tree in the container:
   FP32/FP16/BF16, requires `k` to be INT32, and requires a two-dimensional
   values tensor.  Its tiling implementation uses `K_VALUE_MAX=1024`.
 
-The `full_core` profiles are representative contention inputs, not performance
-benchmarks.  Vector profiles expose at least 40 row, batch, or sequence work
-partitions.  Cube dimensions are multiples of 16 and expose at least 20 output
-tiles.  Every expanded case is checked against the configured memory ceiling.
+Profiles only classify whether a case is a confirmed blocking regression.
+`regression` is reserved for independently reproduced bad cases; every other
+catalog, exploration, or control case uses `other`.  Shape validation is
+independent of profile and checks schema, positive dimensions, Cube alignment,
+parameters, and the configured memory ceiling.
 
 Stable blocking cases are not stored in the discovery catalog.  Each one has a
 standalone configuration under `regressions/`, with exact expected preflight
 and contention results.  A mismatch makes the matrix runner return nonzero.
-The TopK/TopP regression uses the `issue_anchor` profile because its FP32
-`[4, 151936]` input intentionally does not satisfy the `full_core` partition
-rule.
+Regression profiles must declare the exact expected preflight and contention
+results.  Other profiles cannot declare result expectations.
 
 ## Usage
 
@@ -53,6 +53,8 @@ scripts/run-xccl-allreduce-x-on-ascend.sh \
 
 Run `--phase all` to preflight each case and run contention only for preflight
 passes.  `--scenario` and `--kind` may be repeated or combined to narrow a run.
+Use `--fail-fast` for long exploration matrices so infrastructure failures stop
+the run after their result is persisted.
 
 Run only the blocking regression anchor on the Ascend host:
 

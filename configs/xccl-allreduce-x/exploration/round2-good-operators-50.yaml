@@ -1,0 +1,372 @@
+version: 1
+
+baseline:
+  tp: 8
+  submit_ranks: [0]
+  dtype: bfloat16
+  shape: [4, 5120]
+
+defaults:
+  repeat: 1
+  startup_timeout: 600
+  operator_timeout: 30
+  hold_confirm_seconds: 3
+  case_timeout: 900
+  memory_limit_mib: 1024
+
+scenarios:
+  - id: probe.vector.add.f32.r1.c151936
+    operator: add
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_math / Add
+    shapes: [{profile: other, rows: 1, cols: 151936}]
+  - id: probe.vector.add.f32.r4.c151936
+    operator: add
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_math / Add
+    shapes: [{profile: other, rows: 4, cols: 151936}]
+  - id: probe.vector.mul.f32.r1.c151936
+    operator: mul
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_math / Mul
+    shapes: [{profile: other, rows: 1, cols: 151936}]
+  - id: probe.vector.mul.f32.r4.c151936
+    operator: mul
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_math / Mul
+    shapes: [{profile: other, rows: 4, cols: 151936}]
+  - id: probe.vector.exp.f32.r1.c151936
+    operator: exp
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_math / Exp
+    shapes: [{profile: other, rows: 1, cols: 151936}]
+  - id: probe.vector.exp.f32.r4.c151936
+    operator: exp
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_math / Exp
+    shapes: [{profile: other, rows: 4, cols: 151936}]
+  - id: probe.vector.sigmoid.f32.r1.c151936
+    operator: sigmoid
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_nn / Sigmoid
+    shapes: [{profile: other, rows: 1, cols: 151936}]
+  - id: probe.vector.sigmoid.f32.r4.c151936
+    operator: sigmoid
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_nn / Sigmoid
+    shapes: [{profile: other, rows: 4, cols: 151936}]
+  - id: probe.vector.relu.f32.r1.c151936
+    operator: relu
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_nn / Relu
+    shapes: [{profile: other, rows: 1, cols: 151936}]
+  - id: probe.vector.relu.f32.r4.c151936
+    operator: relu
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_nn / Relu
+    shapes: [{profile: other, rows: 4, cols: 151936}]
+  - id: probe.vector.silu.f32.r1.c151936
+    operator: silu
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_nn / Swish
+    shapes: [{profile: other, rows: 1, cols: 151936}]
+  - id: probe.vector.silu.f32.r4.c151936
+    operator: silu
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_nn / Swish
+    shapes: [{profile: other, rows: 4, cols: 151936}]
+  - id: probe.vector.gelu.f32.r1.c151936
+    operator: gelu
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_nn / Gelu
+    shapes: [{profile: other, rows: 1, cols: 151936}]
+  - id: probe.vector.gelu.f32.r4.c151936
+    operator: gelu
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_nn / Gelu
+    shapes: [{profile: other, rows: 4, cols: 151936}]
+  - id: probe.vector.cast.f32_to_bf16.r1.c151936
+    operator: cast
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    params: {target_dtype: bfloat16}
+    source: CANN 8.5.1 ops_math / Cast
+    shapes: [{profile: other, rows: 1, cols: 151936}]
+  - id: probe.vector.cast.f32_to_bf16.r4.c151936
+    operator: cast
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    params: {target_dtype: bfloat16}
+    source: CANN 8.5.1 ops_math / Cast
+    shapes: [{profile: other, rows: 4, cols: 151936}]
+  - id: probe.vector.reduce_sum.f32.r1.c151936
+    operator: reduce_sum
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_math / ReduceSum
+    shapes: [{profile: other, rows: 1, cols: 151936}]
+  - id: probe.vector.reduce_sum.f32.r4.c151936
+    operator: reduce_sum
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_math / ReduceSum
+    shapes: [{profile: other, rows: 4, cols: 151936}]
+  - id: probe.vector.softmax.f32.r1.c151936
+    operator: softmax
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_nn / SoftmaxV2
+    shapes: [{profile: other, rows: 1, cols: 151936}]
+  - id: probe.vector.softmax.f32.r4.c151936
+    operator: softmax
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_nn / SoftmaxV2
+    shapes: [{profile: other, rows: 4, cols: 151936}]
+  - id: probe.vector.sort.f32.r1.c151936
+    operator: sort
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_nn / Sort
+    shapes: [{profile: other, rows: 1, cols: 151936}]
+  - id: probe.vector.sort.f32.r4.c151936
+    operator: sort
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_nn / Sort
+    shapes: [{profile: other, rows: 4, cols: 151936}]
+
+  - id: probe.cube.matmul.bf16.m16.k4096.n4096
+    operator: matmul
+    kind: cube
+    expected_core: cube
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_math / MatMulV3
+    shapes: [{profile: other, m: 16, k: 4096, n: 4096}]
+  - id: probe.cube.matmul.bf16.m64.k4096.n4096
+    operator: matmul
+    kind: cube
+    expected_core: cube
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_math / MatMulV3
+    shapes: [{profile: other, m: 64, k: 4096, n: 4096}]
+  - id: probe.cube.batch_matmul.bf16.b1.m512.k512.n512
+    operator: batch_matmul
+    kind: cube
+    expected_core: cube
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_math / BatchMatMulV3
+    shapes: [{profile: other, batch: 1, m: 512, k: 512, n: 512}]
+  - id: probe.cube.batch_matmul.bf16.b4.m512.k512.n512
+    operator: batch_matmul
+    kind: cube
+    expected_core: cube
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_math / BatchMatMulV3
+    shapes: [{profile: other, batch: 4, m: 512, k: 512, n: 512}]
+  - id: probe.cube.addmm.bf16.m16.k4096.n4096
+    operator: addmm
+    kind: cube
+    expected_core: cube
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_math / Addmm
+    shapes: [{profile: other, m: 16, k: 4096, n: 4096}]
+  - id: probe.cube.addmm.bf16.m64.k4096.n4096
+    operator: addmm
+    kind: cube
+    expected_core: cube
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_math / Addmm
+    shapes: [{profile: other, m: 64, k: 4096, n: 4096}]
+  - id: probe.cube.conv2d.bf16.b1.c64_128.hw56.k3
+    operator: conv2d
+    kind: cube
+    expected_core: cube
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_nn / Conv2D
+    shapes: [{profile: other, batch: 1, in_channels: 64, out_channels: 128, height: 56, width: 56, kernel: 3}]
+  - id: probe.cube.conv2d.bf16.b4.c64_128.hw56.k3
+    operator: conv2d
+    kind: cube
+    expected_core: cube
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_nn / Conv2D
+    shapes: [{profile: other, batch: 4, in_channels: 64, out_channels: 128, height: 56, width: 56, kernel: 3}]
+  - id: probe.cube.conv3d.bf16.b1.c32_64.d8.hw24.k3
+    operator: conv3d
+    kind: cube
+    expected_core: cube
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_nn / Conv3D
+    shapes: [{profile: other, batch: 1, in_channels: 32, out_channels: 64, depth: 8, height: 24, width: 24, kernel: 3}]
+  - id: probe.cube.quant_batch_matmul.i8.m16.k4096.n4096
+    operator: quant_batch_matmul
+    kind: cube
+    expected_core: cube
+    dtype: int8
+    source: CANN 8.5.1 ops_transformer / QuantBatchMatmulV3
+    shapes: [{profile: other, m: 16, k: 4096, n: 4096}]
+  - id: probe.cube.quant_batch_matmul.i8.m64.k4096.n4096
+    operator: quant_batch_matmul
+    kind: cube
+    expected_core: cube
+    dtype: int8
+    source: CANN 8.5.1 ops_transformer / QuantBatchMatmulV3
+    shapes: [{profile: other, m: 64, k: 4096, n: 4096}]
+
+  - id: probe.fused.layer_norm.bf16.r1.h5120
+    operator: layer_norm
+    kind: fused
+    expected_core: vector
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_nn / LayerNorm
+    shapes: [{profile: other, rows: 1, hidden: 5120}]
+  - id: probe.fused.layer_norm.bf16.r4.h5120
+    operator: layer_norm
+    kind: fused
+    expected_core: vector
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_nn / LayerNorm
+    shapes: [{profile: other, rows: 4, hidden: 5120}]
+  - id: probe.fused.rms_norm.bf16.r1.h5120
+    operator: rms_norm
+    kind: fused
+    expected_core: vector
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_transformer / RmsNorm
+    shapes: [{profile: other, rows: 1, hidden: 5120}]
+  - id: probe.fused.rms_norm.bf16.r4.h5120
+    operator: rms_norm
+    kind: fused
+    expected_core: vector
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_transformer / RmsNorm
+    shapes: [{profile: other, rows: 4, hidden: 5120}]
+  - id: probe.fused.add_rms_norm.bf16.r1.h5120
+    operator: add_rms_norm
+    kind: fused
+    expected_core: vector
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_transformer / AddRmsNorm
+    shapes: [{profile: other, rows: 1, hidden: 5120}]
+  - id: probe.fused.add_rms_norm.bf16.r4.h5120
+    operator: add_rms_norm
+    kind: fused
+    expected_core: vector
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_transformer / AddRmsNorm
+    shapes: [{profile: other, rows: 4, hidden: 5120}]
+  - id: probe.fused.swiglu.bf16.r1.h5120
+    operator: swiglu
+    kind: fused
+    expected_core: vector
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_transformer / SwiGlu
+    shapes: [{profile: other, rows: 1, hidden: 5120}]
+  - id: probe.fused.swiglu.bf16.r4.h5120
+    operator: swiglu
+    kind: fused
+    expected_core: vector
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_transformer / SwiGlu
+    shapes: [{profile: other, rows: 4, hidden: 5120}]
+  - id: probe.fused.rotary_mul.bf16.b1.s128.h32.d128
+    operator: rotary_mul
+    kind: fused
+    expected_core: vector
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_transformer / RotaryPositionEmbedding
+    shapes: [{profile: other, batch: 1, seq: 128, heads: 32, head_dim: 128}]
+  - id: probe.fused.grouped_matmul.bf16.g1.m64.k1024.n1024
+    operator: grouped_matmul
+    kind: fused
+    expected_core: cube
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_transformer / GroupedMatmulV4
+    shapes: [{profile: other, groups: 1, m: 64, k: 1024, n: 1024}]
+  - id: probe.fused.grouped_matmul.bf16.g4.m64.k1024.n1024
+    operator: grouped_matmul
+    kind: fused
+    expected_core: cube
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_transformer / GroupedMatmulV4
+    shapes: [{profile: other, groups: 4, m: 64, k: 1024, n: 1024}]
+
+  - id: probe.fused.fusion_attention.bf16.b1.s128.h32.d128
+    operator: fusion_attention
+    kind: fused
+    expected_core: mixed
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_transformer / FlashAttentionScore
+    shapes: [{profile: other, batch: 1, seq: 128, heads: 32, head_dim: 128}]
+  - id: probe.fused.fusion_attention.bf16.b1.s512.h32.d128
+    operator: fusion_attention
+    kind: fused
+    expected_core: mixed
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_transformer / FlashAttentionScore
+    shapes: [{profile: other, batch: 1, seq: 512, heads: 32, head_dim: 128}]
+  - id: probe.fused.prompt_flash_attention.bf16.b1.s128.h32.d128
+    operator: prompt_flash_attention
+    kind: fused
+    expected_core: mixed
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_transformer / PromptFlashAttention
+    shapes: [{profile: other, batch: 1, seq: 128, heads: 32, head_dim: 128}]
+  - id: probe.fused.prompt_flash_attention.bf16.b1.s512.h32.d128
+    operator: prompt_flash_attention
+    kind: fused
+    expected_core: mixed
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_transformer / PromptFlashAttention
+    shapes: [{profile: other, batch: 1, seq: 512, heads: 32, head_dim: 128}]
+  - id: probe.fused.incre_flash_attention.bf16.b1.kv2048.h32.kh8.d128
+    operator: incre_flash_attention
+    kind: fused
+    expected_core: mixed
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_transformer / IncreFlashAttention
+    shapes: [{profile: other, batch: 1, kv_seq: 2048, heads: 32, kv_heads: 8, head_dim: 128}]
+  - id: probe.fused.incre_flash_attention.bf16.b4.kv2048.h32.kh8.d128
+    operator: incre_flash_attention
+    kind: fused
+    expected_core: mixed
+    dtype: bfloat16
+    source: CANN 8.5.1 ops_transformer / IncreFlashAttention
+    shapes: [{profile: other, batch: 4, kv_seq: 2048, heads: 32, kv_heads: 8, head_dim: 128}]

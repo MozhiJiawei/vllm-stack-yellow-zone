@@ -1,7 +1,8 @@
 # Stable blocking regressions
 
 Every YAML file in this directory is an independently runnable reproduction.
-It contains one exact X configuration and declares both expected phases:
+It contains one exact X configuration with `profile: regression` and declares
+both expected phases:
 
 - `preflight: PASS` proves that X completes without the incomplete AllReduce.
 - `contention: BLOCKED_BY_A_ALLREDUCE` proves that the same X invocation does

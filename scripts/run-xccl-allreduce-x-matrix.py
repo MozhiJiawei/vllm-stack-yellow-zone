@@ -14,7 +14,15 @@ import tempfile
 import time
 from typing import Any
 
-from xccl_allreduce_x import ConfigError, Scenario, Settings, execute_case, load_config
+from xccl_allreduce_x import (
+    ConfigError,
+    INFRASTRUCTURE_FAILURES,
+    Scenario,
+    Settings,
+    execute_case,
+    load_config,
+    should_abort,
+)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -27,6 +35,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--output", type=Path)
     result.add_argument("--list", action="store_true")
     result.add_argument("--dry-run", action="store_true")
+    result.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="stop after SETUP_FAILED, RUNTIME_FAILED, or CASE_TIMEOUT",
+    )
     result.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     result.add_argument("--worker-scenario", help=argparse.SUPPRESS)
     result.add_argument("--worker-shape-index", type=int, help=argparse.SUPPRESS)
@@ -241,6 +254,7 @@ def main() -> int:
     grouped: dict[str, list[Scenario]] = {}
     for scenario in selected:
         grouped.setdefault(scenario.id, []).append(scenario)
+    aborted = False
     for scenario_id, shapes in grouped.items():
         for shape_index, scenario in enumerate(shapes):
             for attempt in range(1, settings.repeat + 1):
@@ -248,6 +262,14 @@ def main() -> int:
                     preflight = run_isolated(args, scenario, shape_index, "preflight", attempt, settings)
                     records.append(preflight)
                     append_record(args.output, preflight)
+                    if should_abort(args.fail_fast, preflight["result"]):
+                        print(
+                            f"MATRIX_ABORT scenario={scenario_id} phase=preflight "
+                            f"reason={preflight['result']}",
+                            flush=True,
+                        )
+                        aborted = True
+                        break
                     if args.phase == "all" and preflight["result"] != "PASS":
                         print(f"MATRIX_CASE_SKIP scenario={scenario_id} phase=contention reason=preflight_{preflight['result']}", flush=True)
                         continue
@@ -255,12 +277,23 @@ def main() -> int:
                     contention = run_isolated(args, scenario, shape_index, "contention", attempt, settings)
                     records.append(contention)
                     append_record(args.output, contention)
+                    if should_abort(args.fail_fast, contention["result"]):
+                        print(
+                            f"MATRIX_ABORT scenario={scenario_id} phase=contention "
+                            f"reason={contention['result']}",
+                            flush=True,
+                        )
+                        aborted = True
+                        break
+            if aborted:
+                break
+        if aborted:
+            break
 
     counts = Counter(str(record["result"]) for record in records)
     print("MATRIX_SUMMARY " + " ".join(f"{key}={value}" for key, value in sorted(counts.items())))
-    failures = {"SETUP_FAILED", "RUNTIME_FAILED", "CASE_TIMEOUT"}
     expectation_failed = any(not record["expectation_met"] for record in records)
-    return 2 if failures & set(counts) or expectation_failed else 0
+    return 2 if INFRASTRUCTURE_FAILURES & set(counts) or expectation_failed else 0
 
 
 if __name__ == "__main__":

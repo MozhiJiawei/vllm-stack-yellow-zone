@@ -25,4 +25,4 @@ scenarios:
     expect:
       preflight: PASS
       contention: BLOCKED_BY_A_ALLREDUCE
-    shapes: [{profile: issue_anchor, batch: 4, vocab: 151936}]
+    shapes: [{profile: regression, batch: 4, vocab: 151936}]

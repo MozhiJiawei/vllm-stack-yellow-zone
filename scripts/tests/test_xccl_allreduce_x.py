@@ -28,9 +28,21 @@ FFN_REGRESSION = (
     / "regressions"
     / "ffn-bf16-t2048-h5120-i6400-gelu.yaml"
 )
+ROUND2_EXPLORATION = (
+    REPO_ROOT
+    / "configs"
+    / "xccl-allreduce-x"
+    / "exploration"
+    / "round2-good-operators-50.yaml"
+)
 sys.path.insert(0, str(SCRIPTS))
 
-from xccl_allreduce_x import ConfigError, build_operation, load_config  # noqa: E402
+from xccl_allreduce_x import (  # noqa: E402
+    ConfigError,
+    build_operation,
+    load_config,
+    should_abort,
+)
 
 
 class ConfigTests(unittest.TestCase):
@@ -54,6 +66,9 @@ class ConfigTests(unittest.TestCase):
         })
         self.assertEqual([0], baseline["submit_ranks"])
         self.assertEqual(1024, settings.memory_limit_mib)
+        self.assertTrue(
+            all(scenario.shape["profile"] == "other" for scenario in scenarios)
+        )
 
     def test_unknown_operator_is_rejected(self) -> None:
         raw = deepcopy(self.raw)
@@ -88,21 +103,22 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "divisible by 16"):
             self.load(raw)
 
-    def test_vector_full_core_requires_forty_partitions(self) -> None:
+    def test_other_profile_allows_low_parallel_shapes(self) -> None:
         raw = deepcopy(self.raw)
         target = next(item for item in raw["scenarios"] if item["operator"] == "sigmoid")
         target["shapes"][0]["rows"] = 4
-        with self.assertRaisesRegex(ConfigError, "at least 40 vector"):
-            self.load(raw)
+        scenarios, _settings, _baseline = self.load(raw)
+        scenario = next(item for item in scenarios if item.operator == "sigmoid")
+        self.assertEqual(4, scenario.shape["rows"])
 
-    def test_issue_anchor_preserves_original_blocking_topk_topp_input(self) -> None:
+    def test_regression_preserves_original_blocking_topk_topp_input(self) -> None:
         scenarios, settings, _baseline = load_config(TOPK_TOPP_REGRESSION)
         self.assertEqual(1, len(scenarios))
         scenario = scenarios[0]
         self.assertEqual("custom_top_k_top_p", scenario.operator)
         self.assertEqual("float32", scenario.dtype)
         self.assertEqual(
-            {"profile": "issue_anchor", "batch": 4, "vocab": 151936},
+            {"profile": "regression", "batch": 4, "vocab": 151936},
             scenario.shape,
         )
         self.assertEqual({"top_k": 50, "top_p": 0.9}, scenario.params)
@@ -127,7 +143,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual("bfloat16", scenario.dtype)
         self.assertEqual(
             {
-                "profile": "full_core",
+                "profile": "regression",
                 "tokens": 2048,
                 "hidden": 5120,
                 "intermediate": 6400,
@@ -147,6 +163,50 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "profile must be"):
             self.load(raw)
 
+    def test_legacy_shape_profiles_are_rejected(self) -> None:
+        for profile in ("full_core", "issue_anchor"):
+            with self.subTest(profile=profile):
+                raw = deepcopy(self.raw)
+                raw["scenarios"][0]["shapes"][0]["profile"] = profile
+                with self.assertRaisesRegex(ConfigError, "profile must be"):
+                    self.load(raw)
+
+    def test_regression_profile_requires_exact_expectations(self) -> None:
+        raw = yaml.safe_load(TOPK_TOPP_REGRESSION.read_text(encoding="utf-8"))
+        del raw["scenarios"][0]["expect"]
+        with self.assertRaisesRegex(ConfigError, "regression profile requires"):
+            self.load(raw)
+
+    def test_other_profile_rejects_expectations(self) -> None:
+        raw = deepcopy(self.raw)
+        raw["scenarios"][0]["expect"] = {
+            "preflight": "PASS",
+            "contention": "BLOCKED_BY_A_ALLREDUCE",
+        }
+        with self.assertRaisesRegex(ConfigError, "must not declare expectations"):
+            self.load(raw)
+
+    def test_round2_has_fifty_other_cases_and_excludes_known_bad_families(self) -> None:
+        scenarios, settings, _baseline = load_config(ROUND2_EXPLORATION)
+        self.assertEqual(50, len(scenarios))
+        self.assertEqual(50, len({scenario.id for scenario in scenarios}))
+        self.assertEqual(
+            {"vector": 22, "cube": 11, "fused": 17},
+            {
+                kind: sum(scenario.kind == kind for scenario in scenarios)
+                for kind in ("vector", "cube", "fused")
+            },
+        )
+        self.assertFalse(
+            {"ffn", "topk", "npu_top_k_top_p", "custom_top_k_top_p"}
+            & {scenario.operator for scenario in scenarios}
+        )
+        self.assertTrue(
+            all(scenario.shape["profile"] == "other" for scenario in scenarios)
+        )
+        self.assertTrue(all(not scenario.expect for scenario in scenarios))
+        self.assertEqual(1, settings.repeat)
+
     def test_unknown_parameter_is_rejected(self) -> None:
         raw = deepcopy(self.raw)
         raw["scenarios"][0]["params"] = {"callable": "os.system"}
@@ -161,13 +221,20 @@ class ConfigTests(unittest.TestCase):
 
     def test_multiple_shapes_expand_without_runner_changes(self) -> None:
         raw = deepcopy(self.raw)
-        raw["scenarios"][0]["shapes"].append({"profile": "full_core", "rows": 80, "cols": 131072})
+        raw["scenarios"][0]["shapes"].append({"profile": "other", "rows": 80, "cols": 131072})
         scenarios, _settings, _baseline = self.load(raw)
         expanded = [scenario for scenario in scenarios if scenario.id == "vector.add"]
         self.assertEqual(2, len(expanded))
 
 
 class CliTests(unittest.TestCase):
+    def test_fail_fast_only_aborts_infrastructure_failures(self) -> None:
+        for result in ("SETUP_FAILED", "RUNTIME_FAILED", "CASE_TIMEOUT"):
+            self.assertTrue(should_abort(True, result))
+        for result in ("PASS", "BLOCKED_BY_A_ALLREDUCE", "UNSUPPORTED"):
+            self.assertFalse(should_abort(True, result))
+        self.assertFalse(should_abort(False, "SETUP_FAILED"))
+
     def test_dry_run_lists_catalog_without_npu_runtime(self) -> None:
         completed = subprocess.run(
             [
@@ -183,6 +250,22 @@ class CliTests(unittest.TestCase):
         )
         self.assertIn("TOTAL=30", completed.stdout)
         self.assertIn('"id": "fused.custom_top_k_top_p"', completed.stdout)
+
+    def test_dry_run_lists_round2_with_fail_fast(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS / "run-xccl-allreduce-x-matrix.py"),
+                "--config",
+                str(ROUND2_EXPLORATION),
+                "--dry-run",
+                "--fail-fast",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("TOTAL=50", completed.stdout)
 
 
 class BuilderTests(unittest.TestCase):

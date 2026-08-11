@@ -26,6 +26,9 @@ ALLREDUCE_SHAPE = (4, 5120)
 ALLREDUCE_DTYPE = "bfloat16"
 KINDS = {"vector", "cube", "fused"}
 DTYPES = {"float16", "bfloat16", "float32", "int8"}
+INFRASTRUCTURE_FAILURES = frozenset(
+    {"SETUP_FAILED", "RUNTIME_FAILED", "CASE_TIMEOUT"}
+)
 
 
 class ConfigError(ValueError):
@@ -34,6 +37,10 @@ class ConfigError(ValueError):
 
 class UnsupportedOperator(RuntimeError):
     """The installed runtime does not expose the requested operator."""
+
+
+def should_abort(fail_fast: bool, result: str) -> bool:
+    return fail_fast and result in INFRASTRUCTURE_FAILURES
 
 
 @dataclass(frozen=True)
@@ -145,8 +152,8 @@ def _validate_shape(operator: str, shape: Mapping[str, Any], spec: OperatorSpec)
     if not isinstance(shape, Mapping):
         raise ConfigError(f"{operator}: shape entry must be a mapping")
     profile = shape.get("profile")
-    if profile not in {"full_core", "issue_anchor"}:
-        raise ConfigError(f"{operator}: profile must be full_core or issue_anchor")
+    if profile not in {"regression", "other"}:
+        raise ConfigError(f"{operator}: profile must be regression or other")
     missing = set(spec.shape_keys) - set(shape)
     extra = set(shape) - {"profile", *spec.shape_keys}
     if missing or extra:
@@ -156,14 +163,6 @@ def _validate_shape(operator: str, shape: Mapping[str, Any], spec: OperatorSpec)
     for key in spec.cube_aligned:
         if int(shape[key]) % 16:
             raise ConfigError(f"{operator}.shape.{key} must be divisible by 16")
-    if profile == "full_core" and spec.expected_core == "vector":
-        partitions = max(int(shape.get(key, 0)) for key in ("rows", "batch", "seq"))
-        if int(partitions) < 40:
-            raise ConfigError(f"{operator}: full_core requires at least 40 vector work partitions")
-    if profile == "full_core" and spec.expected_core == "cube" and {"m", "n"} <= set(shape):
-        tiles = int(shape["m"]) // 16 * (int(shape["n"]) // 16)
-        if tiles < 20:
-            raise ConfigError(f"{operator}: full_core requires at least 20 cube tiles")
 
 
 def _validate_params(operator: str, params: Mapping[str, Any], shape: Mapping[str, Any]) -> None:
@@ -271,6 +270,20 @@ def load_config(path: Path) -> tuple[list[Scenario], Settings, dict[str, Any]]:
         for shape_index, shape in enumerate(shapes):
             _validate_shape(str(operator), shape, spec)
             _validate_params(str(operator), params, shape)
+            profile = shape["profile"]
+            regression_expect = {
+                "preflight": "PASS",
+                "contention": "BLOCKED_BY_A_ALLREDUCE",
+            }
+            if profile == "regression" and dict(expect) != regression_expect:
+                raise ConfigError(
+                    f"{scenario_id}: regression profile requires expectations "
+                    f"{regression_expect}"
+                )
+            if profile == "other" and expect:
+                raise ConfigError(
+                    f"{scenario_id}: other profile must not declare expectations"
+                )
             estimated_mib = _shape_elements(str(operator), shape, spec) * _dtype_bytes(str(dtype)) / 1024**2
             if estimated_mib > settings.memory_limit_mib:
                 raise ConfigError(f"{scenario_id}.shapes[{shape_index}] estimates {estimated_mib:.1f} MiB, above limit {settings.memory_limit_mib:.1f} MiB")
