@@ -40,6 +40,25 @@ REDUCE_SUM_REGRESSIONS = (
     / "regressions"
     / "reduce-sum-fp32-r4-c151936.yaml",
 )
+SORT_REGRESSIONS = (
+    REPO_ROOT
+    / "configs"
+    / "xccl-allreduce-x"
+    / "regressions"
+    / "sort-fp32-r1-c151936.yaml",
+    REPO_ROOT
+    / "configs"
+    / "xccl-allreduce-x"
+    / "regressions"
+    / "sort-fp32-r4-c151936.yaml",
+)
+INCRE_FLASH_ATTENTION_REGRESSION = (
+    REPO_ROOT
+    / "configs"
+    / "xccl-allreduce-x"
+    / "regressions"
+    / "incre-flash-attention-bf16-b1-kv2048-h32-kh8-d128.yaml"
+)
 ROUND2_EXPLORATION = (
     REPO_ROOT
     / "configs"
@@ -196,6 +215,61 @@ class ConfigTests(unittest.TestCase):
                     scenario.expect,
                 )
                 self.assertEqual(3, settings.repeat)
+
+    def test_sort_regressions_are_independent_and_exact(self) -> None:
+        expected = (
+            ("regression.sort.f32.r1.c151936", 1),
+            ("regression.sort.f32.r4.c151936", 4),
+        )
+        for path, (scenario_id, rows) in zip(SORT_REGRESSIONS, expected, strict=True):
+            with self.subTest(path=path.name):
+                scenarios, settings, _baseline = load_config(path)
+                self.assertEqual(1, len(scenarios))
+                scenario = scenarios[0]
+                self.assertEqual(scenario_id, scenario.id)
+                self.assertEqual("sort", scenario.operator)
+                self.assertEqual("float32", scenario.dtype)
+                self.assertEqual(
+                    {"profile": "regression", "rows": rows, "cols": 151936},
+                    scenario.shape,
+                )
+                self.assertEqual(
+                    {
+                        "preflight": "PASS",
+                        "contention": "BLOCKED_BY_A_ALLREDUCE",
+                    },
+                    scenario.expect,
+                )
+                self.assertEqual(3, settings.repeat)
+
+    def test_incre_flash_attention_regression_is_independent_and_exact(self) -> None:
+        scenarios, settings, _baseline = load_config(
+            INCRE_FLASH_ATTENTION_REGRESSION
+        )
+        self.assertEqual(1, len(scenarios))
+        scenario = scenarios[0]
+        self.assertEqual(
+            "regression.incre_flash_attention.bf16.b1.kv2048.h32.kh8.d128",
+            scenario.id,
+        )
+        self.assertEqual("incre_flash_attention", scenario.operator)
+        self.assertEqual("bfloat16", scenario.dtype)
+        self.assertEqual(
+            {
+                "profile": "regression",
+                "batch": 1,
+                "kv_seq": 2048,
+                "heads": 32,
+                "kv_heads": 8,
+                "head_dim": 128,
+            },
+            scenario.shape,
+        )
+        self.assertEqual(
+            {"preflight": "PASS", "contention": "BLOCKED_BY_A_ALLREDUCE"},
+            scenario.expect,
+        )
+        self.assertEqual(3, settings.repeat)
 
     def test_unknown_shape_profile_is_rejected(self) -> None:
         raw = deepcopy(self.raw)

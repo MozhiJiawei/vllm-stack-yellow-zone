@@ -18,6 +18,9 @@ Current stable regressions:
 - `ffn-bf16-t2048-h5120-i6400-gelu.yaml`
 - `reduce-sum-fp32-r1-c151936.yaml`
 - `reduce-sum-fp32-r4-c151936.yaml`
+- `sort-fp32-r1-c151936.yaml`
+- `sort-fp32-r4-c151936.yaml`
+- `incre-flash-attention-bf16-b1-kv2048-h32-kh8-d128.yaml`
 
 Run a regression through the namespace-preserving Ascend launcher, for example:
 

@@ -1,0 +1,27 @@
+version: 1
+
+baseline:
+  tp: 8
+  submit_ranks: [0]
+  dtype: bfloat16
+  shape: [4, 5120]
+
+defaults:
+  repeat: 3
+  startup_timeout: 600
+  operator_timeout: 30
+  hold_confirm_seconds: 3
+  case_timeout: 900
+  memory_limit_mib: 1024
+
+scenarios:
+  - id: regression.sort.f32.r4.c151936
+    operator: sort
+    kind: vector
+    expected_core: vector
+    dtype: float32
+    source: CANN 8.5.1 ops_nn / Sort blocking reproduction
+    expect:
+      preflight: PASS
+      contention: BLOCKED_BY_A_ALLREDUCE
+    shapes: [{profile: regression, rows: 4, cols: 151936}]
