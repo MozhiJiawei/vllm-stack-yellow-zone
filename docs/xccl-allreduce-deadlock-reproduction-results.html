@@ -184,7 +184,7 @@
 
     .bad-list {
       display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 10px;
       margin: 18px 0 0;
     }
@@ -322,8 +322,8 @@
       <p class="eyebrow">Ascend 910B4 · CANN 8.5.1 · XCCL investigation</p>
       <h1>AllReduce + X<br>死锁复现结果</h1>
       <p class="hero-copy">
-        固定 A 侧为仅 rank 0 提交的 TP8 xLite/XCCL AllReduce，系统性执行 50 个低并行算子场景，
-        找到并三轮确认 5 个新的稳定阻塞条件。
+        固定 A 侧为仅 rank 0 提交的 TP8 xLite/XCCL AllReduce，先执行 30 个代表算子场景，
+        再执行 50 个低并行场景，共完成 80 个 case，并确认 6 个矩阵内稳定阻塞条件。
       </p>
       <div class="meta-row">
         <span class="meta-pill">实验日期：2026-08-11</span>
@@ -338,22 +338,22 @@
     <section class="summary-grid" aria-label="结果摘要">
       <article class="metric">
         <div class="metric-label">探索场景</div>
-        <div class="metric-value">50</div>
-        <div class="metric-detail">Vector 22 · Cube 11 · Fused 17</div>
+        <div class="metric-value">80</div>
+        <div class="metric-detail">首轮代表场景 30 · 第二轮低并行 50</div>
       </article>
       <article class="metric pass">
         <div class="metric-label">X_ONLY</div>
-        <div class="metric-value">50 / 50</div>
+        <div class="metric-value">80 / 80</div>
         <div class="metric-detail">全部可独立执行</div>
       </article>
       <article class="metric blocked">
         <div class="metric-label">稳定阻塞</div>
-        <div class="metric-value">5</div>
-        <div class="metric-detail">候选均完成 3/3 复验</div>
+        <div class="metric-value">6</div>
+        <div class="metric-detail">FFN 1 · 第二轮新发现 5</div>
       </article>
       <article class="metric pass">
         <div class="metric-label">并行通过</div>
-        <div class="metric-value">45</div>
+        <div class="metric-value">74</div>
         <div class="metric-detail">无 setup/runtime/timeout 失败</div>
       </article>
     </section>
@@ -362,7 +362,7 @@
       <h2>结论</h2>
       <p class="lead">
         不完整 AllReduce 对其他算子的影响不是“所有低并行算子都会阻塞”，而是明显依赖算子内部执行路径和 tiling。
-        新发现集中在归约、排序以及 batch=1 的增量注意力路径。
+        首轮确认 FFN 阻塞；第二轮新发现集中在归约、排序以及 batch=1 的增量注意力路径。
       </p>
       <div class="finding-grid">
         <article class="finding bad">
@@ -412,9 +412,10 @@
     </section>
 
     <section class="section" id="regressions">
-      <h2>新固化的 5 个稳定坏例</h2>
-      <p>每个候选均独立重复 3 次，三次均满足 <code>preflight: PASS</code> 与 <code>contention: BLOCKED_BY_A_ALLREDUCE</code>。</p>
+      <h2>80-case 中的 6 个稳定坏例</h2>
+      <p>首轮 FFN 与第二轮 5 个候选均已独立重复确认，满足 <code>preflight: PASS</code> 与 <code>contention: BLOCKED_BY_A_ALLREDUCE</code>。</p>
       <div class="bad-list">
+        <article class="bad-card"><div class="name">FFN</div><div class="shape">BF16 · T2048 · H5120 · I6400 · GELU</div><div class="repeat">3 / 3 BLOCKED</div></article>
         <article class="bad-card"><div class="name">ReduceSum</div><div class="shape">FP32 · 1 × 151936</div><div class="repeat">3 / 3 BLOCKED</div></article>
         <article class="bad-card"><div class="name">ReduceSum</div><div class="shape">FP32 · 4 × 151936</div><div class="repeat">3 / 3 BLOCKED</div></article>
         <article class="bad-card"><div class="name">Sort</div><div class="shape">FP32 · 1 × 151936</div><div class="repeat">3 / 3 BLOCKED</div></article>
@@ -422,21 +423,61 @@
         <article class="bad-card"><div class="name">IncreFlashAttention</div><div class="shape">BF16 · B1 · KV2048 · H32/KH8 · D128</div><div class="repeat">3 / 3 BLOCKED</div></article>
       </div>
       <p class="note">
-        原有 FFN 与自定义 TopK/TopP 回归不计入本轮 50 个探索 case。加入本轮 5 个后，仓库内共有 7 个独立稳定 regression 配置。
+        原始自定义 TopK/TopP 坏例作为独立 regression，不计入这 80 个矩阵 case。加上它后，仓库内共有 7 个独立稳定 regression 配置。
       </p>
     </section>
 
     <section class="section" id="matrix">
-      <h2>50-case 完整结果</h2>
-      <p>所有 case 的 X_ONLY 都通过。可使用下方按钮仅查看阻塞项或通过项。</p>
+      <h2>80-case 完整结果</h2>
+      <p>首轮 30 个代表场景与第二轮 50 个低并行场景最终均通过 X_ONLY。可使用下方按钮仅查看阻塞项或通过项。</p>
       <div class="table-tools">
         <div class="filter-group" role="group" aria-label="结果筛选">
           <button type="button" class="active" data-filter="all">全部</button>
           <button type="button" data-filter="blocked">仅 BLOCKED</button>
           <button type="button" data-filter="pass">仅 PASS</button>
         </div>
-        <div class="shown-count" aria-live="polite">显示 50 / 50</div>
+        <div class="shown-count" aria-live="polite">显示 80 / 80</div>
       </div>
+      <h3>首轮：30 个代表算子场景</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>类别</th><th>算子</th><th>dtype</th><th>Shape</th><th>X_ONLY</th><th>ALLREDUCE_PLUS_X</th></tr></thead>
+          <tbody>
+            <tr data-status="pass"><td>01</td><td class="kind">Vector</td><td>Add</td><td>FP32</td><td>40 × 262144</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>02</td><td class="kind">Vector</td><td>Mul</td><td>FP32</td><td>40 × 262144</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>03</td><td class="kind">Vector</td><td>Exp</td><td>FP32</td><td>40 × 262144</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>04</td><td class="kind">Vector</td><td>Sigmoid</td><td>FP32</td><td>40 × 262144</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>05</td><td class="kind">Vector</td><td>ReLU</td><td>FP32</td><td>40 × 262144</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>06</td><td class="kind">Vector</td><td>SiLU</td><td>FP32</td><td>40 × 262144</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>07</td><td class="kind">Vector</td><td>GELU</td><td>FP32</td><td>40 × 262144</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>08</td><td class="kind">Vector</td><td>Cast → BF16</td><td>FP32</td><td>40 × 262144</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>09</td><td class="kind">Vector</td><td>ReduceSum</td><td>FP32</td><td>40 × 151936</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>10</td><td class="kind">Vector</td><td>Softmax</td><td>FP32</td><td>40 × 151936</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>11</td><td class="kind">Vector</td><td>Sort</td><td>FP32</td><td>40 × 151936</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>12</td><td class="kind">Vector</td><td>TopK</td><td>FP32</td><td>40 × 151936</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>13</td><td class="kind">Cube</td><td>MatMul</td><td>BF16</td><td>M1024 · K4096 · N4096</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>14</td><td class="kind">Cube</td><td>BatchMatMul</td><td>BF16</td><td>B20 · M/K/N512</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>15</td><td class="kind">Cube</td><td>AddMM</td><td>BF16</td><td>M1024 · K4096 · N4096</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>16</td><td class="kind">Cube</td><td>Conv2D</td><td>BF16</td><td>B20 · C64→128 · 56² · K3</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>17</td><td class="kind">Cube</td><td>Conv3D</td><td>BF16</td><td>B20 · C32→64 · D8 · 24² · K3</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>18</td><td class="kind">Cube</td><td>QuantBatchMatmul</td><td>INT8</td><td>M1024 · K4096 · N4096</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>19</td><td class="kind">Fused</td><td>LayerNorm</td><td>BF16</td><td>4096 × 5120</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>20</td><td class="kind">Fused</td><td>RMSNorm</td><td>BF16</td><td>4096 × 5120</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>21</td><td class="kind">Fused</td><td>AddRMSNorm</td><td>BF16</td><td>4096 × 5120</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>22</td><td class="kind">Fused</td><td>SwiGLU</td><td>BF16</td><td>4096 × 5120</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>23</td><td class="kind">Fused</td><td>RotaryMul</td><td>BF16</td><td>B1 · S4096 · H32 · D128</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>24</td><td class="kind">Attention</td><td>FusionAttention</td><td>BF16</td><td>B1 · S2048 · H32 · D128</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>25</td><td class="kind">Attention</td><td>PromptFlashAttention</td><td>BF16</td><td>B1 · S2048 · H32 · D128</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>26</td><td class="kind">Attention</td><td>IncreFlashAttention</td><td>BF16</td><td>B40 · KV2048 · H32/KH8 · D128</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="blocked"><td>27</td><td class="kind">Fused</td><td>FFN</td><td>BF16</td><td>T2048 · H5120 · I6400 · GELU</td><td><span class="badge pass">PASS</span></td><td><span class="badge blocked">BLOCKED</span></td></tr>
+            <tr data-status="pass"><td>28</td><td class="kind">Fused</td><td>GroupedMatmul</td><td>BF16</td><td>G20 · M64 · K/N1024</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>29</td><td class="kind">Fused</td><td>CANN npu_top_k_top_p</td><td>BF16</td><td>B40 · V151936 · K50 · P0.9</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+            <tr data-status="pass"><td>30</td><td class="kind">Fused</td><td>vLLM npu_apply_top_k_top_p</td><td>BF16</td><td>B40 · V151936 · K50 · P0.9</td><td><span class="badge pass">PASS</span></td><td><span class="badge pass">PASS</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">GroupedMatmul 首次预检因测试适配入口问题标记为 UNSUPPORTED；修复适配器后补跑 X_ONLY PASS，随后 contention PASS。这里展示最终有效结论。</p>
+      <h3>第二轮：50 个已通过算子的低并行场景</h3>
       <div class="table-wrap">
         <table>
           <thead><tr><th>#</th><th>类别</th><th>算子</th><th>dtype</th><th>Shape</th><th>X_ONLY</th><th>ALLREDUCE_PLUS_X</th></tr></thead>
@@ -499,12 +540,14 @@
     <section class="section" id="evidence">
       <h2>证据与可复现性</h2>
       <dl class="facts">
-        <dt>50-case JSONL</dt><dd><code>/root/l00933108/.artifacts/operator-matrix/round2-good-operators-50-0cbf046.jsonl</code>（100 条记录）</dd>
-        <dt>首轮日志</dt><dd><code>/root/l00933108/.artifacts/operator-matrix/round2-good-operators-50-0cbf046.log</code></dd>
+        <dt>首轮 X_ONLY</dt><dd><code>/root/l00933108/.artifacts/operator-matrix/xccl-x-preflight-20260811-1050.jsonl</code>（30 条记录；GroupedMatmul 修复后另行补跑 PASS）</dd>
+        <dt>首轮 contention</dt><dd><code>/root/l00933108/.artifacts/operator-matrix/xccl-x-contention-20260811-1110.jsonl</code>（30 条记录）</dd>
+        <dt>第二轮 50-case</dt><dd><code>/root/l00933108/.artifacts/operator-matrix/round2-good-operators-50-0cbf046.jsonl</code>（100 条记录）</dd>
+        <dt>第二轮日志</dt><dd><code>/root/l00933108/.artifacts/operator-matrix/round2-good-operators-50-0cbf046.log</code></dd>
         <dt>ReduceSum 复验</dt><dd><code>/root/l00933108/.artifacts/operator-matrix/round2-candidates-repeat3-bc3e69e.partial.jsonl</code>（12 条有效 ReduceSum 记录）</dd>
         <dt>其余候选复验</dt><dd><code>/root/l00933108/.artifacts/operator-matrix/round2-unfinished-repeat3-bc65fd3.jsonl</code>（18 条记录）</dd>
         <dt>探索配置</dt><dd><code>configs/xccl-allreduce-x/exploration/round2-good-operators-50.yaml</code></dd>
-        <dt>最终部署提交</dt><dd><code>68be742a1924efb0684d5acf76527074cf9dff78</code></dd>
+        <dt>实验实现提交</dt><dd><code>68be742a1924efb0684d5acf76527074cf9dff78</code></dd>
       </dl>
       <div class="note">
         复验期间曾出现一次 <code>InitHcclComm HcclResult:7</code>。检查发现当时有外部 vLLM 占用 NPU 4/5；该次记录为 SETUP_FAILED，已排除，不计入算子分类。环境释放后重新执行，三个未完成候选均稳定复现 3/3。
