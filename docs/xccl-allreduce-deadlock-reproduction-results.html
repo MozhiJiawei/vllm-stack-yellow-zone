@@ -325,7 +325,7 @@
       <h1>AllReduce + X<br>死锁复现结果</h1>
       <p class="hero-copy">
         固定 A 侧为仅 rank 0 提交的 TP8 xLite/XCCL AllReduce，共执行 80 个算子与 shape 组合，
-        覆盖 Vector、Cube、Fused 和 Attention 四类执行路径，并确认 6 个矩阵内稳定阻塞条件。
+        并保留最初的自定义 TopK+TopP 独立回归锚点；最终确认 7 个稳定死锁复现条件。
       </p>
       <div class="meta-row">
         <span class="meta-pill">实验日期：2026-08-11</span>
@@ -339,19 +339,19 @@
   <main>
     <section class="summary-grid" aria-label="结果摘要">
       <article class="metric">
-        <div class="metric-label">探索场景</div>
+        <div class="metric-label">矩阵 case</div>
         <div class="metric-value">80</div>
         <div class="metric-detail">Vector 34 · Cube 17 · Fused 20 · Attention 9</div>
       </article>
       <article class="metric pass">
         <div class="metric-label">X_ONLY</div>
         <div class="metric-value">80 / 80</div>
-        <div class="metric-detail">全部可独立执行</div>
+        <div class="metric-detail">矩阵全部通过；回归锚点另计</div>
       </article>
       <article class="metric blocked">
-        <div class="metric-label">稳定阻塞</div>
-        <div class="metric-value">6</div>
-        <div class="metric-detail">FFN 1 · ReduceSum/Sort 4 · Attention 1</div>
+        <div class="metric-label">稳定回归</div>
+        <div class="metric-value">7</div>
+        <div class="metric-detail">矩阵内 6 · TopK+TopP 锚点 1</div>
       </article>
       <article class="metric pass">
         <div class="metric-label">并行通过</div>
@@ -364,9 +364,13 @@
       <h2>结论</h2>
       <p class="lead">
         不完整 AllReduce 对其他算子的影响不是“所有低并行算子都会阻塞”，而是明显依赖算子内部执行路径和 tiling。
-        稳定阻塞集中在 FFN、归约、排序以及 batch=1 的增量注意力路径。
+        稳定阻塞覆盖原始自定义 TopK+TopP 锚点，以及 FFN、归约、排序和 batch=1 的增量注意力路径。
       </p>
       <div class="finding-grid">
+        <article class="finding bad">
+          <strong>原始 TopK+TopP 回归锚点仍然稳定</strong>
+          自定义 npu_apply_top_k_top_p 使用 FP32、batch=4、vocab=151936、k=50、p=0.9 时稳定 BLOCKED。
+        </article>
         <article class="finding bad">
           <strong>ReduceSum 与 Sort 均稳定阻塞</strong>
           rows=1 和 rows=4 都满足 X_ONLY PASS、contention BLOCKED，说明外层 rows 数量不是决定因素。
@@ -414,9 +418,10 @@
     </section>
 
     <section class="section" id="regressions">
-      <h2>80-case 中的 6 个稳定坏例</h2>
-      <p>6 个候选均已独立重复确认，满足 <code>preflight: PASS</code> 与 <code>contention: BLOCKED_BY_A_ALLREDUCE</code>。</p>
+      <h2>稳定死锁复现：7 个</h2>
+      <p>包括 80-case 矩阵内的 6 个坏例，以及最初单独固化的 TopK+TopP 回归锚点；均满足 <code>preflight: PASS</code> 与 <code>contention: BLOCKED_BY_A_ALLREDUCE</code>。</p>
       <div class="bad-list">
+        <article class="bad-card"><div class="name">自定义 TopK + TopP</div><div class="shape">FP32 · B4 · V151936 · K50 · P0.9</div><div class="repeat">3 / 3 BLOCKED</div></article>
         <article class="bad-card"><div class="name">FFN</div><div class="shape">BF16 · T2048 · H5120 · I6400 · GELU</div><div class="repeat">3 / 3 BLOCKED</div></article>
         <article class="bad-card"><div class="name">ReduceSum</div><div class="shape">FP32 · 1 × 151936</div><div class="repeat">3 / 3 BLOCKED</div></article>
         <article class="bad-card"><div class="name">ReduceSum</div><div class="shape">FP32 · 4 × 151936</div><div class="repeat">3 / 3 BLOCKED</div></article>
@@ -425,13 +430,13 @@
         <article class="bad-card"><div class="name">IncreFlashAttention</div><div class="shape">BF16 · B1 · KV2048 · H32/KH8 · D128</div><div class="repeat">3 / 3 BLOCKED</div></article>
       </div>
       <p class="note">
-        原始自定义 TopK/TopP 坏例作为独立 regression，不计入这 80 个矩阵 case。加上它后，仓库内共有 7 个独立稳定 regression 配置。
+        TopK+TopP 是独立 regression，因此不改变 80 个矩阵 case 的统计口径；稳定 regression 总数为 7。
       </p>
     </section>
 
     <section class="section" id="matrix">
       <h2>80-case 完整结果</h2>
-      <p>80 个 case 按算子大类和算子名称统一排序；同一算子的不同 shape 连续排列。所有 case 最终均通过 X_ONLY。</p>
+      <p>80 个矩阵 case 按算子大类和算子名称统一排序；同一算子的不同 shape 连续排列。TopK+TopP 独立回归锚点已在上方单独展示，不在本表重复计数。</p>
       <div class="table-tools">
         <div class="filter-group" role="group" aria-label="结果筛选">
           <button type="button" class="active" data-filter="all">全部</button>
@@ -539,6 +544,7 @@
         <dt>低并行日志</dt><dd><code>/root/l00933108/.artifacts/operator-matrix/round2-good-operators-50-0cbf046.log</code></dd>
         <dt>ReduceSum 复验</dt><dd><code>/root/l00933108/.artifacts/operator-matrix/round2-candidates-repeat3-bc3e69e.partial.jsonl</code>（12 条有效 ReduceSum 记录）</dd>
         <dt>其余候选复验</dt><dd><code>/root/l00933108/.artifacts/operator-matrix/round2-unfinished-repeat3-bc65fd3.jsonl</code>（18 条记录）</dd>
+        <dt>TopK+TopP 回归</dt><dd><code>/root/l00933108/.artifacts/operator-matrix/regression-topk-topp-2c2a0ad.jsonl</code>（3 次 X_ONLY PASS、3 次 contention BLOCKED）</dd>
         <dt>探索配置</dt><dd><code>configs/xccl-allreduce-x/exploration/round2-good-operators-50.yaml</code></dd>
         <dt>实验实现提交</dt><dd><code>68be742a1924efb0684d5acf76527074cf9dff78</code></dd>
       </dl>
