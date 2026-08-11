@@ -16,6 +16,8 @@ Current stable regressions:
 
 - `custom-top-k-top-p-fp32-b4-v151936.yaml`
 - `ffn-bf16-t2048-h5120-i6400-gelu.yaml`
+- `reduce-sum-fp32-r1-c151936.yaml`
+- `reduce-sum-fp32-r4-c151936.yaml`
 
 Run a regression through the namespace-preserving Ascend launcher, for example:
 

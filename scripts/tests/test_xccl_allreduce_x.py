@@ -28,6 +28,18 @@ FFN_REGRESSION = (
     / "regressions"
     / "ffn-bf16-t2048-h5120-i6400-gelu.yaml"
 )
+REDUCE_SUM_REGRESSIONS = (
+    REPO_ROOT
+    / "configs"
+    / "xccl-allreduce-x"
+    / "regressions"
+    / "reduce-sum-fp32-r1-c151936.yaml",
+    REPO_ROOT
+    / "configs"
+    / "xccl-allreduce-x"
+    / "regressions"
+    / "reduce-sum-fp32-r4-c151936.yaml",
+)
 ROUND2_EXPLORATION = (
     REPO_ROOT
     / "configs"
@@ -156,6 +168,34 @@ class ConfigTests(unittest.TestCase):
             scenario.expect,
         )
         self.assertEqual(3, settings.repeat)
+
+    def test_reduce_sum_regressions_are_independent_and_exact(self) -> None:
+        expected = (
+            ("regression.reduce_sum.f32.r1.c151936", 1),
+            ("regression.reduce_sum.f32.r4.c151936", 4),
+        )
+        for path, (scenario_id, rows) in zip(
+            REDUCE_SUM_REGRESSIONS, expected, strict=True
+        ):
+            with self.subTest(path=path.name):
+                scenarios, settings, _baseline = load_config(path)
+                self.assertEqual(1, len(scenarios))
+                scenario = scenarios[0]
+                self.assertEqual(scenario_id, scenario.id)
+                self.assertEqual("reduce_sum", scenario.operator)
+                self.assertEqual("float32", scenario.dtype)
+                self.assertEqual(
+                    {"profile": "regression", "rows": rows, "cols": 151936},
+                    scenario.shape,
+                )
+                self.assertEqual(
+                    {
+                        "preflight": "PASS",
+                        "contention": "BLOCKED_BY_A_ALLREDUCE",
+                    },
+                    scenario.expect,
+                )
+                self.assertEqual(3, settings.repeat)
 
     def test_unknown_shape_profile_is_rejected(self) -> None:
         raw = deepcopy(self.raw)
