@@ -46,7 +46,8 @@ start_instance() {
       unset ASCEND_RT_VISIBLE_DEVICES
       export ENPU_LOG_LEVEL=4
       export MASTER_PORT='$master_port'
-      export HCCL_SOCKET_PORT_RANGE='$socket_range'
+      export HCCL_HOST_SOCKET_PORT_RANGE='$socket_range'
+      export HCCL_NPU_SOCKET_PORT_RANGE='$socket_range'
       nohup vllm serve /opt/model/Qwen3-4B/ \
         --max_model_len 10240 \
         --tensor-parallel-size 4 \

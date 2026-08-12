@@ -56,6 +56,16 @@ def test_native_pair_start_reserves_memory_for_the_peer() -> None:
     assert "--gpu-memory-utilization '$GPU_MEMORY_UTILIZATION'" in script
 
 
+def test_native_pair_start_isolates_host_and_npu_hccl_ports() -> None:
+    script = START.read_text(encoding="utf-8")
+
+    assert "export HCCL_HOST_SOCKET_PORT_RANGE='$socket_range'" in script
+    assert "export HCCL_NPU_SOCKET_PORT_RANGE='$socket_range'" in script
+    assert "HCCL_SOCKET_PORT_RANGE" not in script
+    assert "61000-61050" in script
+    assert "62000-62050" in script
+
+
 def test_installer_requires_protocol_v4_sampling_patch() -> None:
     script = INSTALLER.read_text(encoding="utf-8")
 

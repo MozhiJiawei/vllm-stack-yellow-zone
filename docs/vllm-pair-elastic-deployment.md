@@ -323,7 +323,8 @@ ctr -n k8s.io tasks exec --exec-id start-a cont1_ljw \
   /bin/bash -lc '
     cd /workspace
     export MASTER_PORT=29504
-    export HCCL_SOCKET_PORT_RANGE=61000-61050
+    export HCCL_HOST_SOCKET_PORT_RANGE=61000-61050
+    export HCCL_NPU_SOCKET_PORT_RANGE=61000-61050
     exec vllm serve /opt/model/Qwen3-4B \
       --tensor-parallel-size 4 \
       --async-scheduling \
@@ -348,14 +349,15 @@ ctr -n k8s.io tasks exec --exec-id ready-a cont1_ljw \
 ```
 
 然后用相同模型参数启动备实例，只需避开服务端口、`MASTER_PORT` 和
-`HCCL_SOCKET_PORT_RANGE`：
+`HCCL_HOST_SOCKET_PORT_RANGE` 和 `HCCL_NPU_SOCKET_PORT_RANGE`：
 
 ```bash
 ctr -n k8s.io tasks exec --exec-id start-b cont2_ljw \
   /bin/bash -lc '
     cd /workspace
     export MASTER_PORT=29510
-    export HCCL_SOCKET_PORT_RANGE=62000-62050
+    export HCCL_HOST_SOCKET_PORT_RANGE=62000-62050
+    export HCCL_NPU_SOCKET_PORT_RANGE=62000-62050
     exec vllm serve /opt/model/Qwen3-4B \
       --tensor-parallel-size 4 \
       --async-scheduling \
