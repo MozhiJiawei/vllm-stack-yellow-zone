@@ -308,10 +308,10 @@ DP（Data Parallel）；DP 支持仍在开发中。
 模型原来如何启动，安装调度器后仍按原参数启动即可，也不再设置任何
 `VLLM_PAIR_SCHED_*` 环境变量。
 
-vCANN 已经按 `npu_info.config` 完成显存切分，vLLM 看到的是当前实例切分后
-的显存配额，而不是整卡显存。因此两个实例都应在各自配额内使用
-`--gpu-memory-utilization 0.85`；不能再次按整卡比例折算成 `0.35`。这仍
-属于 vCANN 部署参数，不是 pair scheduler 新增的参数。
+当前 native xLite 黄区容器共享同一组完整物理 NPU，没有 vCANN 显存切分，
+因此两个实例都使用已验证的 `--gpu-memory-utilization 0.35`，为 peer 保留
+足够显存。只有在容器已通过 vCANN 获得独立显存配额时，才应改用配额内的
+利用率（例如 `0.85`）。这仍属于部署参数，不是 pair scheduler 新增参数。
 
 下面命令只是黄区现有 TP4、async scheduling 和 xLite full graph 配置的
 启动示例，这些参数不是调度器的强制配置。
@@ -329,7 +329,7 @@ ctr -n k8s.io tasks exec --exec-id start-a cont1_ljw \
       --async-scheduling \
       --max-model-len 10240 \
       --max-num-batched-tokens 1024 \
-      --gpu-memory-utilization 0.85 \
+      --gpu-memory-utilization 0.35 \
       --block-size 128 \
       --additional-config='"'"'{"xlite_graph_config":{"enabled":true,"full_mode":true}}'"'"' \
       --served-model-name Qwen3-4B \
@@ -361,7 +361,7 @@ ctr -n k8s.io tasks exec --exec-id start-b cont2_ljw \
       --async-scheduling \
       --max-model-len 10240 \
       --max-num-batched-tokens 1024 \
-      --gpu-memory-utilization 0.85 \
+      --gpu-memory-utilization 0.35 \
       --block-size 128 \
       --additional-config='"'"'{"xlite_graph_config":{"enabled":true,"full_mode":true}}'"'"' \
       --served-model-name Qwen3-4B \

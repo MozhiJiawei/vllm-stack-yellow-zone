@@ -6,6 +6,7 @@ PRIMARY_CONTAINER=${PRIMARY_CONTAINER:-cont1_ljw}
 STANDBY_CONTAINER=${STANDBY_CONTAINER:-cont2_ljw}
 STARTUP_TIMEOUT_SECONDS=${STARTUP_TIMEOUT_SECONDS:-900}
 STARTUP_POLL_SECONDS=${STARTUP_POLL_SECONDS:-2}
+GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.35}
 CTR_BIN=${CTR_BIN:-/root/l00933108/.tools/containerd/bin/ctr}
 
 task_field() {
@@ -50,7 +51,7 @@ start_instance() {
         --max_model_len 10240 \
         --tensor-parallel-size 4 \
         --max-num-batched-tokens 1024 \
-        --gpu-memory-utilization 0.85 \
+        --gpu-memory-utilization '$GPU_MEMORY_UTILIZATION' \
         --async-scheduling \
         --block-size 128 \
         --additional-config='{\"xlite_graph_config\":{\"enabled\":true,\"full_mode\":true}}' \

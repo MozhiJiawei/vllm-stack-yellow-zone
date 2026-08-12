@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PREPARE = ROOT / "scripts" / "pair-scheduler" / "prepare-yellow-zone.sh"
+START = ROOT / "scripts" / "pair-scheduler" / "start-yellow-zone.sh"
 RECREATE = (
     ROOT
     / "scripts"
@@ -46,6 +47,13 @@ def test_native_container_inputs_are_pinned() -> None:
     assert "restart-vcann-xlite-containers.sh" not in script
     assert "runtime/vcann" not in script.lower()
     assert "tasks exec" not in script
+
+
+def test_native_pair_start_reserves_memory_for_the_peer() -> None:
+    script = START.read_text(encoding="utf-8")
+
+    assert "GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.35}" in script
+    assert "--gpu-memory-utilization '$GPU_MEMORY_UTILIZATION'" in script
 
 
 def test_installer_requires_protocol_v4_sampling_patch() -> None:
