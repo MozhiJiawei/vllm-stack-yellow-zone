@@ -12,6 +12,14 @@ RECREATE = (
     / "recreate-native-xlite-containers.sh"
 )
 INSTALLER = ROOT / "scheduler" / "install-pair-scheduler.sh"
+NATIVE = (
+    ROOT
+    / "scheduler"
+    / "src"
+    / "vllm_pair_scheduler"
+    / "native"
+    / "pair_sched.c"
+)
 
 
 def test_prepare_uses_native_container_entry_point() -> None:
@@ -47,3 +55,11 @@ def test_installer_requires_protocol_v4_sampling_patch() -> None:
     assert "worker.sample_tokens = gated_sample_tokens" in script
     assert "protocol=4" in script
     assert "protocol=3" not in script
+
+
+def test_native_structured_logs_use_the_protocol_constant() -> None:
+    source = NATIVE.read_text(encoding="utf-8")
+
+    assert source.count('"\\"protocol\\":%u') == 2
+    assert source.count("PS_VERSION,") >= 2
+    assert '"\\"protocol\\":3' not in source

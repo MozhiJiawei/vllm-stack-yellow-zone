@@ -214,7 +214,8 @@ static void fail_pair(shared_state *shared, int reason)
             memory_order_acq_rel, memory_order_acquire)) {
         fprintf(stderr,
                 "{\"component\":\"vllm-pair-scheduler\",\"event\":\"failed\","
-                "\"protocol\":3,\"epoch\":%llu,\"reason\":%d}\n",
+                "\"protocol\":%u,\"epoch\":%llu,\"reason\":%d}\n",
+                PS_VERSION,
                 (unsigned long long)shared->epoch, effective_reason);
     }
     wake_everyone(shared);
@@ -675,7 +676,8 @@ void *ps_open(const char *path, int create, int instance,
         ctx->coordinator_started = true;
         fprintf(stderr,
                 "{\"component\":\"vllm-pair-scheduler\",\"event\":\"started\","
-                "\"protocol\":3,\"epoch\":%llu,\"workers\":%u}\n",
+                "\"protocol\":%u,\"epoch\":%llu,\"workers\":%u}\n",
+                PS_VERSION,
                 (unsigned long long)epoch, worker_count);
     }
     return ctx;
