@@ -81,6 +81,8 @@ def test_aisbench_uses_mindie_image_as_cpu_only_pair_client() -> None:
     assert "run_client B 10041" in script
     assert "synthetic_gen" in script
     assert "DRY_RUN=${DRY_RUN:-0}" in script
+    assert "TARGETS=${TARGETS:-AB}" in script
+    assert '[[ $TARGETS == A || $TARGETS == AB ]]' in script
 
 
 def test_installer_requires_protocol_v4_sampling_patch() -> None:

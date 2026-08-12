@@ -12,6 +12,7 @@ REQUESTS_PER_INSTANCE=${REQUESTS_PER_INSTANCE:-32}
 BATCH_SIZE=${BATCH_SIZE:-4}
 REQUEST_RATE=${REQUEST_RATE:-0}
 DRY_RUN=${DRY_RUN:-0}
+TARGETS=${TARGETS:-AB}
 
 fail() {
   echo "ERROR: $*" >&2
@@ -25,8 +26,11 @@ for value in "$INPUT_TOKENS" "$OUTPUT_TOKENS" \
   [[ $value =~ ^[1-9][0-9]*$ ]] || fail "positive integer required: $value"
 done
 [[ $DRY_RUN == 0 || $DRY_RUN == 1 ]] || fail "DRY_RUN must be 0 or 1"
+[[ $TARGETS == A || $TARGETS == AB ]] || fail "TARGETS must be A or AB"
 
-for port in 10040 10041; do
+ports=(10040)
+[[ $TARGETS == A ]] || ports+=(10041)
+for port in "${ports[@]}"; do
   curl --fail --silent --max-time 3 \
     "http://127.0.0.1:$port/v1/models" >/dev/null ||
     fail "vLLM service is not ready on port $port"
@@ -123,15 +127,20 @@ PY
     ' _ "${dry_arg[@]}" >"$output_dir/client.log" 2>&1
 }
 
-echo "AISBENCH_START run=$run_id input=$INPUT_TOKENS output=$OUTPUT_TOKENS requests_per_instance=$REQUESTS_PER_INSTANCE batch=$BATCH_SIZE request_rate=$REQUEST_RATE dry_run=$DRY_RUN"
+echo "AISBENCH_START run=$run_id targets=$TARGETS input=$INPUT_TOKENS output=$OUTPUT_TOKENS requests_per_instance=$REQUESTS_PER_INSTANCE batch=$BATCH_SIZE request_rate=$REQUEST_RATE dry_run=$DRY_RUN"
 run_client A 10040 "$run_root/A" &
 pid_a=$!
-run_client B 10041 "$run_root/B" &
-pid_b=$!
+pid_b=
+if [[ $TARGETS == AB ]]; then
+  run_client B 10041 "$run_root/B" &
+  pid_b=$!
+fi
 
 status=0
 wait "$pid_a" || status=1
-wait "$pid_b" || status=1
+if [[ -n $pid_b ]]; then
+  wait "$pid_b" || status=1
+fi
 if (( status != 0 )); then
   echo "ERROR: AISBench failed; inspect $run_root/A/client.log and $run_root/B/client.log" >&2
   exit "$status"
