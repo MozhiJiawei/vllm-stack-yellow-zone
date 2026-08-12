@@ -51,6 +51,13 @@
 - The service command loads `C:\ProgramData\VllmStackBridge\privoxy\bridge.conf`.
 - End-to-end HTTPS access from the Ascend environment through the proxy has been verified against Baidu and GitHub.
 
+## AISBench performance reporting
+
+- When reporting inference performance, use the metrics printed by AISBench as the authoritative source. Copy metric names and values from the relevant AISBench `client.log` result table; do not substitute values from service logs, wall-clock estimates, ad hoc scripts, or manual calculations.
+- Always identify the AISBench artifact directory or exact `client.log` that supports the reported values. For paired runs, report the A-side and B-side AISBench results separately as printed.
+- Do not present sums, averages, percentage changes, throughput ratios, or other derived values as AISBench output. If a comparison requires derived values, label them explicitly as calculated values, show the AISBench source values used, and keep them separate from the verbatim AISBench results.
+- If AISBench did not print a requested metric, state that it is unavailable from the AISBench output instead of inferring or inventing it. Preserve units and precision exactly as AISBench printed them.
+
 ## Current Ascend environment state
 
 ### Container lifecycle policy
