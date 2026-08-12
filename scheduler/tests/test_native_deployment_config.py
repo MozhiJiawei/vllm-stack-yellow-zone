@@ -72,6 +72,10 @@ def test_aisbench_uses_mindie_image_as_cpu_only_pair_client() -> None:
 
     assert "mindie:2.3.1.B020" in script
     assert "--net-host" in script
+    assert (
+        "src=/usr/local/Ascend/driver,dst=/usr/local/Ascend/driver,"
+        "options=rbind:ro"
+    ) in script
     assert "--device" not in script
     assert "run_client A 10040" in script
     assert "run_client B 10041" in script

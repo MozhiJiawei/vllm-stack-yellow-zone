@@ -56,6 +56,7 @@ run_client() {
     --env "AISBENCH_REQUESTS=$REQUESTS_PER_INSTANCE" \
     --env "AISBENCH_BATCH_SIZE=$BATCH_SIZE" \
     --env "AISBENCH_REQUEST_RATE=$REQUEST_RATE" \
+    --mount "type=bind,src=/usr/local/Ascend/driver,dst=/usr/local/Ascend/driver,options=rbind:ro" \
     --mount "type=bind,src=$MODEL_ROOT,dst=/opt/model,options=rbind:ro" \
     --mount "type=bind,src=$output_dir,dst=/results,options=rbind:rw" \
     "$IMAGE" "$name" /bin/bash -lc '
