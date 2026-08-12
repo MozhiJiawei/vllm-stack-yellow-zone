@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PREPARE = ROOT / "scripts" / "pair-scheduler" / "prepare-yellow-zone.sh"
 START = ROOT / "scripts" / "pair-scheduler" / "start-yellow-zone.sh"
+AISBENCH = ROOT / "scripts" / "pair-scheduler" / "run-aisbench-yellow-zone.sh"
 RECREATE = (
     ROOT
     / "scripts"
@@ -64,6 +65,18 @@ def test_native_pair_start_isolates_host_and_npu_hccl_ports() -> None:
     assert "HCCL_SOCKET_PORT_RANGE" not in script
     assert "61000-61050" in script
     assert "62000-62050" in script
+
+
+def test_aisbench_uses_mindie_image_as_cpu_only_pair_client() -> None:
+    script = AISBENCH.read_text(encoding="utf-8")
+
+    assert "mindie:2.3.1.B020" in script
+    assert "--net-host" in script
+    assert "--device" not in script
+    assert "run_client A 10040" in script
+    assert "run_client B 10041" in script
+    assert "synthetic_gen" in script
+    assert "DRY_RUN=${DRY_RUN:-0}" in script
 
 
 def test_installer_requires_protocol_v4_sampling_patch() -> None:
