@@ -8,6 +8,17 @@ STARTUP_TIMEOUT_SECONDS=${STARTUP_TIMEOUT_SECONDS:-900}
 STARTUP_POLL_SECONDS=${STARTUP_POLL_SECONDS:-2}
 GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.35}
 CTR_BIN=${CTR_BIN:-/root/l00933108/.tools/containerd/bin/ctr}
+TARGETS=${TARGETS:-AB}
+REQUIRE_SCHEDULER=${REQUIRE_SCHEDULER:-1}
+
+[[ $TARGETS == A || $TARGETS == AB ]] || {
+  echo "ERROR: TARGETS must be A or AB" >&2
+  exit 1
+}
+[[ $REQUIRE_SCHEDULER == 0 || $REQUIRE_SCHEDULER == 1 ]] || {
+  echo "ERROR: REQUIRE_SCHEDULER must be 0 or 1" >&2
+  exit 1
+}
 
 task_field() {
   local container=$1
@@ -75,8 +86,10 @@ wait_ready() {
     if container_exec "$container" /bin/bash -lc "
         set -euo pipefail
         curl --fail --silent --max-time 2 http://127.0.0.1:$port/v1/models >/dev/null
-        vllm-pair-scheduler-inspect --json |
-          python -c 'import json,sys; value=json.load(sys.stdin); assert value[\"state\"] == \"RUNNING\"; assert value[\"instances\"][\"$instance\"][\"registration_complete\"]'
+        if [[ $REQUIRE_SCHEDULER == 1 ]]; then
+          vllm-pair-scheduler-inspect --json |
+            python -c 'import json,sys; value=json.load(sys.stdin); assert value[\"state\"] == \"RUNNING\"; assert value[\"instances\"][\"$instance\"][\"registration_complete\"]'
+        fi
       " >/dev/null 2>&1; then
       echo "PAIR_INSTANCE_READY instance=$instance container=$container port=$port"
       return 0
@@ -92,9 +105,13 @@ start_instance "$PRIMARY_CONTAINER" A 10040 29504 \
   61000-61050 /workspace/llm-4b-pair-cont1.log
 wait_ready "$PRIMARY_CONTAINER" A 10040
 
-start_instance "$STANDBY_CONTAINER" B 10041 29510 \
-  62000-62050 /workspace/llm-4b-pair-cont2.log
-wait_ready "$STANDBY_CONTAINER" B 10041
+if [[ $TARGETS == AB ]]; then
+  start_instance "$STANDBY_CONTAINER" B 10041 29510 \
+    62000-62050 /workspace/llm-4b-pair-cont2.log
+  wait_ready "$STANDBY_CONTAINER" B 10041
+fi
 
-echo "PAIR_READY pair_id=default ports=10040,10041"
-echo "Inspect with: vllm-pair-scheduler-inspect --json"
+echo "MODEL_READY targets=$TARGETS scheduler_required=$REQUIRE_SCHEDULER"
+if [[ $REQUIRE_SCHEDULER == 1 ]]; then
+  echo "Inspect with: vllm-pair-scheduler-inspect --json"
+fi

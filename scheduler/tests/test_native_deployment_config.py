@@ -57,6 +57,15 @@ def test_native_pair_start_reserves_memory_for_the_peer() -> None:
     assert "--gpu-memory-utilization '$GPU_MEMORY_UTILIZATION'" in script
 
 
+def test_native_start_supports_scheduler_free_single_instance_baseline() -> None:
+    script = START.read_text(encoding="utf-8")
+
+    assert "TARGETS=${TARGETS:-AB}" in script
+    assert "REQUIRE_SCHEDULER=${REQUIRE_SCHEDULER:-1}" in script
+    assert "if [[ $TARGETS == AB ]]" in script
+    assert "if [[ $REQUIRE_SCHEDULER == 1 ]]" in script
+
+
 def test_native_pair_start_isolates_host_and_npu_hccl_ports() -> None:
     script = START.read_text(encoding="utf-8")
 
