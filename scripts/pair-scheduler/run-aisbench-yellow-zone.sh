@@ -75,31 +75,37 @@ def replace_once(text: str, old: str, new: str, path: Path) -> str:
 
 
 model_path = Path(os.environ["AISBENCH_MODEL_CONFIG"])
+port = os.environ["AISBENCH_PORT"]
+output_tokens = os.environ["AISBENCH_OUTPUT_TOKENS"]
+batch_size = os.environ["AISBENCH_BATCH_SIZE"]
+request_rate = os.environ["AISBENCH_REQUEST_RATE"]
 text = model_path.read_text(encoding="utf-8")
 replacements = {
     "path=\"\"": "path=\"/opt/model/Qwen3-4B\"",
     "model=\"\"": "model=\"Qwen3-4B\"",
-    "host_port = 8080": f"host_port = {os.environ['AISBENCH_PORT']}",
-    "max_out_len = 512": f"max_out_len = {os.environ['AISBENCH_OUTPUT_TOKENS']}",
-    "batch_size=1": f"batch_size={os.environ['AISBENCH_BATCH_SIZE']}",
-    "request_rate = 0": f"request_rate = {os.environ['AISBENCH_REQUEST_RATE']}",
+    "host_port = 8080": f"host_port = {port}",
+    "max_out_len = 512": f"max_out_len = {output_tokens}",
+    "batch_size=1": f"batch_size={batch_size}",
+    "request_rate = 0": f"request_rate = {request_rate}",
 }
 for old, new in replacements.items():
     text = replace_once(text, old, new, model_path)
 model_path.write_text(text, encoding="utf-8")
 
 synthetic_path = Path(os.environ["AISBENCH_SYNTHETIC_CONFIG"])
+requests = os.environ["AISBENCH_REQUESTS"]
+input_tokens = os.environ["AISBENCH_INPUT_TOKENS"]
 text = synthetic_path.read_text(encoding="utf-8")
 text = replace_once(
     text,
     "\"RequestCount\": 10",
-    f"\"RequestCount\": {os.environ['AISBENCH_REQUESTS']}",
+    f"\"RequestCount\": {requests}",
     synthetic_path,
 )
 text = replace_once(
     text,
     "\"RequestSize\": 10",
-    f"\"RequestSize\": {os.environ['AISBENCH_INPUT_TOKENS']}",
+    f"\"RequestSize\": {input_tokens}",
     synthetic_path,
 )
 synthetic_path.write_text(text, encoding="utf-8")
