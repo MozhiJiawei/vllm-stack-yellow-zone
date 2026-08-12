@@ -16,8 +16,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#define PS_MAGIC UINT64_C(0x5650534348454433)
-#define PS_VERSION 3U
+#define PS_MAGIC UINT64_C(0x5650534348454434)
+#define PS_VERSION 4U
 #define PS_INSTANCES 2
 #define PS_MAX_WORKERS 64
 #define PS_NO_OWNER (-1)
@@ -475,7 +475,7 @@ static int validate_layout(shared_state *shared, uint64_t epoch,
     if (shared->magic != PS_MAGIC || shared->version != PS_VERSION ||
         shared->size != sizeof(*shared)) {
         set_error(error, error_size,
-                  "shared-memory protocol mismatch (need v3)");
+                  "shared-memory protocol mismatch (need v4)");
         return -1;
     }
     if (shared->epoch != epoch) {
@@ -1105,7 +1105,7 @@ int ps_inspect(const char *path, uint64_t *out, size_t count,
     if (shared->magic != PS_MAGIC || shared->version != PS_VERSION ||
         shared->size != sizeof(*shared)) {
         set_error(error, error_size,
-                  "shared-memory protocol mismatch (need v3)");
+                  "shared-memory protocol mismatch (need v4)");
         munmap(shared, sizeof(*shared));
         close(fd);
         return -1;

@@ -24,7 +24,7 @@ class PairSchedulerConfig:
     def __post_init__(self) -> None:
         if self.mode not in {"off", "elastic"}:
             if self.mode == "fix-shared":
-                raise ValueError("fix-shared is not implemented in protocol v3")
+                raise ValueError("fix-shared is not implemented in protocol v4")
             raise ValueError(f"unsupported pair scheduler mode: {self.mode!r}")
         if self.mode == "off":
             return
@@ -35,9 +35,9 @@ class PairSchedulerConfig:
         if not self.pair_id:
             raise ValueError("pair_id is required in elastic mode")
         if self.role == "primary" and self.instance_id != "A":
-            raise ValueError("protocol v3 requires primary role on instance A")
+            raise ValueError("protocol v4 requires primary role on instance A")
         if self.role == "standby" and self.instance_id != "B":
-            raise ValueError("protocol v3 requires standby role on instance B")
+            raise ValueError("protocol v4 requires standby role on instance B")
         for name in (
             "init_timeout_ms",
             "forward_timeout_ms",

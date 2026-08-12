@@ -39,7 +39,7 @@ def test_unsupported_mode(mode: str) -> None:
         PairSchedulerConfig(mode=mode)
 
 
-def test_role_and_instance_are_fixed_in_v3() -> None:
+def test_role_and_instance_are_fixed_in_v4() -> None:
     with pytest.raises(ValueError, match="instance A"):
         PairSchedulerConfig(
             mode="elastic", role="primary", instance_id="B", pair_id="pair"

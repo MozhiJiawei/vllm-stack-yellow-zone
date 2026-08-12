@@ -39,9 +39,6 @@ def main() -> int:
     assert not starts
     assert intervals
     intervals.sort()
-    for left, right in zip(intervals, intervals[1:]):
-        assert left[1] <= right[0], f"overlapping forwards: {left} and {right}"
-
     sampling = {}
     for record in records:
         key = (record["instance"], record["iteration"])
@@ -49,13 +46,13 @@ def main() -> int:
             sampling[key] = [record["timestamp_ns"], None]
         elif record["event"] == "sampling_end":
             sampling[key][1] = record["timestamp_ns"]
-    overlap = any(
-        sample[0] < forward[1] and forward[0] < sample[1]
-        for sample_key, sample in sampling.items()
-        for forward in intervals
-        if sample_key[0] != forward[2][0]
-    )
-    assert overlap, "expected sampling to overlap the peer's forward"
+    rounds = [
+        (start, sampling[key][1], key)
+        for start, _, key in intervals
+    ]
+    rounds.sort()
+    for left, right in zip(rounds, rounds[1:]):
+        assert left[1] <= right[0], f"overlapping execution rounds: {left} and {right}"
     waits = [start - requests[key] for start, _, key in intervals]
     handoffs = [
         right[0] - left[1]
@@ -64,7 +61,7 @@ def main() -> int:
     ]
     assert handoffs, "expected at least one handoff with a queued peer"
     print(
-        f"verified {len(intervals)} non-overlapping forwards and sampling overlap; "
+        f"verified {len(rounds)} non-overlapping forward+sampling rounds; "
         f"request_to_forward_us p50={percentile(waits, 0.50):.1f} "
         f"p99={percentile(waits, 0.99):.1f}; "
         f"handoff_us p50={percentile(handoffs, 0.50):.1f} "

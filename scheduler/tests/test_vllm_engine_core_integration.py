@@ -158,7 +158,7 @@ def test_mode_off_worker_hot_paths_remain_native() -> None:
     assert "PAIR_SCHED" not in uniproc_execute
 
 
-def test_worker_gate_is_installed_once_and_wraps_only_forward(monkeypatch) -> None:
+def test_worker_gate_holds_round_through_sampling(monkeypatch) -> None:
     _load_vllm_classes()
     from vllm.v1.executor import multiproc_executor
 
@@ -194,23 +194,40 @@ def test_worker_gate_is_installed_once_and_wraps_only_forward(monkeypatch) -> No
 
     def execute_model(output):
         trace.append(f"worker.execute:{output.name}")
-        return output.name
+        return None if output.name == "gated" else output.name
 
-    worker = SimpleNamespace(execute_model=execute_model)
+    def sample_tokens(grammar):
+        trace.append(f"worker.sample:{grammar}")
+        return grammar
+
+    worker = SimpleNamespace(
+        execute_model=execute_model,
+        sample_tokens=sample_tokens,
+    )
     assert (
         multiproc_executor._install_pair_worker_gate(worker, config, rank=2)
         is gate
     )
     assert calls == [{"worker_rank": 2, "worker_count": 4}]
 
-    assert worker.execute_model(_output("gated")) == "gated"
+    assert worker.execute_model(_output("gated")) is None
+    assert worker.sample_tokens("grammar") == "grammar"
     assert worker.execute_model(_output("empty", tokens=0)) == "empty"
+    assert worker.execute_model(_output("direct")) == "direct"
+    assert worker.sample_tokens("standalone") == "standalone"
 
     assert trace == [
         "gate.enter",
         "worker.execute:gated",
+        "worker.sample:grammar",
         "gate.leave:1:9",
         "worker.execute:empty",
+        "gate.enter",
+        "worker.execute:direct",
+        "gate.leave:1:9",
+        "gate.enter",
+        "worker.sample:standalone",
+        "gate.leave:1:9",
     ]
 
 
@@ -250,15 +267,24 @@ def test_uniproc_gate_is_installed_at_worker_boundary(monkeypatch) -> None:
 
     def execute_model(output):
         trace.append(f"worker.execute:{output.name}")
-        return output.name
+        return None
 
-    worker = SimpleNamespace(execute_model=execute_model)
+    def sample_tokens(grammar):
+        trace.append(f"worker.sample:{grammar}")
+        return grammar
+
+    worker = SimpleNamespace(
+        execute_model=execute_model,
+        sample_tokens=sample_tokens,
+    )
     assert uniproc_executor._install_pair_worker_gate(worker, config) is gate
     assert calls == [{"worker_rank": 0, "worker_count": 1}]
-    assert worker.execute_model(_output("gated")) == "gated"
+    assert worker.execute_model(_output("gated")) is None
+    assert worker.sample_tokens("grammar") == "grammar"
     assert trace == [
         "gate.enter",
         "worker.execute:gated",
+        "worker.sample:grammar",
         "gate.leave:1:9",
     ]
 
@@ -337,7 +363,8 @@ def test_installed_worker_gate_fails_pair_on_forward_exception(monkeypatch) -> N
     worker = SimpleNamespace(
         execute_model=lambda output: (_ for _ in ()).throw(
             RuntimeError("fake forward failed")
-        )
+        ),
+        sample_tokens=lambda grammar: grammar,
     )
     uniproc_executor._install_pair_worker_gate(worker, config)
 
@@ -398,7 +425,7 @@ def test_real_engine_core_sampling_exception_follows_native_path() -> None:
         engine.step_with_batch_queue()
 
 
-def test_real_worker_proc_gates_only_nonempty_execute_model(monkeypatch) -> None:
+def test_real_worker_proc_holds_gate_until_sample_tokens(monkeypatch) -> None:
     _, WorkerProc, _ = _load_vllm_classes()
     from vllm.v1.executor import multiproc_executor
 
@@ -426,7 +453,7 @@ def test_real_worker_proc_gates_only_nonempty_execute_model(monkeypatch) -> None
     class Worker:
         def execute_model(self, output):
             trace.append(f"worker.execute:{output.name}")
-            return output.name
+            return None if output.name == "one" else output.name
 
         def sample_tokens(self, grammar):
             trace.append(f"worker.sample:{grammar}")
@@ -473,9 +500,9 @@ def test_real_worker_proc_gates_only_nonempty_execute_model(monkeypatch) -> None
     assert trace == [
         "gate.enter",
         "worker.execute:one",
-        "gate.leave",
-        "output:one",
+        "output:None",
         "worker.sample:grammar",
+        "gate.leave",
         "output:grammar",
         "worker.execute:empty",
         "output:empty",
@@ -503,6 +530,9 @@ def test_real_worker_proc_forward_exception_fails_pair(monkeypatch) -> None:
     class Worker:
         def execute_model(self, output):
             raise RuntimeError("fake forward failed")
+
+        def sample_tokens(self, grammar):
+            return grammar
 
     class Gate:
         def enter_forward(self):
@@ -544,3 +574,89 @@ def test_real_worker_proc_forward_exception_fails_pair(monkeypatch) -> None:
     with pytest.raises(StopLoop):
         proc.worker_busy_loop()
     assert trace == ["gate.enter", "gate.fail:201", "output:RuntimeError"]
+
+
+def test_installed_worker_gate_fails_pair_on_sampling_exception(monkeypatch) -> None:
+    _load_vllm_classes()
+    from vllm.v1.executor import uniproc_executor
+
+    trace: list[str] = []
+
+    class Gate:
+        def enter_forward(self):
+            trace.append("gate.enter")
+            return 4, 12
+
+        def leave_forward(self, sequence, grant):
+            trace.append("gate.leave")
+
+        def fail(self, reason):
+            trace.append(f"gate.fail:{reason}")
+
+    worker = SimpleNamespace(
+        execute_model=lambda output: None,
+        sample_tokens=lambda grammar: (_ for _ in ()).throw(
+            RuntimeError("fake sampling failed")
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_pair_scheduler",
+        SimpleNamespace(create_worker_forward_gate_from_install=lambda **kwargs: Gate()),
+    )
+    monkeypatch.setattr(uniproc_executor.os.path, "isfile", lambda path: True)
+    config = SimpleNamespace(
+        parallel_config=SimpleNamespace(
+            pipeline_parallel_size=1,
+            nnodes_within_dp=1,
+            world_size=1,
+        )
+    )
+    uniproc_executor._install_pair_worker_gate(worker, config)
+
+    assert worker.execute_model(_output("one")) is None
+    with pytest.raises(RuntimeError, match="fake sampling failed"):
+        worker.sample_tokens("grammar")
+    assert trace == ["gate.enter", "gate.fail:202"]
+
+
+def test_installed_worker_gate_rejects_next_forward_before_sampling(monkeypatch) -> None:
+    _load_vllm_classes()
+    from vllm.v1.executor import uniproc_executor
+
+    trace: list[str] = []
+
+    class Gate:
+        def enter_forward(self):
+            trace.append("gate.enter")
+            return 5, 13
+
+        def leave_forward(self, sequence, grant):
+            trace.append("gate.leave")
+
+        def fail(self, reason):
+            trace.append(f"gate.fail:{reason}")
+
+    worker = SimpleNamespace(
+        execute_model=lambda output: None,
+        sample_tokens=lambda grammar: grammar,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm_pair_scheduler",
+        SimpleNamespace(create_worker_forward_gate_from_install=lambda **kwargs: Gate()),
+    )
+    monkeypatch.setattr(uniproc_executor.os.path, "isfile", lambda path: True)
+    config = SimpleNamespace(
+        parallel_config=SimpleNamespace(
+            pipeline_parallel_size=1,
+            nnodes_within_dp=1,
+            world_size=1,
+        )
+    )
+    uniproc_executor._install_pair_worker_gate(worker, config)
+
+    assert worker.execute_model(_output("one")) is None
+    with pytest.raises(RuntimeError, match="before sampling completed"):
+        worker.execute_model(_output("two"))
+    assert trace == ["gate.enter", "gate.fail:203"]

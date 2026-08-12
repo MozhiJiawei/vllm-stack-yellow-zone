@@ -16,6 +16,7 @@ ROLE=$2
 VLLM_SOURCE=$(readlink -f "${3:-/vllm-workspace/vllm}")
 SCHEDULER_SOURCE="$SOURCE_ROOT/scheduler"
 PATCH_FILE="$SOURCE_ROOT/patches/vllm-pair-elastic-scheduling.patch"
+MIGRATION_PATCH_FILE="$SOURCE_ROOT/patches/vllm-pair-elastic-scheduling-v3-to-v4.patch"
 SHM_DIR=/dev/shm/vllm-pair-scheduler
 CONFIG_DIR=/etc/vllm-pair-scheduler
 ROLE_FILE="$CONFIG_DIR/role"
@@ -32,6 +33,7 @@ fi
 
 test -f "$SCHEDULER_SOURCE/pyproject.toml"
 test -f "$PATCH_FILE"
+test -f "$MIGRATION_PATCH_FILE"
 test -f "$VLLM_SOURCE/vllm/v1/executor/uniproc_executor.py"
 test -f "$VLLM_SOURCE/vllm/v1/executor/multiproc_executor.py"
 command -v gcc >/dev/null
@@ -63,19 +65,20 @@ PAIR_FILES=(
   vllm/v1/executor/multiproc_executor.py
 )
 
-PATCHED=true
+V4_PATCHED=true
 for file in "${PAIR_FILES[@]}"; do
   if ! grep -q 'create_worker_forward_gate_from_install' "$file" ||
-      ! grep -q '/etc/vllm-pair-scheduler/role' "$file"; then
-    PATCHED=false
+      ! grep -q '/etc/vllm-pair-scheduler/role' "$file" ||
+      ! grep -q 'worker.sample_tokens = gated_sample_tokens' "$file" ||
+      ! grep -q 'pair scheduling v4' "$file"; then
+    V4_PATCHED=false
   fi
 done
 
-if $PATCHED; then
-  echo "vLLM patch already installed"
-else
-  if grep -q '_install_pair_worker_gate' "${PAIR_FILES[@]}"; then
-    python - "${PAIR_FILES[@]}" <<'PY'
+if $V4_PATCHED; then
+  echo "vLLM protocol v4 patch already installed"
+elif grep -q 'VLLM_PAIR_SCHED_MODE' "${PAIR_FILES[@]}"; then
+  python - "${PAIR_FILES[@]}" <<'PY'
 from pathlib import Path
 import sys
 
@@ -96,12 +99,22 @@ for name in sys.argv[1:]:
         text = text.replace(old, new)
     path.write_text(text, encoding="utf-8")
 PY
-  else
-    git -C / apply --no-index --ignore-space-change \
-      --directory="${VLLM_SOURCE#/}" --check "$PATCH_FILE"
-    git -C / apply --no-index --ignore-space-change \
-      --directory="${VLLM_SOURCE#/}" "$PATCH_FILE"
-  fi
+  git -C / apply --no-index --ignore-space-change \
+    --directory="${VLLM_SOURCE#/}" --check "$MIGRATION_PATCH_FILE"
+  git -C / apply --no-index --ignore-space-change \
+    --directory="${VLLM_SOURCE#/}" "$MIGRATION_PATCH_FILE"
+  echo "migrated legacy vLLM pair scheduler integration to protocol v4"
+elif grep -q '_install_pair_worker_gate' "${PAIR_FILES[@]}"; then
+  git -C / apply --no-index --ignore-space-change \
+    --directory="${VLLM_SOURCE#/}" --check "$MIGRATION_PATCH_FILE"
+  git -C / apply --no-index --ignore-space-change \
+    --directory="${VLLM_SOURCE#/}" "$MIGRATION_PATCH_FILE"
+  echo "migrated vLLM pair scheduler integration from protocol v3 to v4"
+else
+  git -C / apply --no-index --ignore-space-change \
+    --directory="${VLLM_SOURCE#/}" --check "$PATCH_FILE"
+  git -C / apply --no-index --ignore-space-change \
+    --directory="${VLLM_SOURCE#/}" "$PATCH_FILE"
 fi
 
 python -m py_compile "${PAIR_FILES[@]}"
@@ -109,11 +122,11 @@ python -m py_compile "${PAIR_FILES[@]}"
 install -d -m 1770 "$SHM_DIR"
 install -d -m 0755 "$CONFIG_DIR"
 if [[ $ROLE == primary ]]; then
-  printf 'protocol=3\n' >"$PRIMARY_MARKER.tmp"
+  printf 'protocol=4\n' >"$PRIMARY_MARKER.tmp"
   chmod 0660 "$PRIMARY_MARKER.tmp"
   mv -f "$PRIMARY_MARKER.tmp" "$PRIMARY_MARKER"
 elif [[ ! -f $PRIMARY_MARKER ]] ||
-    ! grep -qx 'protocol=3' "$PRIMARY_MARKER"; then
+    ! grep -qx 'protocol=4' "$PRIMARY_MARKER"; then
   echo "ERROR: primary install marker is not visible in $SHM_DIR" >&2
   echo "Mount the same host directory into both containers and install primary first." >&2
   exit 1

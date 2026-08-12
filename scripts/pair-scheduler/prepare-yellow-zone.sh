@@ -133,6 +133,8 @@ install_role() {
       grep -q '_install_pair_worker_gate' vllm/v1/executor/multiproc_executor.py
       grep -q 'enter_forward' vllm/v1/executor/multiproc_executor.py
       grep -q 'leave_forward' vllm/v1/executor/multiproc_executor.py
+      grep -q 'worker.sample_tokens = gated_sample_tokens' vllm/v1/executor/multiproc_executor.py
+      grep -q 'pair scheduling v4' vllm/v1/executor/multiproc_executor.py
     "
 }
 

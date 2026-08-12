@@ -4,6 +4,12 @@
 pair、PP=1；主备都是正常提供推理服务的实例，“主”只表示它负责共享内存
 调度决策。
 
+当前安装的是 protocol v4。每个非空生成 round 从 Worker
+`execute_model` 进入前获得授权，并一直持有到对应的 `sample_tokens` 返回；
+无需 sampling 的直接输出在 `execute_model` 返回处完成。这样 Sampler 不会
+与另一实例的 forward/collective 并发。该边界仍以 Host 调用返回为准，不包含
+返回后的异步 device tail。
+
 ## 1. 容器必须共享同一目录
 
 ### 1.1 两个必须增加的 `ctr run` 参数
@@ -391,7 +397,7 @@ rm -f /etc/vllm-pair-scheduler/role
 ```
 
 角色文件不存在时，补丁只在 worker 初始化阶段检查一次，然后保持原生
-`execute_model` 不变；推理热路径没有调度器条件判断。
+`execute_model` 和 `sample_tokens` 不变；推理热路径没有调度器条件判断。
 
 ## 附录：新增参数
 
@@ -404,5 +410,6 @@ rm -f /etc/vllm-pair-scheduler/role
 
 其余协议值不再对部署暴露：模式固定为 `elastic`，pair ID 固定为
 `default`，共享目录固定为 `/dev/shm/vllm-pair-scheduler`，初始化超时、
-forward 超时、心跳周期和对端超时分别固定为 30 秒、30 秒、100 毫秒和
-1 秒。
+execution-round 超时、心跳周期和对端超时分别固定为 30 秒、30 秒、
+100 毫秒和 1 秒。为保持接口兼容，execution-round 超时仍使用
+`forward_timeout_ms` 字段名。

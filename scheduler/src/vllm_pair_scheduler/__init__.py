@@ -1,4 +1,4 @@
-"""Shared-memory admission control at the vLLM WorkerProc forward boundary."""
+"""Shared-memory admission control for vLLM WorkerProc execution rounds."""
 
 from .config import PairSchedulerConfig
 from .gate import (

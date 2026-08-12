@@ -148,7 +148,7 @@ def test_v2_layout_is_rejected(tmp_path: Path) -> None:
         shm_path = next(tmp_path.glob("*.shm"))
         with shm_path.open("r+b", buffering=0) as shared:
             shared.seek(8)
-            shared.write(struct.pack("I", 2))
+            shared.write(struct.pack("I", 3))
         with pytest.raises(PairSchedulerTimeout, match="protocol mismatch"):
             SharedMemoryForwardGate(config(tmp_path, "standby", "B"))
 
@@ -179,7 +179,7 @@ def test_one_grant_is_consumed_by_all_workers(
         grants, _ = run_worker_round(a)
         assert len(grants) == 1
         snapshot = inspect_pair("test-pair", tmp_path)
-        assert snapshot["protocol_version"] == 3
+        assert snapshot["protocol_version"] == 4
         assert snapshot["instances"]["A"]["state"] == "IDLE"
         assert snapshot["instances"]["A"]["ready_mask"] == 0
         assert snapshot["instances"]["A"]["complete_mask"] == 0
@@ -257,7 +257,7 @@ def test_a_and_b_forwards_never_overlap_tp4(tmp_path: Path) -> None:
     )
 
 
-def test_sampling_can_overlap_peer_forward(tmp_path: Path) -> None:
+def test_sampling_blocks_peer_forward_until_round_complete(tmp_path: Path) -> None:
     events: dict[str, int] = {}
     with ExitStack() as stack:
         a, b = open_pair(stack, tmp_path, 1)
@@ -276,14 +276,66 @@ def test_sampling_can_overlap_peer_forward(tmp_path: Path) -> None:
         thread.start()
         b_waiting.wait()
         time.sleep(0.01)
-        a[0].leave_forward(sequence, grant)
         events["a_sampling_start"] = time.monotonic_ns()
         time.sleep(0.03)
         events["a_sampling_end"] = time.monotonic_ns()
+        a[0].leave_forward(sequence, grant)
         thread.join(timeout=2)
 
-    assert events["b_forward_start"] < events["a_sampling_end"]
-    assert events["a_sampling_start"] < events["b_forward_end"]
+    assert events["a_sampling_end"] <= events["b_forward_start"]
+
+
+def test_peer_waits_for_every_tp_worker_sampler(tmp_path: Path) -> None:
+    sampling_ends: list[int] = []
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+    with ExitStack() as stack:
+        a, b = open_pair(stack, tmp_path, 4)
+
+        def primary_worker(gate: SharedMemoryForwardGate, delay: float) -> None:
+            try:
+                sequence, grant = gate.enter_forward()
+                time.sleep(delay)
+                end = time.monotonic_ns()
+                gate.leave_forward(sequence, grant)
+                with lock:
+                    sampling_ends.append(end)
+            except BaseException as exc:
+                errors.append(exc)
+
+        b_starts: list[int] = []
+
+        def standby_worker(gate: SharedMemoryForwardGate) -> None:
+            try:
+                sequence, grant = gate.enter_forward()
+                with lock:
+                    b_starts.append(time.monotonic_ns())
+                gate.leave_forward(sequence, grant)
+            except BaseException as exc:
+                errors.append(exc)
+
+        primary_threads = [
+            threading.Thread(
+                target=primary_worker,
+                args=(gate, 0.01 + rank * 0.01),
+            )
+            for rank, gate in enumerate(a)
+        ]
+        for thread in primary_threads:
+            thread.start()
+        time.sleep(0.01)
+        standby_threads = [
+            threading.Thread(target=standby_worker, args=(gate,)) for gate in b
+        ]
+        for thread in standby_threads:
+            thread.start()
+        for thread in primary_threads + standby_threads:
+            thread.join(timeout=3)
+            assert not thread.is_alive()
+
+    assert not errors
+    assert len(sampling_ends) == len(b_starts) == 4
+    assert max(sampling_ends) <= min(b_starts)
 
 
 def test_missing_rank_fails_barrier_closed(tmp_path: Path) -> None:
@@ -321,7 +373,7 @@ def _capture_enter(
         errors.append(exc)
 
 
-def test_forward_timeout_and_late_complete_fail_closed(tmp_path: Path) -> None:
+def test_round_timeout_including_sampling_fails_closed(tmp_path: Path) -> None:
     cfg = config(tmp_path, "primary", "A", forward_timeout_ms=40)
     with SharedMemoryForwardGate(cfg) as gate:
         sequence, grant = gate.enter_forward()

@@ -95,7 +95,6 @@ def main() -> int:
                     gate.fail(220)
                     raise RuntimeError("injected execute_model failure")
                 forward_end = time.monotonic_ns()
-                gate.complete(grant)
                 emit(
                     args.trace,
                     args.instance,
@@ -107,6 +106,7 @@ def main() -> int:
                 emit(args.trace, args.instance, "sampling_start", iteration)
                 time.sleep(args.sampling_ms / 1000)
                 emit(args.trace, args.instance, "sampling_end", iteration)
+                gate.complete(grant)
             if args.linger_ms:
                 time.sleep(args.linger_ms / 1000)
             emit(args.trace, args.instance, "closed")

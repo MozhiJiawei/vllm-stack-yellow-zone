@@ -13,38 +13,38 @@
 <body><main class="wrap">
   <section class="hero">
     <div>
-      <div class="eyebrow">Implementation review · Protocol v3 · 2026-07-23</div>
+      <div class="eyebrow">Implementation review · Protocol v4 · 2026-08-11</div>
       <h1>Worker 边界<br>轻量 elastic 调度</h1>
-      <p class="lead">调度从 EngineCore 下沉到 vLLM worker 的 <code>execute_model</code> 调用边界：TP1 覆盖 <code>UniProcExecutor</code> 的直接 worker 调用，TP≥2 覆盖每个 <code>WorkerProc</code>。两个共卡实例的 forward 严格错开；sampling 与所有其他 RPC 不持有租约，vLLM 原生 async batch queue 完整保留。</p>
+      <p class="lead">调度从 EngineCore 下沉到 vLLM worker 的 execution-round 边界：TP1 覆盖 <code>UniProcExecutor</code>，TP≥2 覆盖每个 <code>WorkerProc</code>。非空生成 round 从 <code>execute_model</code> 进入前持有 grant，直到对应 <code>sample_tokens</code> 返回；两个共卡实例的 forward 与 Sampler 严格错开，同时保留 vLLM 原生 async batch queue。</p>
     </div>
     <aside class="card stamp"><span class="tag">当前本地实现</span><b>TP1 / TP4 控制流：PASS</b><span class="muted">黄区已证明 TP1 模型与 API 可启动；补齐 UniProc gate 的新 patch 尚待部署，NPU timeline 尚未执行，因此整体仍是 NO-GO。</span></aside>
   </section>
 
   <section class="kpis">
-    <div class="card kpi"><strong>1 grant</strong><span>每实例每轮 forward</span></div>
+    <div class="card kpi"><strong>1 grant</strong><span>每实例每个 forward+sampling round</span></div>
     <div class="card kpi"><strong>1 or 4 bits</strong><span>TP1 / TP4 READY、COMPLETE</span></div>
     <div class="card kpi"><strong>0</strong><span>EngineCore 调度改动</span></div>
     <div class="card kpi"><strong>100,000</strong><span>本地连续授权通过</span></div>
   </section>
 
-  <h2>1. 实现形态：租约只包住 Worker forward</h2>
+  <h2>1. 实现形态：租约覆盖 Worker forward 与 Sampler</h2>
   <section class="architecture">
     <article class="card instance a">
       <header><b>实例 A · primary control role</b><span class="tag">A</span></header>
       <div class="layer"><b>EngineCore / AsyncScheduler</b><br><span class="muted">原生 schedule、placeholder、FutureWrapper、batch queue</span></div>
       <div class="layer"><b>TP1 UniProc / TP≥2 WorkerProc</b><div class="workers"><span class="worker">A rank 0<br>coordinator</span><span class="worker">A rank 1</span><span class="worker">A rank 2</span><span class="worker">A rank 3</span></div></div>
-      <div class="layer"><code>enter_forward → worker.execute_model → leave_forward</code></div>
+      <div class="layer"><code>enter_forward → execute_model → sample_tokens → leave_forward</code></div>
     </article>
     <div class="bridge">同机 mmap · atomics · futex</div>
     <article class="card instance b">
       <header><b>实例 B · standby control role</b><span class="tag warn">B</span></header>
       <div class="layer"><b>EngineCore / AsyncScheduler</b><br><span class="muted">与 MODE=off 完全相同的上层控制流</span></div>
       <div class="layer"><b>TP1 UniProc / TP≥2 WorkerProc</b><div class="workers"><span class="worker">B rank 0</span><span class="worker">B rank 1</span><span class="worker">B rank 2</span><span class="worker">B rank 3</span></div></div>
-      <div class="layer"><code>sample_tokens / 空计划 / 其他 RPC → 直接执行</code></div>
+      <div class="layer"><code>standalone sample_tokens → 独立 grant；空计划 / 其他 RPC → 直接执行</code></div>
     </article>
   </section>
 
-  <h2>2. v3 位图协议</h2>
+  <h2>2. v4 位图协议</h2>
   <section class="protocol">
     <article class="card">
       <h3>TP4 一轮，不是 4 次或 8 次授权</h3>
@@ -60,13 +60,13 @@
     </article>
   </section>
 
-  <h2>3. 原生 async 时序没有 sampling 空泡</h2>
+  <h2>3. 原生 async 队列保留，Sampler 不再跨实例重叠</h2>
   <article class="card sequence">
     <div class="lanes">
       <div class="cell head"></div><div class="cell head">① schedule₁</div><div class="cell head">② forward₁</div><div class="cell head">③ sample₁</div><div class="cell head">④ schedule₂</div><div class="cell head">⑤ forward₂</div><div class="cell head">⑥ consume sample₁</div><div class="cell head">⑦ 后续</div>
       <div class="cell lane">EngineCore</div><div class="cell"><span class="pulse blue">原生调度 batch₁</span></div><div class="cell muted">FutureWrapper 保持原样</div><div class="cell"><span class="pulse green">提交 sampling₁</span></div><div class="cell"><span class="pulse blue">不等 sampling₁<br>继续 batch₂</span></div><div class="cell muted">原生 batch queue</div><div class="cell"><span class="pulse gray">稍后消费 token₁</span></div><div class="cell muted">placeholder / queue depth 不变</div>
-      <div class="cell lane">Worker A</div><div class="cell muted">FIFO 收到 RPC</div><div class="cell"><span class="pulse a">READY bits → grant A<br>execute_model₁</span></div><div class="cell"><span class="pulse green">sample_tokens₁<br>不进入 gate</span></div><div class="cell muted">FIFO 保序</div><div class="cell"><span class="pulse a">下一次 enter<br>execute_model₂</span></div><div class="cell muted">异步 output copy</div><div class="cell muted">继续原生顺序</div>
-      <div class="cell lane">对侧 Worker B</div><div class="cell muted">可等待 READY</div><div class="cell muted">A 持有 owner</div><div class="cell"><span class="pulse b">A sampling 时<br>B forward 可运行</span></div><div class="cell muted">elastic：有 READY 即授予</div><div class="cell muted">A/B forward 不重叠</div><div class="cell muted">sampling 可交叠</div><div class="cell muted">不制造配比空泡</div>
+      <div class="cell lane">Worker A</div><div class="cell muted">FIFO 收到 RPC</div><div class="cell"><span class="pulse a">READY bits → grant A<br>execute_model₁</span></div><div class="cell"><span class="pulse green">sample_tokens₁<br>沿用同一 grant</span></div><div class="cell muted">Sampler 返回后 COMPLETE</div><div class="cell"><span class="pulse a">下一次 enter<br>execute_model₂</span></div><div class="cell muted">异步 output copy</div><div class="cell muted">继续原生顺序</div>
+      <div class="cell lane">对侧 Worker B</div><div class="cell muted">可等待 READY</div><div class="cell muted">A 持有 owner</div><div class="cell"><span class="pulse b">A sampling 时<br>B 继续等待</span></div><div class="cell muted">A COMPLETE 后交权</div><div class="cell muted">完整 round 不重叠</div><div class="cell muted">output copy 仍可异步</div><div class="cell muted">Host completion 边界</div>
     </div>
   </article>
 
@@ -75,11 +75,11 @@
     <thead><tr><th>组件</th><th>当前处理</th><th>影响</th></tr></thead>
     <tbody>
       <tr><td>EngineCore / AsyncScheduler</td><td><span class="ok">不修改</span></td><td>不再等待 execute future，不限制 <code>batch_queue</code>，消除旧 P1 sampling 空泡。</td></tr>
-      <tr><td>vLLM worker 边界</td><td>UniProc + WorkerProc 两个轻量 patch 点</td><td>TP1 在模型加载后建单 worker gate；TP≥2 在 MQ 初始化后建位图 gate。两者都只包非空 <code>execute_model</code>，异常 fail-closed。</td></tr>
+      <tr><td>vLLM worker 边界</td><td>UniProc + WorkerProc 两个轻量 patch 点</td><td>TP1 在模型加载后建单 worker gate；TP≥2 在 MQ 初始化后建位图 gate。非空生成 round 覆盖 <code>execute_model</code> 到对应 <code>sample_tokens</code>，forward、sampling 和顺序违规分别 fail-closed。</td></tr>
       <tr><td>vLLM-Ascend worker</td><td><span class="ok">不修改</span></td><td>无 stream event、无设备同步、无 READY/End。</td></tr>
       <tr><td>vCANN runtime</td><td><span class="ok">不调用调度接口</span></td><td>只保留旧提交前能力；模型间仲裁全部在上层。</td></tr>
       <tr><td>控制通道</td><td>共享 mmap + C11 atomic + futex</td><td>热路径没有 TCP、UDS、轮询 sleep 或文件 I/O。</td></tr>
-      <tr><td>唯一运行开关</td><td><code>VLLM_PAIR_SCHED_MODE=off|elastic</code></td><td>worker 初始化时只读取一次。<code>off</code> 不导入调度包、不创建后台线程、不替换 <code>execute_model</code>，原生热路径没有调度条件判断或环境变量读取；切换模式需要重启实例。</td></tr>
+      <tr><td>唯一运行开关</td><td><code>/etc/vllm-pair-scheduler/role</code></td><td>worker 初始化时只检查一次。角色文件不存在时不导入调度包、不创建后台线程，也不替换 <code>execute_model</code> 或 <code>sample_tokens</code>；切换需要重启实例。</td></tr>
     </tbody>
   </table>
 
@@ -93,9 +93,9 @@
   <section class="tests">
     <article class="card test"><strong class="ok">TP1 / TP2 / TP4</strong><span>一次 grant 被本实例全部 worker 消费；全部 COMPLETE 后释放。</span></article>
     <article class="card test"><strong class="ok">零 forward 重叠</strong><span>本地 TP4 双实例 fake WorkerProc 区间检查通过。</span></article>
-    <article class="card test"><strong class="ok">sampling 可重叠</strong><span>A sampling 与 B forward 的主机区间实测重叠。</span></article>
+    <article class="card test"><strong class="ok">Sampler 纳入控制</strong><span>A sampling 结束前 B forward 不会获得 grant；TP 全 worker 完成后才交权。</span></article>
     <article class="card test"><strong class="ok">100k rounds</strong><span>零重复 grant、零永久等待；同时发现并修复跨轮竞态。</span></article>
-    <article class="card test"><strong class="ok">真实 vLLM 控制流</strong><span>v0.19.1 共 12 个集成用例通过：<code>step_with_batch_queue()</code> 原生轨迹不变，TP1 UniProc 与 TP≥2 WorkerProc 只 gate 非空 forward。</span></article>
+    <article class="card test"><strong class="ok">真实 vLLM 控制流</strong><span>v0.19.1 集成用例验证 <code>step_with_batch_queue()</code> 原生轨迹不变，TP1 UniProc 与 TP≥2 WorkerProc 持有完整 execution round。</span></article>
     <article class="card test"><strong class="no">本机性能未过门槛</strong><span>Docker Desktop 固定 CPU 诊断：TP1 P99 324 μs；TP4 P99 1.11 ms。该环境不是黄区裸机，但不能据此宣称性能 PASS。</span></article>
     <article class="card test"><strong class="no">NPU 未验收</strong><span>集合通信 timeline、设备异步尾部、TPOT 回退与百万轮固定 CPU 指标待黄区。</span></article>
   </section>
@@ -103,9 +103,9 @@
   <h2>7. DFX 与交付闸门</h2>
   <section class="grid2">
     <article class="callout bad"><h3>立即 FAILED / 整对重启</h3><ul><li>forward deadline 超时或迟到 COMPLETE</li><li>owner / primary / 执行中 worker 死亡</li><li>缺 rank barrier 超时、重复 rank、位图越界</li><li>epoch、session、sequence 或 grant fencing 不匹配</li><li>共享状态损坏</li></ul></article>
-    <article class="callout warn"><h3>仍需黄区证明</h3><ul><li>所有 TP worker 主机返回后，没有不可重叠的 NPU 通信尾部</li><li>A/B 集合通信 timeline 零重叠</li><li>sampling 与对侧 forward 在设备侧实际重叠</li><li>单实例无竞争 TPOT 回退 ≤ 1%</li><li>固定 CPU 百万轮 barrier / handoff P99 ≤ 150 μs</li></ul></article>
+    <article class="callout warn"><h3>仍需黄区证明</h3><ul><li>所有 TP worker Sampler 返回后，没有不可重叠的 NPU 通信尾部</li><li>A/B 集合通信 timeline 零重叠</li><li>单实例无竞争 TPOT 回退 ≤ 1%</li><li>固定 CPU 百万轮 barrier / handoff P99 ≤ 150 μs</li></ul></article>
   </section>
 
-  <footer class="foot">实现依据：<span class="mono">scheduler/src/vllm_pair_scheduler/</span>、<span class="mono">patches/vllm-pair-elastic-scheduling.patch</span>、<span class="mono">scripts/pair-scheduler/</span>。该页面描述 protocol v3；旧 vCANN READY / End / kernel gate 方案已删除，不再是当前实现。</footer>
+  <footer class="foot">实现依据：<span class="mono">scheduler/src/vllm_pair_scheduler/</span>、<span class="mono">patches/vllm-pair-elastic-scheduling.patch</span>、<span class="mono">scripts/pair-scheduler/</span>。该页面描述 protocol v4；旧 vCANN READY / End / kernel gate 方案已删除，不再是当前实现。</footer>
 </main></body>
 </html>

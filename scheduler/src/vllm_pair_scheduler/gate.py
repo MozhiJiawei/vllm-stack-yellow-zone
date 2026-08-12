@@ -34,6 +34,7 @@ class PairSchedulerFailed(PairSchedulerError):
 
 
 class DisabledForwardGate:
+    """No-op execution-round gate used when pair scheduling is disabled."""
     enabled = False
 
     def acquire(self) -> int:
@@ -113,6 +114,7 @@ def _load_native() -> ctypes.CDLL:
 
 
 class SharedMemoryForwardGate:
+    """Admission gate held across a worker's forward and required sampling."""
     enabled = True
 
     def __init__(

@@ -11,6 +11,7 @@ RECREATE = (
     / "pair-scheduler"
     / "recreate-native-xlite-containers.sh"
 )
+INSTALLER = ROOT / "scheduler" / "install-pair-scheduler.sh"
 
 
 def test_prepare_uses_native_container_entry_point() -> None:
@@ -37,3 +38,12 @@ def test_native_container_inputs_are_pinned() -> None:
     assert "restart-vcann-xlite-containers.sh" not in script
     assert "runtime/vcann" not in script.lower()
     assert "tasks exec" not in script
+
+
+def test_installer_requires_protocol_v4_sampling_patch() -> None:
+    script = INSTALLER.read_text(encoding="utf-8")
+
+    assert "vllm-pair-elastic-scheduling-v3-to-v4.patch" in script
+    assert "worker.sample_tokens = gated_sample_tokens" in script
+    assert "protocol=4" in script
+    assert "protocol=3" not in script

@@ -1,9 +1,12 @@
 # vLLM pair scheduler
 
-This package serializes the `execute_model` sections of two same-host vLLM
-instances. Protocol v3 uses shared memory, C11 atomics, futexes, and one READY
-and COMPLETE bit per local TP worker. Sampling and every other RPC bypass the
-gate.
+This package serializes the execution rounds of two same-host vLLM instances.
+Protocol v4 uses shared memory, C11 atomics, futexes, and one READY and COMPLETE
+bit per local TP worker. A non-empty generation round holds its grant from
+`execute_model` entry through the matching `sample_tokens` return. An
+`execute_model` call that returns a result directly completes at that boundary,
+and a standalone `sample_tokens` call acquires its own grant. Other RPCs bypass
+the gate.
 
 ## Install
 
@@ -38,7 +41,9 @@ The fixed first-version profile is:
 - primary is instance A; standby is instance B;
 - pair ID is `default`;
 - shared memory is `/dev/shm/vllm-pair-scheduler`;
-- initialization/forward/heartbeat/peer timeouts are 30 s/30 s/100 ms/1 s.
+- initialization/execution-round/heartbeat/peer timeouts are
+  30 s/30 s/100 ms/1 s. The existing `forward_timeout_ms` field names the
+  execution-round deadline for compatibility.
 
 Deleting `/etc/vllm-pair-scheduler/role` and restarting vLLM disables the
 integration completely: the patched executor does not import the package or
@@ -93,4 +98,6 @@ bash /root/l00933108/vllm-stack-yellow-zone/scripts/pair-scheduler/start-yellow-
 ```
 
 PP, automatic primary promotion, fixed compute ratios, multi-node TP, and
-device-side completion events are not supported.
+device-side completion events are not supported. Protocol v4 closes the Host
+boundary through Sampler return; asynchronous device work after that return is
+still outside the completion contract.

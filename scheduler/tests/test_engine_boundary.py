@@ -4,7 +4,7 @@ import threading
 import time
 
 
-def test_worker_boundary_order_and_sampling_bypass() -> None:
+def test_worker_boundary_holds_grant_through_sampling() -> None:
     calls: list[str] = []
 
     class Gate:
@@ -19,13 +19,13 @@ def test_worker_boundary_order_and_sampling_bypass() -> None:
     gate = Gate()
     round_token = gate.enter_forward()
     calls.append("worker.execute_model")
-    gate.leave_forward(*round_token)
     calls.append("worker.sample_tokens")
+    gate.leave_forward(*round_token)
     assert calls == [
         "enter_forward",
         "worker.execute_model",
-        "leave_forward",
         "worker.sample_tokens",
+        "leave_forward",
     ]
 
 
@@ -47,20 +47,28 @@ def test_engine_queue_is_not_drained_by_worker_gate() -> None:
     ]
 
 
-def test_empty_plan_and_sampling_do_not_enter_gate() -> None:
+def test_empty_plan_bypasses_but_standalone_sampling_enters_gate() -> None:
     calls: list[str] = []
     for method, scheduled_tokens in (
         ("execute_model", 0),
         ("sample_tokens", 1),
         ("get_model", 1),
     ):
-        if method == "execute_model" and scheduled_tokens > 0:
+        if (method == "execute_model" and scheduled_tokens > 0) or method == "sample_tokens":
             calls.append("enter_forward")
         calls.append(method)
-    assert calls == ["execute_model", "sample_tokens", "get_model"]
+        if method == "sample_tokens":
+            calls.append("leave_forward")
+    assert calls == [
+        "execute_model",
+        "enter_forward",
+        "sample_tokens",
+        "leave_forward",
+        "get_model",
+    ]
 
 
-def test_async_device_tail_is_explicitly_outside_v3_contract() -> None:
+def test_async_device_tail_is_explicitly_outside_v4_contract() -> None:
     device_done = threading.Event()
 
     def asynchronous_tail() -> None:
@@ -73,6 +81,6 @@ def test_async_device_tail_is_explicitly_outside_v3_contract() -> None:
     assert host_execute_model_returned
     assert not device_done.is_set(), (
         "An executor with an asynchronous collective tail does not satisfy "
-        "the v3 host-return completion contract."
+        "the v4 host-return completion contract."
     )
     thread.join()
