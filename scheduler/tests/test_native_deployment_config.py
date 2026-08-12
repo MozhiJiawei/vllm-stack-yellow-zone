@@ -89,6 +89,7 @@ def test_aisbench_uses_mindie_image_as_cpu_only_pair_client() -> None:
     assert "run_client A 10040" in script
     assert "run_client B 10041" in script
     assert "synthetic_gen" in script
+    assert '"generation_kwargs=dict(": "generation_kwargs=dict(ignore_eos=True,"' in script
     assert "DRY_RUN=${DRY_RUN:-0}" in script
     assert "TARGETS=${TARGETS:-AB}" in script
     assert '[[ $TARGETS == A || $TARGETS == AB ]]' in script

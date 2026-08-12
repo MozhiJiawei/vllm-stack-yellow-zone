@@ -92,6 +92,7 @@ replacements = {
     "max_out_len = 512": f"max_out_len = {output_tokens}",
     "batch_size=1": f"batch_size={batch_size}",
     "request_rate = 0": f"request_rate = {request_rate}",
+    "generation_kwargs=dict(": "generation_kwargs=dict(ignore_eos=True,",
 }
 for old, new in replacements.items():
     text = replace_once(text, old, new, model_path)
