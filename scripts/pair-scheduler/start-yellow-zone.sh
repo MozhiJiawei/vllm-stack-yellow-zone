@@ -11,6 +11,7 @@ CTR_BIN=${CTR_BIN:-/root/l00933108/.tools/containerd/bin/ctr}
 TARGETS=${TARGETS:-AB}
 REQUIRE_SCHEDULER=${REQUIRE_SCHEDULER:-1}
 PAIR_TRACE_ROOT=${PAIR_TRACE_ROOT:-}
+PAIR_DIAGNOSTICS_INTERVAL=${PAIR_DIAGNOSTICS_INTERVAL:-}
 
 [[ $TARGETS == A || $TARGETS == AB ]] || {
   echo "ERROR: TARGETS must be A or AB" >&2
@@ -63,6 +64,9 @@ start_instance() {
       if [[ -n '$PAIR_TRACE_ROOT' ]]; then
         export VLLM_PAIR_SCHED_TRACE_DIR='$PAIR_TRACE_ROOT/$instance'
         install -d -m 0755 \"\$VLLM_PAIR_SCHED_TRACE_DIR\"
+      fi
+      if [[ -n '$PAIR_DIAGNOSTICS_INTERVAL' ]]; then
+        export VLLM_PAIR_SCHED_DIAGNOSTICS_INTERVAL='$PAIR_DIAGNOSTICS_INTERVAL'
       fi
       nohup vllm serve /opt/model/Qwen3-4B/ \
         --max_model_len 10240 \

@@ -152,6 +152,56 @@ else
     --directory="${VLLM_SOURCE#/}" "$PATCH_FILE"
 fi
 
+DIAGNOSTICS_PATCHED=true
+for file in "${PAIR_FILES[@]}"; do
+  if ! grep -q 'install_worker_sampling_diagnostics' "$file"; then
+    DIAGNOSTICS_PATCHED=false
+  fi
+done
+if ! $DIAGNOSTICS_PATCHED; then
+  python - "${PAIR_FILES[@]}" <<'PY'
+from pathlib import Path
+import sys
+
+replacements = {
+    '    trace_event = getattr(gate, "trace_event", lambda *args: None)\n\n'
+    '    def gated_execute_model':
+        '    trace_event = getattr(gate, "trace_event", lambda *args: None)\n'
+        '    diagnostics = None\n'
+        '    if os.environ.get("VLLM_PAIR_SCHED_DIAGNOSTICS_INTERVAL"):\n'
+        '        from vllm_pair_scheduler import install_worker_sampling_diagnostics\n\n'
+        '        diagnostics = install_worker_sampling_diagnostics(\n'
+        '            worker, gate.worker_rank\n'
+        '        )\n\n'
+        '    def gated_execute_model',
+    '            trace_event("sample_begin", *sampling_round)\n'
+    '            output = sample_tokens(grammar_output)\n'
+    '            trace_event("sample_end", *sampling_round)':
+        '            trace_event("sample_begin", *sampling_round)\n'
+        '            if diagnostics is None:\n'
+        '                output = sample_tokens(grammar_output)\n'
+        '            else:\n'
+        '                output = diagnostics.call(\n'
+        '                    "sample_tokens", sample_tokens, grammar_output\n'
+        '                )\n'
+        '            trace_event("sample_end", *sampling_round)',
+}
+for name in sys.argv[1:]:
+    path = Path(name)
+    text = path.read_text(encoding="utf-8")
+    if "install_worker_sampling_diagnostics" in text:
+        continue
+    for old, new in replacements.items():
+        if text.count(old) != 1:
+            raise SystemExit(
+                f"ERROR: cannot install sampling diagnostics in {path}: {old!r}"
+            )
+        text = text.replace(old, new)
+    path.write_text(text, encoding="utf-8")
+PY
+  echo "installed opt-in vLLM sampling diagnostics"
+fi
+
 python -m py_compile "${PAIR_FILES[@]}"
 
 install -d -m 1770 "$SHM_DIR"

@@ -18,13 +18,18 @@ index bd0cf37..9ee9bf9 100644
  
      from vllm_pair_scheduler import create_worker_forward_gate_from_install
  
-@@ -87,20 +87,52 @@ def _install_pair_worker_gate(
+@@ -87,20 +87,62 @@ def _install_pair_worker_gate(
          worker_count=worker_count,
      )
      execute_model = worker.execute_model
 +    sample_tokens = worker.sample_tokens
 +    active_round = None
 +    trace_event = getattr(gate, "trace_event", lambda *args: None)
++    diagnostics = None
++    if os.environ.get("VLLM_PAIR_SCHED_DIAGNOSTICS_INTERVAL"):
++        from vllm_pair_scheduler import install_worker_sampling_diagnostics
++
++        diagnostics = install_worker_sampling_diagnostics(worker, gate.worker_rank)
  
      def gated_execute_model(scheduler_output):
 +        nonlocal active_round
@@ -58,7 +63,12 @@ index bd0cf37..9ee9bf9 100644
 +        sampling_round = active_round
 +        try:
 +            trace_event("sample_begin", *sampling_round)
-+            output = sample_tokens(grammar_output)
++            if diagnostics is None:
++                output = sample_tokens(grammar_output)
++            else:
++                output = diagnostics.call(
++                    "sample_tokens", sample_tokens, grammar_output
++                )
 +            trace_event("sample_end", *sampling_round)
 +            gate.leave_forward(*sampling_round)
 +            active_round = None
@@ -77,7 +87,7 @@ diff --git a/vllm/v1/executor/uniproc_executor.py b/vllm/v1/executor/uniproc_exe
 index c8924ee..2696cd9 100644
 --- a/vllm/v1/executor/uniproc_executor.py
 +++ b/vllm/v1/executor/uniproc_executor.py
-@@ -30,32 +30,64 @@ def _install_pair_worker_gate(worker, vllm_config):
+@@ -30,32 +30,74 @@ def _install_pair_worker_gate(worker, vllm_config):
  
      parallel_config = vllm_config.parallel_config
      if parallel_config.pipeline_parallel_size != 1:
@@ -99,6 +109,11 @@ index c8924ee..2696cd9 100644
 +    sample_tokens = worker.sample_tokens
 +    active_round = None
 +    trace_event = getattr(gate, "trace_event", lambda *args: None)
++    diagnostics = None
++    if os.environ.get("VLLM_PAIR_SCHED_DIAGNOSTICS_INTERVAL"):
++        from vllm_pair_scheduler import install_worker_sampling_diagnostics
++
++        diagnostics = install_worker_sampling_diagnostics(worker, gate.worker_rank)
  
      def gated_execute_model(scheduler_output):
 +        nonlocal active_round
@@ -132,7 +147,12 @@ index c8924ee..2696cd9 100644
 +        sampling_round = active_round
 +        try:
 +            trace_event("sample_begin", *sampling_round)
-+            output = sample_tokens(grammar_output)
++            if diagnostics is None:
++                output = sample_tokens(grammar_output)
++            else:
++                output = diagnostics.call(
++                    "sample_tokens", sample_tokens, grammar_output
++                )
 +            trace_event("sample_end", *sampling_round)
 +            gate.leave_forward(*sampling_round)
 +            active_round = None

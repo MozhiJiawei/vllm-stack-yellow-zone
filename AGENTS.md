@@ -46,6 +46,9 @@
 
 ## Diagnosing and bypassing a local TUN route
 
+- Never add, remove, or modify a system route unless the user has explicitly approved that exact routing change in the current conversation. Diagnosis with `Resolve-DnsName`, `Find-NetRoute`, `Get-NetRoute`, and non-mutating connection probes is allowed, but it does not authorize `New-NetRoute`, `Remove-NetRoute`, `route`, `netsh interface ipv4 add/delete route`, or equivalent mutations. Before requesting approval, report the exact destination prefix, interface, gateway, lifetime, and rollback command. Do not infer approval from a request to diagnose or fix a network timeout.
+- Do not extend an existing application-scoped source-address binding to another tool or destination without the user's approval. In particular, the OSS publisher's documented direct binding does not authorize changing Git, SSH, AISBench, or general system routing. If an unapproved path times out, stop after diagnosis and ask before applying a routing or source-binding workaround.
+
 - When an upload, HTTPS request, or other connection from A becomes unexpectedly slow or times out while a TUN client is enabled, diagnose routing before retrying. First resolve the current destination addresses, then inspect the selected route:
 
   ```powershell

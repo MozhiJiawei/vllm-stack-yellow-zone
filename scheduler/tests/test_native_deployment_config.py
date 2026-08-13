@@ -76,6 +76,14 @@ def test_native_pair_start_isolates_host_and_npu_hccl_ports() -> None:
     assert "62000-62050" in script
 
 
+def test_native_pair_start_has_opt_in_low_overhead_diagnostics() -> None:
+    script = START.read_text(encoding="utf-8")
+
+    assert "PAIR_DIAGNOSTICS_INTERVAL=${PAIR_DIAGNOSTICS_INTERVAL:-}" in script
+    assert "VLLM_PAIR_SCHED_DIAGNOSTICS_INTERVAL" in script
+    assert "PAIR_TRACE_ROOT=${PAIR_TRACE_ROOT:-}" in script
+
+
 def test_aisbench_uses_mindie_image_as_cpu_only_pair_client() -> None:
     script = AISBENCH.read_text(encoding="utf-8")
 
@@ -103,6 +111,8 @@ def test_installer_requires_protocol_v4_sampling_patch() -> None:
 
     assert "vllm-pair-elastic-scheduling-v3-to-v4.patch" in script
     assert "worker.sample_tokens = gated_sample_tokens" in script
+    assert "install_worker_sampling_diagnostics" in script
+    assert "VLLM_PAIR_SCHED_DIAGNOSTICS_INTERVAL" in script
     assert "protocol=4" in script
     assert "protocol=3" not in script
 

@@ -49,6 +49,14 @@ Deleting `/etc/vllm-pair-scheduler/role` and restarting vLLM disables the
 integration completely: the patched executor does not import the package or
 replace `execute_model`.
 
+For short diagnostic runs, set
+`VLLM_PAIR_SCHED_DIAGNOSTICS_INTERVAL=128` before starting both instances.
+This records sampling phase durations in memory and emits one
+`PAIR_SCHED_SAMPLE_DIAG` summary per worker every 128 sampling calls. It is
+disabled by default and does not wrap the sampling path unless explicitly set.
+Do not enable the per-round JSONL trace for performance measurements because
+its synchronous writes perturb TP-worker timing.
+
 ## Inspect
 
 ```bash
