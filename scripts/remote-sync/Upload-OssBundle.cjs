@@ -2,6 +2,7 @@
 "use strict";
 
 const fs = require("node:fs");
+const https = require("node:https");
 const path = require("node:path");
 const OSS = require("ali-oss");
 
@@ -73,6 +74,7 @@ async function main() {
   const regionValue = required(env, "ALIYUN_OSS_REGION");
   const region = regionValue.startsWith("oss-") ? regionValue : `oss-${regionValue}`;
   const endpoint = required(env, "ALIYUN_OSS_ENDPOINT");
+  const localAddress = process.env.OSS_DIRECT_LOCAL_ADDRESS;
   const client = new OSS({
     accessKeyId: required(env, "ALIYUN_OSS_ACCESS_KEY_ID"),
     accessKeySecret: required(env, "ALIYUN_OSS_ACCESS_KEY_SECRET"),
@@ -82,6 +84,9 @@ async function main() {
     authorizationV4: true,
     secure: endpoint.startsWith("https://"),
     timeout: 60000,
+    httpsAgent: localAddress
+      ? new https.Agent({ keepAlive: true, localAddress })
+      : undefined,
   });
 
   const objectKey = `${prefix}${repo}/remote-sync/latest.bundle`;
@@ -93,7 +98,7 @@ async function main() {
     try {
       result = await client.multipartUpload(objectKey, filePath, {
         checkpoint,
-        parallel: 1,
+        parallel: 4,
         partSize: 5 * 1024 * 1024,
         headers: { "Content-Type": "application/octet-stream" },
         progress(percentage, currentCheckpoint) {
