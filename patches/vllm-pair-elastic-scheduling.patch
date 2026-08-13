@@ -2,7 +2,7 @@ diff --git a/vllm/v1/executor/uniproc_executor.py b/vllm/v1/executor/uniproc_exe
 index b616c3b7b..3a76a97ac 100644
 --- a/vllm/v1/executor/uniproc_executor.py
 +++ b/vllm/v1/executor/uniproc_executor.py
-@@ -23,9 +23,73 @@ from vllm.v1.worker.worker_base import WorkerWrapperBase
+@@ -23,9 +23,78 @@ from vllm.v1.worker.worker_base import WorkerWrapperBase
  logger = init_logger(__name__)
  
  
@@ -27,6 +27,7 @@ index b616c3b7b..3a76a97ac 100644
 +    execute_model = worker.execute_model
 +    sample_tokens = worker.sample_tokens
 +    active_round = None
++    trace_event = getattr(gate, "trace_event", lambda *args: None)
 +
 +    def gated_execute_model(scheduler_output):
 +        nonlocal active_round
@@ -39,7 +40,9 @@ index b616c3b7b..3a76a97ac 100644
 +            )
 +        active_round = gate.enter_forward()
 +        try:
++            trace_event("execute_begin", *active_round)
 +            output = execute_model(scheduler_output)
++            trace_event("execute_end", *active_round)
 +            if output is not None:
 +                gate.leave_forward(*active_round)
 +                active_round = None
@@ -55,7 +58,9 @@ index b616c3b7b..3a76a97ac 100644
 +            active_round = gate.enter_forward()
 +        sampling_round = active_round
 +        try:
++            trace_event("sample_begin", *sampling_round)
 +            output = sample_tokens(grammar_output)
++            trace_event("sample_end", *sampling_round)
 +            gate.leave_forward(*sampling_round)
 +            active_round = None
 +            return output
@@ -100,7 +105,7 @@ diff --git a/vllm/v1/executor/multiproc_executor.py b/vllm/v1/executor/multiproc
 index f9b771540..5a552eef0 100644
 --- a/vllm/v1/executor/multiproc_executor.py
 +++ b/vllm/v1/executor/multiproc_executor.py
-@@ -64,6 +64,73 @@ from vllm.v1.worker.worker_base import WorkerWrapperBase
+@@ -64,6 +64,78 @@ from vllm.v1.worker.worker_base import WorkerWrapperBase
  logger = init_logger(__name__)
  
  
@@ -129,6 +134,7 @@ index f9b771540..5a552eef0 100644
 +    execute_model = worker.execute_model
 +    sample_tokens = worker.sample_tokens
 +    active_round = None
++    trace_event = getattr(gate, "trace_event", lambda *args: None)
 +
 +    def gated_execute_model(scheduler_output):
 +        nonlocal active_round
@@ -141,7 +147,9 @@ index f9b771540..5a552eef0 100644
 +            )
 +        active_round = gate.enter_forward()
 +        try:
++            trace_event("execute_begin", *active_round)
 +            output = execute_model(scheduler_output)
++            trace_event("execute_end", *active_round)
 +            if output is not None:
 +                gate.leave_forward(*active_round)
 +                active_round = None
@@ -157,7 +165,9 @@ index f9b771540..5a552eef0 100644
 +            active_round = gate.enter_forward()
 +        sampling_round = active_round
 +        try:
++            trace_event("sample_begin", *sampling_round)
 +            output = sample_tokens(grammar_output)
++            trace_event("sample_end", *sampling_round)
 +            gate.leave_forward(*sampling_round)
 +            active_round = None
 +            return output

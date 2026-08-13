@@ -66,6 +66,7 @@ PAIR_FILES=(
 )
 
 V4_PATCHED=true
+TRACE_PATCHED=true
 for file in "${PAIR_FILES[@]}"; do
   if ! grep -q 'create_worker_forward_gate_from_install' "$file" ||
       ! grep -q '/etc/vllm-pair-scheduler/role' "$file" ||
@@ -73,9 +74,43 @@ for file in "${PAIR_FILES[@]}"; do
       ! grep -q 'pair scheduling v4' "$file"; then
     V4_PATCHED=false
   fi
+  if ! grep -q 'trace_event("sample_begin"' "$file"; then
+    TRACE_PATCHED=false
+  fi
 done
 
-if $V4_PATCHED; then
+if $V4_PATCHED && ! $TRACE_PATCHED; then
+  python - "${PAIR_FILES[@]}" <<'PY'
+from pathlib import Path
+import sys
+
+replacements = {
+    "    active_round = None\n\n    def gated_execute_model":
+        "    active_round = None\n"
+        "    trace_event = getattr(gate, \"trace_event\", lambda *args: None)\n\n"
+        "    def gated_execute_model",
+    "        try:\n            output = execute_model(scheduler_output)":
+        "        try:\n"
+        "            trace_event(\"execute_begin\", *active_round)\n"
+        "            output = execute_model(scheduler_output)\n"
+        "            trace_event(\"execute_end\", *active_round)",
+    "        try:\n            output = sample_tokens(grammar_output)":
+        "        try:\n"
+        "            trace_event(\"sample_begin\", *sampling_round)\n"
+        "            output = sample_tokens(grammar_output)\n"
+        "            trace_event(\"sample_end\", *sampling_round)",
+}
+for name in sys.argv[1:]:
+    path = Path(name)
+    text = path.read_text(encoding="utf-8")
+    for old, new in replacements.items():
+        if text.count(old) != 1:
+            raise SystemExit(f"ERROR: cannot install trace hook in {path}: {old!r}")
+        text = text.replace(old, new)
+    path.write_text(text, encoding="utf-8")
+PY
+  echo "installed vLLM protocol v4 execution-round trace hooks"
+elif $V4_PATCHED; then
   echo "vLLM protocol v4 patch already installed"
 elif grep -q 'VLLM_PAIR_SCHED_MODE' "${PAIR_FILES[@]}"; then
   python - "${PAIR_FILES[@]}" <<'PY'

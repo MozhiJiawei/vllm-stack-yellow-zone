@@ -4,6 +4,7 @@ import atexit
 import ctypes
 import fcntl
 import hashlib
+import json
 import logging
 import os
 import secrets
@@ -144,6 +145,22 @@ class SharedMemoryForwardGate:
         self._epoch: int | None = None
         self._shm_path: Path | None = None
         self._current_path: Path | None = None
+        self._trace_fd: int | None = None
+
+        trace_dir = os.environ.get("VLLM_PAIR_SCHED_TRACE_DIR")
+        if trace_dir:
+            trace_path = Path(trace_dir)
+            trace_path.mkdir(mode=0o755, parents=True, exist_ok=True)
+            assert config.instance_id is not None
+            filename = (
+                f"rounds-{config.instance_id}-rank{worker_rank}-"
+                f"pid{os.getpid()}.jsonl"
+            )
+            self._trace_fd = os.open(
+                trace_path / filename,
+                os.O_APPEND | os.O_CREAT | os.O_WRONLY,
+                0o644,
+            )
 
         assert config.pair_id is not None
         pair_hash = hashlib.sha256(config.pair_id.encode()).hexdigest()[:20]
@@ -280,6 +297,7 @@ class SharedMemoryForwardGate:
         return self._ctx
 
     def enter_forward(self) -> tuple[int, int]:
+        enter_begin_ns = time.monotonic_ns()
         with self._state_lock:
             ctx = self._context()
             sequence = ctypes.c_uint64()
@@ -298,9 +316,12 @@ class SharedMemoryForwardGate:
                 raise PairSchedulerFailed(error.value.decode(errors="replace"))
             round_token = (sequence.value, grant.value)
             self._active_round = round_token
+        self.trace_event("enter_begin", *round_token, ts_ns=enter_begin_ns)
+        self.trace_event("enter_end", *round_token)
         return round_token
 
     def leave_forward(self, forward_seq: int, grant_id: int) -> None:
+        self.trace_event("leave_begin", forward_seq, grant_id)
         with self._state_lock:
             ctx = self._context()
             error = ctypes.create_string_buffer(_ERR_SIZE)
@@ -311,6 +332,30 @@ class SharedMemoryForwardGate:
                 raise PairSchedulerFailed(error.value.decode(errors="replace"))
             if self._active_round == (forward_seq, grant_id):
                 self._active_round = None
+        self.trace_event("leave_end", forward_seq, grant_id)
+
+    def trace_event(
+        self,
+        event: str,
+        forward_seq: int = 0,
+        grant_id: int = 0,
+        *,
+        ts_ns: int | None = None,
+    ) -> None:
+        """Append a cross-process monotonic timestamp when diagnostics are on."""
+        fd = self._trace_fd
+        if fd is None:
+            return
+        record = {
+            "ts_ns": time.monotonic_ns() if ts_ns is None else ts_ns,
+            "event": event,
+            "instance": self.config.instance_id,
+            "rank": self.worker_rank,
+            "pid": os.getpid(),
+            "seq": forward_seq,
+            "grant": grant_id,
+        }
+        os.write(fd, (json.dumps(record, separators=(",", ":")) + "\n").encode())
 
     def acquire(self) -> int:
         """TP1 compatibility wrapper used by the fake-engine harness."""
@@ -348,6 +393,10 @@ class SharedMemoryForwardGate:
             self._ctx = None
             if ctx is not None:
                 self._lib.ps_close(ctx)
+            trace_fd = self._trace_fd
+            self._trace_fd = None
+            if trace_fd is not None:
+                os.close(trace_fd)
         if self._creator and self._lock_file is not None:
             if self._current_path is not None and self._epoch is not None:
                 try:

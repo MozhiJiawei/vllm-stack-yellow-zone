@@ -48,4 +48,4 @@ def test_protocol_v3_patch_migrates_exactly_to_v4(tmp_path: Path) -> None:
     _apply(migrated, migration_patch)
     for name in EXECUTOR_FILES:
         relative = Path("vllm/v1/executor") / name
-        assert (migrated / relative).read_bytes() == (expected / relative).read_bytes()
+        assert (migrated / relative).read_text() == (expected / relative).read_text()

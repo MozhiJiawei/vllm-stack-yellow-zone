@@ -10,6 +10,7 @@ GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.35}
 CTR_BIN=${CTR_BIN:-/root/l00933108/.tools/containerd/bin/ctr}
 TARGETS=${TARGETS:-AB}
 REQUIRE_SCHEDULER=${REQUIRE_SCHEDULER:-1}
+PAIR_TRACE_ROOT=${PAIR_TRACE_ROOT:-}
 
 [[ $TARGETS == A || $TARGETS == AB ]] || {
   echo "ERROR: TARGETS must be A or AB" >&2
@@ -59,6 +60,10 @@ start_instance() {
       export MASTER_PORT='$master_port'
       export HCCL_HOST_SOCKET_PORT_RANGE='$socket_range'
       export HCCL_NPU_SOCKET_PORT_RANGE='$socket_range'
+      if [[ -n '$PAIR_TRACE_ROOT' ]]; then
+        export VLLM_PAIR_SCHED_TRACE_DIR='$PAIR_TRACE_ROOT/$instance'
+        install -d -m 0755 \"\$VLLM_PAIR_SCHED_TRACE_DIR\"
+      fi
       nohup vllm serve /opt/model/Qwen3-4B/ \
         --max_model_len 10240 \
         --tensor-parallel-size 4 \
