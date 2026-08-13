@@ -81,7 +81,7 @@ async function main() {
     region,
     authorizationV4: true,
     secure: endpoint.startsWith("https://"),
-    timeout: 600000,
+    timeout: 30000,
   });
 
   const objectKey = `${prefix}${repo}/remote-sync/latest.bundle`;
