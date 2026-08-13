@@ -44,6 +44,50 @@
 - A can reach TCP port 22 on `9.15.144.34` through B. ICMP may time out and is not a reliable health check for this path.
 - Root public-key SSH from A is verified: `ssh root@9.15.144.34`. Root password login remains disabled (`PermitRootLogin without-password`).
 
+## Diagnosing and bypassing a local TUN route
+
+- When an upload, HTTPS request, or other connection from A becomes unexpectedly slow or times out while a TUN client is enabled, diagnose routing before retrying. First resolve the current destination addresses, then inspect the selected route:
+
+  ```powershell
+  Resolve-DnsName mozhi-gh-attachments.oss-cn-guangzhou.aliyuncs.com -Type A
+  Find-NetRoute -RemoteIPAddress 8.138.53.96 |
+    Format-List IPAddress,InterfaceAlias,InterfaceIndex,NextHop,RouteMetric
+  Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' |
+    Format-Table DestinationPrefix,NextHop,InterfaceAlias,InterfaceIndex,RouteMetric
+  ```
+
+- Compare the normal path with a request bound to the physical interface. Use the destination hostname so TLS SNI and certificate validation remain correct; `--interface` selects only the source path:
+
+  ```powershell
+  curl.exe -4 -sS -o NUL --max-time 10 `
+    -w "connect=%{time_connect}s tls=%{time_appconnect}s first_byte=%{time_starttransfer}s total=%{time_total}s`n" `
+    https://mozhi-gh-attachments.oss-cn-guangzhou.aliyuncs.com/
+  curl.exe -4 --interface 7.249.157.17 -sS -o NUL --max-time 10 `
+    -w "connect=%{time_connect}s tls=%{time_appconnect}s first_byte=%{time_starttransfer}s total=%{time_total}s`n" `
+    https://mozhi-gh-attachments.oss-cn-guangzhou.aliyuncs.com/
+  ```
+
+- Treat a large, repeatable reduction on the interface-bound request as evidence that the TUN path is the cause. In the verified incident, the OSS destination selected `tun0`; normal first-byte time was `2.09-3.01 s`, while binding WLAN address `7.249.157.17` reduced it to `0.078-0.094 s`. An HTTP `403` from the bucket root is sufficient for this timing test because it still proves DNS, TCP, TLS, and server response latency; do not print or use OSS credentials for the test.
+- If an elevated PowerShell is available and a process cannot bind its own source address, add a temporary host route for every currently resolved destination IPv4 address. Re-resolve DNS immediately before adding it, use the physical interface's current index and gateway, and use `ActiveStore` so the route is not persisted across reboot:
+
+  ```powershell
+  New-NetRoute -DestinationPrefix '8.138.53.96/32' `
+    -InterfaceIndex 7 -NextHop '7.249.156.1' -RouteMetric 1 `
+    -PolicyStore ActiveStore
+  Find-NetRoute -RemoteIPAddress 8.138.53.96
+  ```
+
+- Remove the exact temporary route as soon as the affected operation finishes, then verify that it is gone. Never use a broad network prefix or default route for this workaround:
+
+  ```powershell
+  Remove-NetRoute -DestinationPrefix '8.138.53.96/32' `
+    -InterfaceIndex 7 -NextHop '7.249.156.1' -Confirm:$false
+  Get-NetRoute -DestinationPrefix '8.138.53.96/32' -ErrorAction SilentlyContinue
+  ```
+
+- Adding or removing the host route requires an elevated Windows session. If elevation is unavailable, do not repeatedly retry the slow path and do not disable TUN globally. Prefer an application-scoped bypass. The repository bundle publisher automatically detects a TUN default route and binds only its OSS HTTPS upload to the best non-TUN local IPv4 address; override it with `OSS_DIRECT_LOCAL_ADDRESS` or `-OssDirectLocalAddress` when necessary.
+- Do not redirect `9.15.144.34` to WLAN. `Find-NetRoute -RemoteIPAddress 9.15.144.34` must continue to select the Tailscale interface and its approved `/32` route through B. Also do not attribute remote AISBench latency to A's TUN route: AISBench reaches the model services inside the remote environment, so this local route can affect deployment/control traffic but not the measured inference hot path.
+
 ## B-side HTTP proxy
 
 - B runs the `VllmStackPrivoxy` Windows service.
