@@ -45,4 +45,6 @@ The script uses:
 
 All values can be overridden with PowerShell parameters. The OSS object remains private; the generated signed URL expires after seven days.
 
+When a TUN default route is present on A, the publisher automatically binds the OSS HTTPS connection to the IPv4 address of the best non-TUN default route. This bypasses the proxy tunnel without requiring an administrator-only persistent route. Set `OSS_DIRECT_LOCAL_ADDRESS` or pass `-OssDirectLocalAddress` to select a specific local address explicitly. The binding applies only to the OSS upload; Git fetch and SSH keep their normal routing.
+
 The object key is stable (`gh/mozhijiawei/vllm-stack-yellow-zone/remote-sync/latest.bundle` with the default configuration), so each successful publish replaces the previous bundle instead of creating another timestamped object. The workflow does not list or delete OSS objects and does not require lifecycle, versioning, ListBucket, or DeleteObject permissions.

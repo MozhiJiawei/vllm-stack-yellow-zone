@@ -7,6 +7,7 @@ param(
     [string]$SecretsPath = (Join-Path $env:USERPROFILE '.secrets\gh-oss-attachments.env'),
     [string]$UploaderScript = (Join-Path $PSScriptRoot 'Upload-OssBundle.cjs'),
     [string]$UploaderNodeModules = (Join-Path $env:USERPROFILE '.codex\skills\gh-oss-attachments\node_modules'),
+    [string]$OssDirectLocalAddress = $env:OSS_DIRECT_LOCAL_ADDRESS,
     [ValidateRange(1, 20)][int]$FetchAttempts = 6
 )
 
@@ -34,6 +35,39 @@ function Invoke-NativeChecked {
     if ($LASTEXITCODE -ne 0) {
         throw "$Command failed with exit code $LASTEXITCODE."
     }
+}
+
+function Find-DirectLocalAddress {
+    if (-not [string]::IsNullOrWhiteSpace($OssDirectLocalAddress)) {
+        return $OssDirectLocalAddress
+    }
+
+    $defaultRoutes = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' `
+        -ErrorAction SilentlyContinue)
+    $hasTunDefault = $defaultRoutes | Where-Object {
+        $_.InterfaceAlias -match '(?i)(^|[-_ ])tun([0-9]*|[-_ ])'
+    }
+    if (-not $hasTunDefault) {
+        return $null
+    }
+
+    $directRoute = $defaultRoutes |
+        Where-Object {
+            $_.NextHop -ne '0.0.0.0' -and
+            $_.InterfaceAlias -notmatch '(?i)(^|[-_ ])tun([0-9]*|[-_ ])'
+        } |
+        Sort-Object RouteMetric, InterfaceMetric |
+        Select-Object -First 1
+    if (-not $directRoute) {
+        return $null
+    }
+
+    Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $directRoute.InterfaceIndex `
+        -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.IPAddress -notlike '169.254.*' -and $_.IPAddress -ne '127.0.0.1'
+        } |
+        Select-Object -ExpandProperty IPAddress -First 1
 }
 
 $tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
@@ -84,13 +118,24 @@ try {
 
     Write-Host 'Uploading the bundle to private Aliyun OSS...'
     $previousNodePath = $env:NODE_PATH
+    $previousDirectAddress = $env:OSS_DIRECT_LOCAL_ADDRESS
     $env:NODE_PATH = $UploaderNodeModules
-    $uploadOutput = & node $UploaderScript `
-        --config $SecretsPath `
-        --file $bundlePath `
-        --repo MozhiJiawei/vllm-stack-yellow-zone `
-        --expires 604800
-    $env:NODE_PATH = $previousNodePath
+    $directAddress = Find-DirectLocalAddress
+    if ($directAddress) {
+        Write-Host "Binding OSS upload to direct local address $directAddress to bypass TUN."
+        $env:OSS_DIRECT_LOCAL_ADDRESS = $directAddress
+    }
+    try {
+        $uploadOutput = & node $UploaderScript `
+            --config $SecretsPath `
+            --file $bundlePath `
+            --repo MozhiJiawei/vllm-stack-yellow-zone `
+            --expires 604800
+    }
+    finally {
+        $env:NODE_PATH = $previousNodePath
+        $env:OSS_DIRECT_LOCAL_ADDRESS = $previousDirectAddress
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "OSS upload failed with exit code $LASTEXITCODE."
     }
