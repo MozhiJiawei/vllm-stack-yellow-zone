@@ -81,7 +81,7 @@ async function main() {
     region,
     authorizationV4: true,
     secure: endpoint.startsWith("https://"),
-    timeout: 30000,
+    timeout: 60000,
   });
 
   const objectKey = `${prefix}${repo}/remote-sync/latest.bundle`;
@@ -93,7 +93,7 @@ async function main() {
     try {
       result = await client.multipartUpload(objectKey, filePath, {
         checkpoint,
-        parallel: 4,
+        parallel: 1,
         partSize: 5 * 1024 * 1024,
         headers: { "Content-Type": "application/octet-stream" },
         progress(percentage, currentCheckpoint) {
